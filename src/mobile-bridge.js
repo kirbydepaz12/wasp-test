@@ -9,7 +9,7 @@ import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.3';
+const WASP_VERSION = '16.0.4';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -310,7 +310,8 @@ export async function readVirtualLibrary(DB){
       playlistIds.add(id);
       peerPlaylists.push({id,origin,peerId,name:clean(pl.name,80)||'WASP peer playlist',
         owner:kind==='users'?clean(pl.username,80)||'WASP member':'WASP peer',created_at:Number(pl.created_at)||0,
-        tracks:pl.tracks.slice(0,1500),track_sources:pl.track_sources||{}});
+        tracks:pl.tracks.slice(0,1500),track_sources:pl.track_sources||{},
+        remoteId:String(pl.id),peerKind:kind,coverUrl:clean(pl.cover_url,600)});
     }
   }
   const MAX_PLAYLISTS=500;
@@ -421,6 +422,64 @@ async function art(req,env,t){
     return new Response(null,{status:404,headers:NO_STORE});
   return new Response(response.body,{headers:{...NO_STORE,'content-type':response.headers.get('content-type')}});
 }
+// OpenSubsonic playlist artwork: the native WASP server's covers are still
+// authoritative. No third-party URLs or mobile credentials are sent to peers.
+const ART_TYPES=/^image\/(?:jpeg|png|webp|gif)$/i;
+function imageMime(response){return (response.headers.get('content-type')||'').split(';')[0].trim();}
+async function savedPlaylistArt(env,key,head=false){
+  const object=await env.MUSIC?.get(key);
+  if(!object)return null;
+  const headers=new Headers(NO_STORE);
+  object.writeHttpMetadata?.(headers);
+  const type=imageMime({headers});
+  if(!ART_TYPES.test(type))return null;
+  return new Response(head?null:object.body,{status:200,headers});
+}
+function safeRemoteCover(origin,source){
+  if(!/^https?:\/\//i.test(origin||''))return null;
+  let base;try{base=new URL(origin);}catch{return null;}
+  if(base.username||base.password||base.search||base.hash)return null;
+  const raw=String(source.coverUrl||'');
+  if(raw){
+    let candidate;try{candidate=new URL(raw,base);}catch{return null;}
+    // Use the artwork route only; never follow an untrusted image host.
+    if(/^\/art\/user-playlist\/[\w-]+$/.test(candidate.pathname) ||
+       (candidate.pathname==='/art/playlist' && /^[\w-]{1,120}$/.test(candidate.searchParams.get('id')||''))){
+      return new URL(candidate.pathname+candidate.search,base).href;
+    }
+  }
+  if(source.peerKind==='playlists'&&/^[\w-]{1,120}$/.test(source.remoteId||''))
+    return new URL('/art/playlist?id='+encodeURIComponent(source.remoteId),base).href;
+  return null;
+}
+async function playlistArt(req,env,playlist){
+  const source=playlist.coverSource;
+  if(!source)return new Response(null,{status:404,headers:NO_STORE});
+  if(source.kind==='server' && source.custom){
+    const result=await savedPlaylistArt(env,'art/playlist/'+source.id,req.method==='HEAD');
+    if(result)return result;
+  }
+  if(source.kind==='user' && source.custom){
+    const result=await savedPlaylistArt(env,'art/user-playlist/'+source.id,req.method==='HEAD');
+    if(result)return result;
+  }
+  if(source.kind==='peer'){
+    const endpoint=safeRemoteCover(source.origin,source);
+    if(endpoint){
+      try{
+        const result=await fetch(endpoint,{method:'GET',redirect:'manual',signal:AbortSignal.timeout(8000)});
+        if(result.status===200 && ART_TYPES.test(imageMime(result))){
+          return new Response(req.method==='HEAD'?null:result.body,{status:200,headers:{...NO_STORE,'content-type':imageMime(result)}});
+        }
+      }catch{} // Image is optional; songs and peer playlist contents still work.
+    }
+  }
+  // Covers without an uploaded image (including a webapp-generated mosaic)
+  // fall back to the first playable song's existing WASP artwork.
+  if(playlist.raw?.length)return art(req,env,playlist.raw[0]);
+  return new Response(null,{status:404,headers:NO_STORE});
+}
+
 export async function handleMobileRest(req,env,url){
   if(!['GET','HEAD','POST'].includes(req.method))return new Response('Method not allowed',{status:405,headers:NO_STORE});
   if(!(await enabled(env.DB)))return new Response('WASP Mobile Bridge is disabled',{status:503,headers:NO_STORE});
@@ -526,10 +585,10 @@ export async function handleMobileRest(req,env,url){
   }
   if(action==='getPlaylists'||action==='getPlaylist'){
     const playlists=await readMobilePlaylists(env.DB,catalogue,auth);
-    if(action==='getPlaylists')return protocolResponse({playlists:{playlist:playlists.rows.map(({raw,kind,...metadata})=>metadata)}},null,format);
+    if(action==='getPlaylists')return protocolResponse({playlists:{playlist:playlists.rows.map(({raw,kind,coverSource,...metadata})=>metadata)}},null,format);
     const playlist=playlists.find(id);
     if(!playlist)return protoError(70,'Playlist not found or private',format);
-    const {raw,kind,...metadata}=playlist;
+    const {raw,kind,coverSource,...metadata}=playlist;
     return protocolResponse({playlist:{...metadata,entry:raw.map(songOut)}},null,format);
   }
   if(action==='getStarred2'||action==='getStarred'){
@@ -556,7 +615,14 @@ export async function handleMobileRest(req,env,url){
     return protocolResponse(action==='getLyrics'?{lyrics:{artist:clean(p.get('artist')),title:clean(p.get('title'))}}:{lyricsList:{structuredLyrics:[]}},null,format);
   }
   if(action==='stream'||action==='download')return audio(req,env,respondForSong(catalogue,id));
-  if(action==='getCoverArt')return art(req,env,respondForSong(catalogue,id)||albums.get(id)?.songs[0]||artists.get(id)&&albums.get([...artists.get(id).albums][0])?.songs[0]);
+  if(action==='getCoverArt'){
+    if(id.startsWith('pl:')){
+      const playlists=await readMobilePlaylists(env.DB,catalogue,auth);
+      const playlist=playlists.find(id.slice(3));
+      return playlist?playlistArt(req,env,playlist):new Response(null,{status:404,headers:NO_STORE});
+    }
+    return art(req,env,respondForSong(catalogue,id)||albums.get(id)?.songs[0]||artists.get(id)&&albums.get([...artists.get(id).albums][0])?.songs[0]);
+  }
   if(action==='scrobble'){
     // Only submitted *completed* listens count; client-side playback start is
     // not proof of listening. Peer sources are never written to by this API.

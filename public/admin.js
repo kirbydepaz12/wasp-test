@@ -571,7 +571,7 @@ $("#files").addEventListener("change", (e) => { enqueue(e.target.files); e.targe
 ["dragleave", "drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => enqueue(e.dataTransfer.files));
 
-// WASP v16.0.3 Mobile Bridge: managed by Network → Mobile Bridge.
+// WASP v16.0.4 Mobile Bridge: managed by Network → Mobile Bridge.
 let mobileBridgeLoaded=false;
 function mobileSetupMessage(message,error=false){
   const el=$('#mobileSecretFeedback');el.textContent=message||'';el.classList.toggle('err',!!error);

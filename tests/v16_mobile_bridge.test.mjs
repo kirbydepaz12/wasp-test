@@ -12,8 +12,8 @@ function fixture(){
     'CREATE TABLE peers(id TEXT PRIMARY KEY,url TEXT,added_at INTEGER)',
     'CREATE TABLE peer_catalogue_cache(peer_id TEXT PRIMARY KEY,synced_at INTEGER)',
     'CREATE TABLE peer_catalogue_chunks(peer_id TEXT,kind TEXT,shard INTEGER,body TEXT)',
-    'CREATE TABLE user_playlists(id TEXT,user_id TEXT,name TEXT,is_public INTEGER,created_at INTEGER)',
-    'CREATE TABLE playlists(id TEXT,name TEXT,created_at INTEGER)',
+    "CREATE TABLE user_playlists(id TEXT,user_id TEXT,name TEXT,is_public INTEGER,created_at INTEGER,cover_v INTEGER DEFAULT 0,cover_mode TEXT DEFAULT 'copied')",
+    'CREATE TABLE playlists(id TEXT,name TEXT,created_at INTEGER,cover_v INTEGER DEFAULT 0)',
     'CREATE TABLE playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE user_playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE peer_track_refs(ref TEXT,origin TEXT,remote_id TEXT)',
@@ -29,8 +29,8 @@ function fixture(){
   db.prepare('INSERT INTO peer_catalogue_chunks VALUES (?,?,?,?)').run('p1','tracks',0,JSON.stringify([{id:'remote01',title:'Second Song',artist:'Remote Artists',album:'Another Album',duration:210,plays:12}]));
   db.prepare('INSERT INTO peer_catalogue_chunks VALUES (?,?,?,?)').run('p1','playlists',0,JSON.stringify([{id:'peerpl1',name:'Peer Playlist',tracks:['remote01']}]))
 
-  db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('playlist01','user1','My Songs',0,Date.now());
-  db.prepare('INSERT INTO playlists VALUES (?,?,?)').run('server01','WASP server radio',Date.now());
+  db.prepare('INSERT INTO user_playlists(id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)').run('playlist01','user1','My Songs',0,Date.now());
+  db.prepare('INSERT INTO playlists(id,name,created_at) VALUES (?,?,?)').run('server01','WASP server radio',Date.now());
   db.prepare('INSERT INTO playlist_tracks VALUES (?,?,?)').run('server01','local01',Date.now());
   db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('playlist01','local01',Date.now());
   const DB={prepare(sql){let args=[];return {bind(...values){args=values;return this;},first(){return db.prepare(sql).get(...args)||null;},all(){return {results:db.prepare(sql).all(...args)};},run(){const x=db.prepare(sql).run(...args);return {meta:{changes:x.changes}};}};},batch(stmts){return stmts.map(x=>x.run());}};
@@ -396,9 +396,9 @@ test('eight-character mobile secrets are random uppercase alphanumeric and block
 test('server, public user and remote peer playlist contents resolve without leaking private playlists',async()=>{
   const {env,db}=fixture();
   db.prepare('INSERT INTO user_accounts VALUES (?,?)').run('user2','publicauthor');
-  db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('public01','user2','Community favorites',1,Date.now());
+  db.prepare('INSERT INTO user_playlists(id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)').run('public01','user2','Community favorites',1,Date.now());
   db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('public01','local01',Date.now());
-  db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('private02','user2','Secret private',0,Date.now());
+  db.prepare('INSERT INTO user_playlists(id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)').run('private02','user2','Secret private',0,Date.now());
   const {secret}=await provision(env);const p={apiKey:secret,f:'json'};
   let url=endpoint('getPlaylists',p);
   let result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
@@ -443,4 +443,90 @@ test('mobile auth throttle schema initializes when an existing installation has 
   const result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
   assert.equal(result.status,'ok');
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mobile_auth_limits'").get());
+});
+
+// v16.0.4: playlist art IDs must be fetchable by regular Subsonic clients.
+test('Subsonic getPlaylists/getPlaylist expose art IDs and local uploaded artwork as image bytes',async()=>{
+  const {env,db}=fixture();
+  db.prepare('UPDATE playlists SET cover_v=42 WHERE id=?').run('server01');
+  db.prepare("UPDATE user_playlists SET cover_v=51,cover_mode='copied' WHERE id=?").run('playlist01');
+  const objects={'art/playlist/server01':'SERVER-COVER','art/user-playlist/playlist01':'USER-COVER'};
+  env.MUSIC={get:async(key)=>objects[key]?{body:new Blob([objects[key]]),writeHttpMetadata(h){h.set('content-type','image/png');}}:null};
+  const {secret}=await provision(env),params={apiKey:secret,f:'json'};
+  let url=endpoint('getPlaylists',params);
+  const list=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].playlists.playlist;
+  for(const id of ['sv:server01','playlist01','vp:p1:peerpl1']){
+    assert.equal(list.find(x=>x.id===id).coverArt,'pl:'+id);
+    assert.equal(list.find(x=>x.id===id).readonly,true);
+  }
+  for(const [id,expected] of [['sv:server01','SERVER-COVER'],['playlist01','USER-COVER']]){
+    url=endpoint('getPlaylist',{...params,id});
+    const detail=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].playlist;
+    assert.equal(detail.coverArt,'pl:'+id);
+    const coverUrl=endpoint('getCoverArt',{...params,id:detail.coverArt});
+    const response=await handleMobileRest(new Request(coverUrl),env,coverUrl);
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('content-type'),'image/png');
+    assert.equal(await response.text(),expected);
+  }
+  url=endpoint('getCoverArt',{...params,id:'pl:no-such-playlist'});
+  assert.equal((await handleMobileRest(new Request(url),env,url)).status,404);
+});
+test('Unuploaded playlist cover falls back to its first track; inaccessible private art is forbidden',async()=>{
+  const {env,db}=fixture();
+  db.prepare('INSERT INTO user_accounts VALUES (?,?)').run('user2','other');
+  db.prepare('INSERT INTO user_playlists(id,user_id,name,is_public,created_at) VALUES (?,?,?,?,?)').run('private99','user2','Private 99',0,Date.now());
+  const {secret}=await provision(env),params={apiKey:secret,f:'json'};
+  let url=endpoint('getCoverArt',{...params,id:'pl:sv:server01'});
+  const fallback=await handleMobileRest(new Request(url),env,url);
+  assert.equal(fallback.status,302);
+  assert.match(fallback.headers.get('location'),/\/art\/track\?id=local01/);
+  url=endpoint('getCoverArt',{...params,id:'pl:private99'});
+  assert.equal((await handleMobileRest(new Request(url),env,url)).status,404);
+});
+test('peer playlist art fetches only trusted source artwork; never forwards mobile app credentials',async()=>{
+  const {env}=fixture(),{secret}=await provision(env);
+  const original=globalThis.fetch,urls=[];
+  globalThis.fetch=async(input,opts)=>{
+    urls.push({url:String(input),opts});
+    return new Response('PEER-JPEG',{status:200,headers:{'content-type':'image/jpeg'}});
+  };
+  try{
+    const url=endpoint('getCoverArt',{apiKey:secret,id:'pl:vp:p1:peerpl1'});
+    const response=await handleMobileRest(new Request(url,{headers:{cookie:'private=1',authorization:'Bearer wrong'}}),env,url);
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('content-type'),'image/jpeg');
+    assert.equal(await response.text(),'PEER-JPEG');
+    assert.equal(urls.length,1);
+    assert.equal(urls[0].url,'https://v15.example.com/art/playlist?id=peerpl1');
+    assert.equal(urls[0].opts.redirect,'manual');
+    assert.equal(urls[0].opts.headers,undefined);
+    assert.ok(!urls[0].url.includes(secret));
+  }finally{globalThis.fetch=original;}
+});
+
+test('public peer-member playlist cover uses the authorized peer art path, not an arbitrary third-party hostname',async()=>{
+  const {env,db}=fixture();
+  db.prepare('INSERT INTO peer_catalogue_chunks VALUES (?,?,?,?)').run('p1','users',0,JSON.stringify([
+    {id:'shared01',name:'Peer member playlist',is_public:1,tracks:['remote01'],cover_url:'https://outside.invalid/art/user-playlist/shared01?v=25'}
+  ]));
+  const {secret}=await provision(env),calls=[],original=globalThis.fetch;
+  globalThis.fetch=async url=>{calls.push(String(url));return new Response('COVER',{headers:{'content-type':'image/webp'}});};
+  try{
+    const requestUrl=endpoint('getPlaylists',{apiKey:secret,f:'json'});
+    const list=(await data(await handleMobileRest(new Request(requestUrl),env,requestUrl)))['subsonic-response'].playlists.playlist;
+    const peer=list.find(x=>x.name==='Peer member playlist');
+    assert.ok(peer);
+    assert.equal(peer.coverArt,'pl:'+peer.id);
+    let url=endpoint('getCoverArt',{apiKey:secret,id:peer.coverArt});
+    const image=await handleMobileRest(new Request(url),env,url);
+    assert.equal(image.status,200);assert.equal(image.headers.get('content-type'),'image/webp');
+    assert.deepEqual(calls,['https://v15.example.com/art/user-playlist/shared01?v=25']);
+  }finally{globalThis.fetch=original;}
+});
+test('XML playlist response exposes coverArt as an attribute for older Subsonic clients',async()=>{
+  const {env}=fixture(),{secret}=await provision(env);
+  const url=endpoint('getPlaylists',{u:'listener',p:secret});
+  const xml=await (await handleMobileRest(new Request(url),env,url)).text();
+  assert.match(xml,/<playlist[^>]*coverArt="pl:sv:server01"/);
 });

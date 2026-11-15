@@ -16,11 +16,11 @@ function sourceSong(catalogue,source,remoteId){
 }
 /** Get the list and a resolver for the authenticated account. */
 export async function readMobilePlaylists(DB,catalogue,auth){
-  const ownAndPublic=(await DB.prepare(`SELECT p.id,p.name,p.is_public,p.created_at,p.user_id,u.username
+  const ownAndPublic=(await DB.prepare(`SELECT p.id,p.name,p.is_public,p.created_at,p.user_id,p.cover_v,p.cover_mode,u.username
     FROM user_playlists p JOIN user_accounts u ON u.id=p.user_id
     WHERE p.user_id=? OR p.is_public=1
     ORDER BY (p.user_id=?) DESC,p.created_at DESC LIMIT 400`).bind(auth.userId,auth.userId).all()).results;
-  const server=(await DB.prepare('SELECT id,name,created_at FROM playlists ORDER BY created_at DESC LIMIT 300').all()).results;
+  const server=(await DB.prepare('SELECT id,name,created_at,cover_v FROM playlists ORDER BY created_at DESC LIMIT 300').all()).results;
   const mobile=new Map();
   const references=new Map();
   const allIds=[...new Set([...ownAndPublic.map(x=>x.id),...server.map(x=>x.id)])];
@@ -51,19 +51,23 @@ export async function readMobilePlaylists(DB,catalogue,auth){
     if(!ref)return null;
     return sourceSong(catalogue,ref.origin,ref.remote_id);
   }
-  function put(row,raw){
+  function put(row,raw,coverSource){
     if(mobile.has(row.id))return;
-    mobile.set(row.id,{...row,raw});
+    // A playlist art ID is separate from song IDs and is never a remote URL.
+    // Mobile clients request it through their authenticated getCoverArt call.
+    mobile.set(row.id,{...row,coverArt:'pl:'+row.id,readonly:true,raw,coverSource});
   }
   // WASP's server-managed playlists are public through /api/playlists. Their
   // IDs are namespaced to avoid collisions with user and remote playlist IDs.
   for(const p of server){
     const entries=(serverLinks.get(p.id)||[]).map(resolvedSource).filter(Boolean);
-    put({id:'sv:'+p.id,name:p.name,owner:'WASP server',public:true,created:stamp(p.created_at),songCount:entries.length,kind:'server'},entries);
+    put({id:'sv:'+p.id,name:p.name,owner:'WASP server',public:true,created:stamp(p.created_at),songCount:entries.length,kind:'server'},entries,
+      {kind:'server',id:p.id,custom:!!Number(p.cover_v)});
   }
   for(const p of ownAndPublic){
     const entries=(userLinks.get(p.id)||[]).map(resolvedSource).filter(Boolean);
-    put({id:p.id,name:p.name,owner:p.username||'WASP member',public:!!p.is_public,created:stamp(p.created_at),songCount:entries.length,kind:'user'},entries);
+    put({id:p.id,name:p.name,owner:p.username||'WASP member',public:!!p.is_public,created:stamp(p.created_at),songCount:entries.length,kind:'user'},entries,
+      {kind:'user',id:p.id,custom:!!Number(p.cover_v)&&p.cover_mode!=='mosaic'});
   }
   for(const p of (catalogue.peerPlaylists||[])){
     const entries=(p.tracks||[]).slice(0,LIMIT).map(item=>{
@@ -72,7 +76,8 @@ export async function readMobilePlaylists(DB,catalogue,auth){
       if(mapped)return sourceSong(catalogue,clean(mapped.origin).replace(/\/$/,''),clean(mapped.remote_id));
       return sourceSong(catalogue,p.origin,ref);
     }).filter(Boolean);
-    put({id:p.id,name:p.name,owner:p.owner||'WASP peer',public:true,created:stamp(p.created_at),songCount:entries.length,kind:'peer'},entries);
+    put({id:p.id,name:p.name,owner:p.owner||'WASP peer',public:true,created:stamp(p.created_at),songCount:entries.length,kind:'peer'},entries,
+      {kind:'peer',origin:p.origin,remoteId:p.remoteId,peerKind:p.peerKind,coverUrl:p.coverUrl});
   }
   const rows=[...mobile.values()];
   return {rows,find(id){return mobile.get(id)||null;}};

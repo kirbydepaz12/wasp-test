@@ -5,12 +5,30 @@
 </div>
 
 
-> [!IMPORTANT]
-> **WASP v16.0.3 STAGING — Federated Mobile Bridge.** This release extends the existing v16 adapter to include **publicly reachable music sources and playlists connected through a trusted v15 peer gateway**, with no MP3 copying. It also adds metadata-based genre browsing and shorter (16-character) mobile app credentials. Start with [the v16.0.3 federation guide](docs/V16-0-2-MOBILE-FEDERATION.md) before promoting anything to production. The v15 live Worker remains a separate installation.
+## WASP v16.0.4 — Mobile Bridge / Subsonic & OpenSubsonic integration
 
-> [!IMPORTANT]
-> **WASP v16.0.1 legacy setup notes**
-> This repository contains a **test release** intended for a **separate GitHub repository, Cloudflare Worker, D1 database, R2 bucket and Docker stack**, not an in-place upgrade over your active v15 site. Keep your existing v15 server as a read-only network peer supplying music to v16. The `/mobile` endpoint is optional and disabled by default. **Start with [the v16.0.1 Mobile Bridge setup guide](docs/V16-0-1-MOBILE-BRIDGE-MANAGED-SECRET.md)** before importing this source.
+**WASP now supports connecting compatible Subsonic/OpenSubsonic mobile music players to its existing peer-to-peer music network.** An Android client has successfully authenticated to the v16 staging Mobile Bridge and displayed server playlists with real song entries. This confirms **mobile API connection and playlist browsing**; the v16.0.4 playlist-artwork fix still requires a fresh on-device test, and a successful full-network playback test remains a production-release requirement.
+
+**This is a staging release**, intended for a separate GitHub repository and isolated Worker, D1 database, R2 bucket, or Docker stack—not an untested in-place replacement for a live v15 deployment. The native WASP web player, accounts, peer protocol, music storage, and web playlists remain the source of truth. **WASP does not install Navidrome or a second Subsonic server.** Its optional Mobile Bridge translates Subsonic/OpenSubsonic requests into native WASP operations.
+
+### Mobile Bridge capabilities
+
+- **Connect an Android/iOS Subsonic-compatible client** to `https://YOUR-WASP-DOMAIN/mobile` or to your staging `workers.dev` hostname with `/mobile` appended. A root `/rest/*` alias supports clients that do not preserve subdirectory URLs.
+- **Browse and search music from the WASP P2P network**, including the local library, synchronized approved peers, and eligible one-hop shared public downstream peers. Audio is streamed on demand from the trusted source, not copied into a second library.
+- **Access WASP server playlists, your own playlists, other members' public playlists, and synchronized public peer playlists**, including permitted remote-track entries. Other users' private playlists remain private.
+- **Playlist cover art (v16.0.4 hotfix):** Subsonic `getPlaylists`/`getPlaylist` now provide a `coverArt` ID that `getCoverArt` can serve. Uploaded server/member covers are reused; a trusted peer's cover is fetched from its shared art endpoint; when no standalone cover exists, the first playable song's artwork is used. WASP's browser-only mosaic is not reproduced as a server-generated image.
+- **Virtual music folders and genre browsing** where source metadata exists. Some third-party clients may require Navidrome-specific endpoints for their particular Folders UI; those features are not guaranteed.
+- **Per-device mobile credentials:** Members create an independently revocable, 8-character uppercase A–Z/0–9 code under **Account Settings → Mobile**. An administrator configures the persistent installation secret and enables the bridge under **Admin → Network → Mobile Bridge**. Do not enter your normal WASP account password into a third-party player.
+- **Security boundaries:** Mobile requests are authenticated; other members' private playlists are not exposed. Peer artwork/audio requests never forward the user's mobile key or browser cookies. The optional bridge can be disabled without disabling native WASP.
+
+**Connect from a mobile player:** (1) The administrator enables Mobile Bridge and generates the WASP-managed secret under **Admin → Network → Mobile Bridge**; (2) the member creates a device key in **Account Settings → Mobile**; (3) in a Subsonic/OpenSubsonic music app, use the WASP server URL ending in `/mobile`, the WASP username, and the generated key as the password; (4) refresh albums and playlists. After this hotfix, clear/reload cached playlist artwork if the player still shows an old placeholder.
+
+**Deployment caution:** Back up D1/R2 and Docker state, keep a known-good v15 production commit, and test mobile authentication, artwork, server and peer playlist entries, peer-only song playback and HTTP byte-range seeking on staging before promoting the release. See [Mobile Bridge integration and artwork hotfix](docs/V16-0-4-PLAYLIST-ARTWORK.md), [v16.0.3 mobile playlists/folders guide](docs/V16-0-3-MOBILE-PLAYLISTS-FOLDERS-KEYS.md), and [v16.0.2 federation guide](docs/V16-0-2-MOBILE-FEDERATION.md).
+
+**Project:** https://github.com/KNDPZ/WASP  
+**Public WASP site:** https://wasp.playy.online
+
+---
 
 WASP is a **peer-to-peer music webapp** that lets people host their own music libraries and connect them to other WASP-compatible servers. You can listen to music on your own server or discover music shared by connected hosts. Each host controls their own library and whether to share it over the network.
 
