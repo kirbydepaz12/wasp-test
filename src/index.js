@@ -1,12 +1,13 @@
 import {RELEASE_DOCS} from "./release-docs.js";
 import {handleMobileRest, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
+import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "16.0.1";
-const BUILD_LABEL = "Mobile Bridge Setup · OpenSubsonic Staging";
+const BUILD_VERSION = "16.0.2";
+const BUILD_LABEL = "Mobile Federation · OpenSubsonic Staging";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1375,6 +1376,11 @@ async function syncPeerAll(env,peer){
     const result=await syncPeerPhase(env,peer,phase);counts[phase]=result.count;
   }
   counts.revision=await snapshotPeerRevision(env,peer);
+  // Optional one-hop Mobile Bridge federation. Native WASP peer sync must
+  // succeed regardless of a remote second-hop source being unavailable.
+  if((await env.DB.prepare("SELECT value FROM settings WHERE key='mobile_bridge_enabled'").first())?.value==='1'){
+    try{counts.federation=await syncFederatedFromGateway(env,peer);}catch(e){counts.federation={sources:0,errors:[e.message]};}
+  }
   await touchCatalogue(env.DB);
   return counts;
 }
@@ -2793,6 +2799,9 @@ async function api(req, env, url, ctx) {
     return json({ id, url: raw, name: peerInfo.name || raw, track_count: peerInfo.tracks || 0, online: true, last_ok: now }, 201);
   }
   if ((x = path.match(/^\/api\/admin\/network\/peers\/([\w-]+)$/)) && m === "DELETE") {
+    await ensureFederationSchema(DB);
+    await DB.prepare("DELETE FROM mobile_federation_chunks WHERE gateway_id=?").bind(x[1]).run();
+    await DB.prepare("DELETE FROM mobile_federation_sources WHERE gateway_id=?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peer_catalogue_chunks WHERE peer_id = ?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peer_catalogue_cache WHERE peer_id = ?").bind(x[1]).run();
     await DB.prepare("DELETE FROM peers WHERE id = ?").bind(x[1]).run();
@@ -2807,8 +2816,11 @@ async function api(req, env, url, ctx) {
     try {
       if(body.phase==="finish"){
         await snapshotPeerRevision(env,peer);
+        const federation=(await DB.prepare("SELECT value FROM settings WHERE key='mobile_bridge_enabled'").first())?.value==='1'
+          ?await syncFederatedFromGateway(env,peer).catch(e=>({sources:0,tracks:0,playlists:0,errors:[e.message]}))
+          :null;
         await touchCatalogue(DB);
-        return json({ok:true,phase:"finish",revision:await catalogueVersion(DB)});
+        return json({ok:true,phase:"finish",revision:await catalogueVersion(DB),federation});
       }
       const result=await syncPeerPhase(env,peer,body.phase);
       return json({ok:true,...result});

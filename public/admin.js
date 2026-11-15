@@ -571,7 +571,7 @@ $("#files").addEventListener("change", (e) => { enqueue(e.target.files); e.targe
 ["dragleave", "drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => enqueue(e.dataTransfer.files));
 
-// WASP v16.0.1 Mobile Bridge: managed by Network → Mobile Bridge.
+// WASP v16.0.2 Mobile Bridge: managed by Network → Mobile Bridge.
 let mobileBridgeLoaded=false;
 function mobileSetupMessage(message,error=false){
   const el=$('#mobileSecretFeedback');el.textContent=message||'';el.classList.toggle('err',!!error);
@@ -1132,15 +1132,17 @@ $("#netPeers").addEventListener("click", async (e) => {
     try {
       if(hard){const r=await fetch(`/api/admin/network/peers/${encodeURIComponent(id)}/refresh`,{method:"POST",cache:"no-store"});
         const j=await r.json();if(!r.ok)throw Error(j.error||"Peer refresh failed");}
-      const totals={};const phases=[["tracks",40],["playlists",70],["users",95],["finish",100]];
+      const totals={};let federation=null;const phases=[["tracks",40],["playlists",70],["users",86],["finish",100]];
       for(const [phase,percent] of phases){
         message.textContent=`${phase==="finish"?"Publishing":`Syncing ${phase}`}…`;
         const r=await post(`/api/admin/network/peers/${encodeURIComponent(id)}/sync`,{phase});
         const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||`Unable to sync ${phase}`);
-        totals[phase]=j.count||0;bar.value=percent;
+        totals[phase]=j.count||0;if(phase==="finish")federation=j.federation||null;bar.value=percent;
       }
-      message.textContent=`Complete: ${totals.tracks} songs, ${totals.playlists} server playlists, ${totals.users} user playlists.`;
-      flashMsg("#netMsg",`Synced ${totals.tracks} songs and ${totals.playlists+totals.users} playlists. No audio files downloaded.`);
+      const extra=federation?` + ${federation.tracks||0} songs from ${federation.sources||0} connected downstream peers`:'';
+      const warning=federation?.errors?.length?` (${federation.errors.length} source warning(s); see Mobile Bridge deployment guide)`:'';
+      message.textContent=`Complete: ${totals.tracks} gateway songs, ${totals.playlists} server playlists, ${totals.users} user playlists${extra}${warning}.`;
+      flashMsg("#netMsg",`Synced ${totals.tracks+(federation?.tracks||0)} songs and ${totals.playlists+totals.users+(federation?.playlists||0)} playlists. No audio files downloaded.${federation?.errors?.length?" Some downstream peers unavailable.":""}`);
       // Notify other tabs on the same origin. Their periodic revision check will reload.
       try{localStorage.setItem("wasp_peer_sync",String(Date.now()));}catch{}
       await loadNetwork();

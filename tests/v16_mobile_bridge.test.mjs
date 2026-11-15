@@ -64,7 +64,7 @@ test('mobile bridge starts disabled and does not reveal data without enabling',a
 });
 test('key creation, API key authentication, XML, POST, legacy password and salted MD5',async()=>{
   const {env}=fixture();const key=await provision(env);
-  assert.match(key.secret,/^wm_[a-f0-9]{64}$/);
+  assert.match(key.secret,/^[A-Za-z0-9]{16}$/);
   const url=endpoint('ping',{apiKey:key.secret,f:'json',v:'1.16.1',c:'Test'});
   assert.equal((await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].status,'ok');
   const xmlUrl=endpoint('ping',{apiKey:key.secret});
@@ -225,4 +225,119 @@ test('existing Docker and Cloudflare runtime secrets can migrate into D1 without
   const salt='abc123';const url=endpoint('ping',{u:'listener',t:legacyMd5(oldKey+salt),s:salt,f:'json'});
   assert.equal((await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].status,'ok');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys').get().n,1);
+});
+
+// v16.0.2: one-hop discovery stays within the gateway's administrator-approved
+// public peers, and playlist refs resolve to their actual remote origin.
+import {syncFederatedFromGateway, publicPeerOrigin} from '../src/mobile-federation.js';
+test('federation refuses private IP, HTTP, credentials, redirects and untrusted registries',async()=>{
+  for(const input of ['http://peer.example.com','https://127.0.0.1','https://192.168.1.10','https://localhost',
+    'https://host.local','https://user:pass@public.example.com','https://public.example.com/private',
+    'https://public.example.com:8443','https://[::1]'])assert.equal(publicPeerOrigin(input),'',input);
+  assert.equal(publicPeerOrigin('https://music.example.com'),'https://music.example.com');
+  const {env}=fixture();const old=globalThis.fetch;
+  globalThis.fetch=async()=>new Response('<html>Redirected</html>',{status:302,headers:{location:'http://127.0.0.1/api/tracks'}});
+  try{
+    const result=await syncFederatedFromGateway(env,{id:'p1',url:'https://v15.example.com'});
+    assert.equal(result.sources,0);assert.ok(result.errors.length>0);
+    assert.equal((await readVirtualLibrary(env.DB)).tracks.length,2);
+  }finally{globalThis.fetch=old;}
+});
+test('one-hop gateway federation discovers remote catalogues, artists, genres and playlist tracks',async()=>{
+  const {env}=fixture();const old=globalThis.fetch;
+  const gateway='https://v15.example.com',a='https://music-a.example.net',b='https://music-b.example.org';
+  const requests=[];
+  const songA={id:'songA',title:'Northern Lights',artist:'Aurora Group',album:'The Horizon',genre:'Ambient',duration:240,track_no:2};
+  const songB={id:'songB',title:'Moonlight Trail',artist:'Midnight Duo',album:'Blue Stars',duration:210,track_no:1};
+  const publicPl={id:'public01',name:'Across The WASP Network',username:'creator',is_public:1,
+    tracks:['songA','peer:sha256ref'],track_sources:{'peer:sha256ref':{origin:b,remote_id:'songB'}}};
+  const replies=new Map([
+    [gateway+'/api/peer',{ok:true}],
+    [a+'/api/peer',{ok:true}],
+    [gateway+'/api/network/peers',[
+      {id:'alpha',url:a,online:true},{id:'beta',url:b,online:true},
+      {id:'bad',url:'http://10.0.0.1:8080',online:true},
+      {id:'community',url:'https://random.example.net',online:true,community:true}]],
+    [gateway+'/api/peer-catalogue',[
+      {origin:a,tracks:[songA],playlists:[],users:[publicPl]}]],
+    [gateway+'/api/genres',{'Gateway Artist':['Pop']}],
+    [a+'/api/genres',{'Aurora Group':['Ambient']}],
+    [b+'/api/peer',{ok:true}],
+    [b+'/api/tracks',[songB]],
+    [b+'/api/playlists',[]],
+    [b+'/api/user-playlists',[]],
+    [b+'/api/genres',{'Midnight Duo':['Jazz']}],
+  ]);
+  globalThis.fetch=async (url,opts={})=>{
+    const u=new URL(url);const key=u.origin+u.pathname;requests.push({url:key,opts});
+    if(key===b+'/audio/songB')return new Response(new Uint8Array([7,8]),{status:206,headers:{'content-type':'audio/mpeg','content-range':'bytes 0-1/300','content-length':'2'}});
+    if(!replies.has(key))return new Response('Not found',{status:404,headers:{'content-type':'text/plain'}});
+    return new Response(JSON.stringify(replies.get(key)),{headers:{'content-type':'application/json'}});
+  };
+  try{
+    const synced=await syncFederatedFromGateway(env,{id:'p1',url:gateway});
+    assert.equal(synced.sources,2);assert.equal(synced.tracks,2);assert.equal(synced.playlists,1);
+    assert.equal(synced.errors.length,0);
+    assert.ok(!requests.some(x=>x.url.includes('10.0.0.1')||x.url.includes('random.example.net')));
+    const lib=await readVirtualLibrary(env.DB);
+    assert.equal(lib.tracks.length,4);assert.ok(lib.tracks.some(x=>x.title==='Moonlight Trail'));
+    assert.ok([...lib.artists.values()].some(x=>x.name==='Midnight Duo'));
+    const key=await provision(env);const auth={apiKey:key.secret,f:'json'};
+    let url=endpoint('search3',{...auth,query:'moonlight'});
+    let payload=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    assert.equal(payload.searchResult3.song.length,1);
+    const remoteId=payload.searchResult3.song[0].id;
+    assert.match(remoteId,/^f:o:/);
+    url=endpoint('getPlaylists',auth);
+    payload=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    const pl=payload.playlists.playlist.find(x=>x.name==='Across The WASP Network');
+    assert.ok(pl);
+    url=endpoint('getPlaylist',{...auth,id:pl.id});
+    payload=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    assert.deepEqual(payload.playlist.entry.map(x=>x.title),['Northern Lights','Moonlight Trail']);
+    url=endpoint('getGenres',auth);
+    payload=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    assert.ok(payload.genres.genre.some(x=>x.value==='Ambient'));
+    assert.ok(payload.genres.genre.some(x=>x.value==='Jazz'));
+    url=endpoint('getSongsByGenre',{...auth,genre:'Jazz'});
+    payload=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    assert.deepEqual(payload.songsByGenre.song.map(x=>x.title),['Moonlight Trail']);
+    url=endpoint('stream',{...auth,id:remoteId});
+    let res=await handleMobileRest(new Request(url,{headers:{range:'bytes=0-1',cookie:'private=never'}}),env,url);
+    assert.equal(res.status,206);assert.deepEqual([...new Uint8Array(await res.arrayBuffer())],[7,8]);
+    const request=requests.find(x=>x.url===b+'/audio/songB');
+    assert.ok(request);assert.equal(request.opts.headers.get('cookie'),null);
+    assert.equal(request.opts.headers.get('authorization'),null);
+    assert.equal(request.opts.headers.get('range'),'bytes=0-1');
+  }finally{globalThis.fetch=old;}
+});
+test('federation deduplicates mirrored songs and preserves a fallback streaming source',async()=>{
+  const {env}=fixture();const old=globalThis.fetch;
+  const gateway='https://v15.example.com',a='https://mirror-a.example.net',b='https://mirror-b.example.net';
+  const row={id:'same01',title:'Northern Sun',artist:'A Musician',album:'Album One',duration:120};
+  const responses={
+    [gateway+'/api/peer']:{ok:true},
+    [a+'/api/peer']:{ok:true},
+    [b+'/api/peer']:{ok:true},
+    [gateway+'/api/network/peers']:[{url:a},{url:b}],
+    [gateway+'/api/peer-catalogue']:[{origin:a,tracks:[row]},{origin:b,tracks:[row]}],
+    [gateway+'/api/genres']:{},[a+'/api/genres']:{},[b+'/api/genres']:{},
+  };
+  const requested=[];let firstSource='';
+  globalThis.fetch=async url=>{
+    const u=new URL(url),key=u.origin+u.pathname;requested.push(key);
+    if(key===firstSource+'/audio/same01')return new Response(null,{status:503});
+    if([a+'/audio/same01',b+'/audio/same01'].includes(key))return new Response(new Uint8Array([1,2,3]),{status:206,headers:{'content-type':'audio/mpeg','content-range':'bytes 0-2/300'}});
+    return responses[key] ? new Response(JSON.stringify(responses[key]),{headers:{'content-type':'application/json'}}):new Response('{}',{headers:{'content-type':'application/json'}});
+  };
+  try{
+    await syncFederatedFromGateway(env,{id:'p1',url:gateway});
+    const lib=await readVirtualLibrary(env.DB);
+    assert.equal(lib.tracks.filter(x=>x.title==='Northern Sun').length,1);
+    const song=lib.tracks.find(x=>x.title==='Northern Sun');assert.equal(song.alternatives.length,1);firstSource=song.origin;
+    const {secret}=await provision(env);const url=endpoint('stream',{apiKey:secret,id:song.id});
+    const response=await handleMobileRest(new Request(url),env,url);
+    assert.equal(response.status,206);assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[1,2,3]);
+    assert.ok(requested.includes(a+'/audio/same01'));assert.ok(requested.includes(b+'/audio/same01'));
+  }finally{globalThis.fetch=old;}
 });

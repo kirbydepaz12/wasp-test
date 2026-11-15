@@ -1,3 +1,4 @@
+import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
 /**
  * WASP v16 staging: an opt-in read-focused Subsonic/OpenSubsonic compatibility
  * adapter. WASP's native API, player, peer protocol, and music storage remain
@@ -6,7 +7,7 @@
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.1';
+const WASP_VERSION = '16.0.2';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -18,7 +19,17 @@ const bytesHex = b => [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0
 const unhex = h => Uint8Array.from(h.match(/../g)||[],v=>parseInt(v,16));
 const same = (a,b) => {a=String(a);b=String(b);if(a.length!==b.length)return false;let x=0;for(let i=0;i<a.length;i++)x|=a.charCodeAt(i)^b.charCodeAt(i);return x===0;};
 async function digest(s) {return bytesHex(await crypto.subtle.digest('SHA-256', encoder.encode(s)));}
-const randomSecret = () => 'wm_'+bytesHex(crypto.getRandomValues(new Uint8Array(32)));
+// 16 independent random base62 characters (~95 bits). Rejection sampling avoids
+// modulo bias; the key is an app-password, never a WASP login password.
+const ALPHABET='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+const randomSecret = () => {
+  let out='';
+  while(out.length<16){
+    const bytes=crypto.getRandomValues(new Uint8Array(32));
+    for(const value of bytes){if(value<Math.floor(256/ALPHABET.length)*ALPHABET.length)out+=ALPHABET[value%ALPHABET.length];if(out.length===16)break;}
+  }
+  return out;
+};
 const base64 = bytes => {let s='';for(const x of bytes)s+=String.fromCharCode(x);return btoa(s).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');};
 const from64 = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
 // MD5 is ONLY a legacy Subsonic handshake compatibility calculation. Passwords
@@ -171,6 +182,7 @@ function xmlNode(name,obj){
   for(const [key,value] of Object.entries(obj)){
     if(value===undefined||value===null)continue;
     if(typeof value==='object')kids.push(xmlNode(key,value));
+    else if(name==='genre' && key==='value')kids.push(escapeXml(value));
     else attrs.push(`${key}="${escapeXml(value)}"`);
   }
   return `<${name}${attrs.length?' '+attrs.join(' '):''}>${kids.join('')}</${name}>`;
@@ -233,44 +245,80 @@ function compactId(tag,value){
 function normalize(v){return clean(v,200).toLowerCase().replace(/\s+/g,' ');}
 function dedupKey(t){return [normalize(t.artist),normalize(t.title),normalize(t.album),Math.round(Number(t.duration)||0)].join('\0');}
 const LIMIT=6500;
+const originKey=(origin,id)=>origin+'\0'+id;
+const cleanGenres=arr=>Array.isArray(arr)?arr.filter(x=>typeof x==='string').map(x=>clean(x,80)).filter(Boolean).slice(0,6):[];
 export async function readVirtualLibrary(DB){
   const local=(await DB.prepare(`SELECT id,title,artist,album,track_no,duration,size,plays,created_at FROM tracks ORDER BY created_at DESC LIMIT ${LIMIT}`).all()).results;
-  const tracks=[],seen=new Set(),peerPlaylists=[];
-  function add(t){
-    if(!t||typeof t.id!=='string'||!/^[\w-]{1,120}$/.test(t.id))return;
-    const song={id:t.peerId?`p:${t.peerId}:${t.id}`:`l:${t.id}`, sourceId:t.id,peerId:t.peerId||'',origin:t.origin||'',
+  const tracks=[],seen=new Map(),peerPlaylists=[],playlistIds=new Set(),byOrigin=new Map(),aliases=new Map();
+  const federated=await readFederatedCatalogue(DB);
+  const authorizedOrigins=new Set(federated.map(x=>x.origin));
+  const gatewayPeers=(await DB.prepare('SELECT p.id,p.url FROM peers p JOIN peer_catalogue_cache c ON c.peer_id=p.id WHERE c.synced_at>0 ORDER BY p.added_at LIMIT 15').all()).results;
+  for(const p of gatewayPeers)authorizedOrigins.add(p.url);
+  const preferredSource=(t,origin,remoteId)=>({origin,remoteId,peerId:t.peerId||''});
+  function add(t,opts={}){
+    const sourceId=String(t?.id||'');if(!t||! /^[\w-]{1,120}$/.test(sourceId))return null;
+    const origin=opts.origin||'',peerId=opts.peerId||'',sourceKey=originKey(origin,sourceId);
+    const id=!origin?`l:${sourceId}`:opts.federated?`f:${compactId('o',origin)}:${sourceId}`:`p:${peerId}:${sourceId}`;
+    const song={id,sourceId,peerId,origin,
       title:clean(t.title,200)||'Unknown Track',artist:clean(t.artist,200)||'Unknown Artist',album:clean(t.album,200)||'Unknown Album',
-      track:n(t.track_no,0,999),duration:Math.max(0,Number(t.duration)||0),size:Math.max(0,Number(t.size)||0),
-      plays:Math.max(0,Number(t.plays)||0),created_at:Math.max(0,Number(t.created_at)||0)};
-    const key=dedupKey(song);if(seen.has(key))return;seen.add(key);tracks.push(song);
+      genre:clean(t.genre,80),track:n(t.track_no??t.track,0,999),duration:Math.max(0,Number(t.duration)||0),
+      size:Math.max(0,Number(t.size)||0),plays:Math.max(0,Number(t.plays)||0),created_at:Math.max(0,Number(t.created_at)||0),alternatives:[]};
+    const key=dedupKey(song);
+    if(seen.has(key)){
+      const canonical=seen.get(key);
+      if(origin && !canonical.alternatives.some(x=>x.origin===origin&&x.remoteId===sourceId) && !(canonical.origin===origin&&canonical.sourceId===sourceId))
+        canonical.alternatives.push(preferredSource(song,origin,sourceId));
+      byOrigin.set(sourceKey,canonical);aliases.set(id,canonical);return canonical;
+    }
+    seen.set(key,song);tracks.push(song);aliases.set(id,song);byOrigin.set(sourceKey,song);return song;
   }
   for(const t of local)add(t);
-  // Only administrator-added, explicitly synchronized peers are used. No
-  // visitor-controlled network targets; no MP3s are copied into this database.
-  const peerRows=(await DB.prepare('SELECT p.id,p.url FROM peers p JOIN peer_catalogue_cache c ON c.peer_id=p.id WHERE c.synced_at>0 ORDER BY p.added_at LIMIT 15').all()).results;
-  for(const p of peerRows){
-    if(!/^https?:\/\//.test(p.url))continue;
+  function takePlaylists(rows,kind,origin,peerId,namespace){
+    for(const pl of (Array.isArray(rows)?rows:[]).slice(0,MAX_PLAYLISTS)){
+      if(!pl || !/^[\w-]{1,120}$/.test(String(pl.id||'')) || !Array.isArray(pl.tracks) || (kind==='users'&&!pl.is_public))continue;
+      const id=namespace==='direct'?`vp:${peerId}:${pl.id}${kind==='users'?':user':''}`:
+        `vf:${compactId('o',origin)}:${pl.id}${kind==='users'?':user':''}`;
+      if(playlistIds.has(id))continue;
+      playlistIds.add(id);
+      peerPlaylists.push({id,origin,peerId,name:clean(pl.name,80)||'WASP peer playlist',
+        owner:kind==='users'?clean(pl.username,80)||'WASP member':'WASP peer',created_at:Number(pl.created_at)||0,
+        tracks:pl.tracks.slice(0,1500),track_sources:pl.track_sources||{}});
+    }
+  }
+  const MAX_PLAYLISTS=500;
+  for(const p of gatewayPeers){
     const chunks=(await DB.prepare("SELECT body FROM peer_catalogue_chunks WHERE peer_id=? AND kind='tracks' ORDER BY shard").bind(p.id).all()).results;
     for(const chunk of chunks){
       let list;try{list=JSON.parse(chunk.body);}catch{continue;}
-      if(!Array.isArray(list))continue;
-      for(const t of list.slice(0,LIMIT))add({...t,peerId:p.id,origin:p.url});
+      if(Array.isArray(list))for(const t of list.slice(0,LIMIT))add(t,{origin:p.url,peerId:p.id});
     }
-    // Read-only server playlists and publicly shared member playlists from
-    // synchronized v15 peer metadata. Never access a peer's private playlist.
     for(const kind of ['playlists','users']){
       const parts=(await DB.prepare('SELECT body FROM peer_catalogue_chunks WHERE peer_id=? AND kind=? ORDER BY shard').bind(p.id,kind).all()).results;
       for(const part of parts){
-        let rows;try{rows=JSON.parse(part.body);}catch{continue;}
-        if(!Array.isArray(rows))continue;
-        for(const pl of rows.slice(0,500)){
-          if(!pl || !/^[\w-]{1,120}$/.test(String(pl.id||'')) || !Array.isArray(pl.tracks) || (kind==='users'&&!pl.is_public))continue;
-          peerPlaylists.push({id:`vp:${p.id}:${pl.id}`,peerId:p.id,name:clean(pl.name,80)||'WASP peer playlist',
-            owner:kind==='users'?clean(pl.username,80)||'WASP member':'WASP peer',created_at:Number(pl.created_at)||0,
-            tracks:pl.tracks.slice(0,1500).filter(x=>/^[\w-]{1,120}$/.test(String(x)))});
-        }
+        let list;try{list=JSON.parse(part.body);}catch{continue;}
+        takePlaylists(list,kind,p.url,p.id,'direct');
       }
     }
+  }
+  for(const source of federated){
+    // Federated endpoints are obtained only from already trusted gateway
+    // snapshots and must use publicly routable HTTPS URLs.
+    if(!publicPeerOrigin(source.origin))continue;
+    for(const t of source.tracks.slice(0,LIMIT))add(t,{origin:source.origin,peerId:source.gatewayId,federated:true});
+    for(const kind of ['playlists','users'])takePlaylists(source[kind],kind,source.origin,source.gatewayId,'federated');
+  }
+  // Genres are optional metadata. Do not invent a genre for uncategorized music.
+  const genresByArtist=new Map();
+  try{
+    const rows=(await DB.prepare("SELECT name,genres FROM artist_info WHERE genres!='[]'").all()).results;
+    for(const r of rows){let list=[];try{list=JSON.parse(r.genres);}catch{}
+      if(Array.isArray(list))genresByArtist.set(normalize(r.name),cleanGenres(list));}
+  }catch{} // legacy test installations without optional artist metadata
+  for(const source of federated)for(const [name,list] of Object.entries(source.genres||{})){
+    if(Array.isArray(list)&&list.length)genresByArtist.set(normalize(name),cleanGenres(list));
+  }
+  for(const t of tracks){
+    if(!t.genre)t.genre=genresByArtist.get(normalize(t.artist))?.[0]||'';
   }
   const artists=new Map(),albums=new Map(),byId=new Map();
   for(const t of tracks){
@@ -283,7 +331,8 @@ export async function readVirtualLibrary(DB){
     const album=albums.get(bid);album.songs.push(t);album.created_at=Math.max(album.created_at,t.created_at);
     byId.set(t.id,t);
   }
-  return {tracks,byId,artists,albums,peerPlaylists};
+  for(const [id,t] of aliases)byId.set(id,t);
+  return {tracks,byId,byOrigin,authorizedOrigins,artists,albums,peerPlaylists};
 }
 // Short-lived isolate cache avoids rereading large v15 peer snapshots for
 // every Subsonic /stream range request. No credentials are cached here.
@@ -297,7 +346,7 @@ async function libraryForRequest(DB){
 }
 function songOut(t){return {id:t.id,parent:t.albumId,isDir:false,title:t.title,album:t.album,artist:t.artist,
   artistId:t.artistId,albumId:t.albumId,track:t.track||1,discNumber:1,duration:Math.round(t.duration),size:Math.round(t.size),
-  suffix:'mp3',contentType:'audio/mpeg',type:'music',isVideo:false,coverArt:t.id,
+  suffix:'mp3',contentType:'audio/mpeg',type:'music',isVideo:false,coverArt:t.id,...(t.genre?{genre:t.genre}:{}),
   ...(t.created_at?{created:new Date(t.created_at).toISOString()}:{}),playCount:t.plays};}
 function albumOut(a){return {id:a.id,name:a.name,artist:a.artist,artistId:a.artistId,songCount:a.songs.length,duration:Math.round(a.songs.reduce((s,t)=>s+t.duration,0)),
   ...(a.created_at?{created:new Date(a.created_at).toISOString()}:{}),coverArt:a.songs[0]?.id};}
@@ -324,13 +373,15 @@ async function audio(req,env,t){
   if(!t.peerId)return Response.redirect(new URL('/audio/'+encodeURIComponent(t.sourceId),req.url),req.method==='POST'?303:307);
   if(!/^https?:\/\//.test(t.origin))return new Response('Peer unavailable',{status:502,headers:NO_STORE});
   const h=new Headers();for(const k of ['range','if-range'])if(req.headers.has(k))h.set(k,req.headers.get(k));
-  const peerUrl=t.origin.replace(/\/$/,'')+'/audio/'+encodeURIComponent(t.sourceId);
-  let response;try{response=await fetch(peerUrl,{method:req.method==='HEAD'?'HEAD':'GET',headers:h,redirect:'manual',signal:AbortSignal.timeout(20000)});}
-  catch{return new Response('Peer stream unavailable',{status:502,headers:NO_STORE});}
-  // NEVER follow redirects from a configured peer to a potentially private
-  // address, and never forward cookies or mobile credentials upstream.
-  if(![200,206,416].includes(response.status))return new Response('Peer stream unavailable',{status:502,headers:NO_STORE});
-  return mimeResponse(response,req.method==='HEAD');
+  const sources=[{origin:t.origin,remoteId:t.sourceId},...(t.alternatives||[])].filter(x=>x.origin);
+  for(const source of sources){
+    // Never forward incoming cookies, device tokens or Authorization headers.
+    const peerUrl=source.origin.replace(/\/$/,'')+'/audio/'+encodeURIComponent(source.remoteId);
+    let response;try{response=await fetch(peerUrl,{method:req.method==='HEAD'?'HEAD':'GET',headers:h,redirect:'manual',signal:AbortSignal.timeout(20000)});}
+    catch{continue;}
+    if([200,206,416].includes(response.status))return mimeResponse(response,req.method==='HEAD');
+  }
+  return new Response('Peer stream unavailable',{status:502,headers:NO_STORE});
 }
 async function art(req,env,t){
   if(!t)return new Response(null,{status:404,headers:NO_STORE});
@@ -392,7 +443,13 @@ export async function handleMobileRest(req,env,url){
     }
     return protoError(70,'Music directory not found',format);
   }
-  if(action==='getGenres')return protocolResponse({genres:{genre:[]}},null,format);
+  if(action==='getGenres'){
+    const counts=new Map();
+    for(const t of tracks)if(t.genre){const key=normalize(t.genre);const x=counts.get(key)||{value:t.genre,songCount:0,albumIds:new Set()};
+      x.songCount++;x.albumIds.add(t.albumId);counts.set(key,x);}
+    return protocolResponse({genres:{genre:[...counts.values()].sort((a,b)=>a.value.localeCompare(b.value))
+      .map(({value,songCount,albumIds})=>({value,songCount,albumCount:albumIds.size}))}},null,format);
+  }
   if(action==='search3'||action==='search2'||action==='search'){
     const query=normalize(p.get('query'));
     const songHits=tracks.filter(t=>!query||[t.title,t.artist,t.album].some(s=>normalize(s).includes(query)));
@@ -422,7 +479,16 @@ export async function handleMobileRest(req,env,url){
     if(action==='getPlaylists')return protocolResponse({playlists:{playlist:[...pls.map(x=>({id:x.id,name:x.name,owner:x.is_public?'WASP community':auth.username,public:!!x.is_public,created:new Date(x.created_at||Date.now()).toISOString(),songCount:0})),...peerPls.map(x=>({id:x.id,name:x.name,owner:x.owner,public:true,created:new Date(x.created_at||Date.now()).toISOString(),songCount:x.tracks.length}))]}},null,format);
     const peerPlaylist=peerPls.find(x=>x.id===id);
     if(peerPlaylist){
-      const songs=peerPlaylist.tracks.map(id=>catalogue.byId.get(`p:${peerPlaylist.peerId}:${id}`)).filter(Boolean);
+      const songs=peerPlaylist.tracks.map(item=>{
+        const ref=typeof item==='string'?item:String(item?.id||'');
+        const remote=peerPlaylist.track_sources?.[ref];
+        if(remote){
+          const origin=String(remote.origin||'').replace(/\/$/,'');
+          if(!catalogue.authorizedOrigins.has(origin))return null;
+          return catalogue.byOrigin.get(originKey(origin,String(remote.remote_id||'')))||null;
+        }
+        return catalogue.byOrigin.get(originKey(peerPlaylist.origin,ref))||catalogue.byId.get(ref)||null;
+      }).filter(Boolean);
       return protocolResponse({playlist:{id:peerPlaylist.id,name:peerPlaylist.name,owner:peerPlaylist.owner,public:true,songCount:songs.length,entry:songs.map(songOut)}},null,format);
     }
     const pl=pls.find(x=>x.id===id);
@@ -437,7 +503,7 @@ export async function handleMobileRest(req,env,url){
     const resolved=links.map(x=>{
       const src=x.track_id;if(catalogue.byId.has('l:'+src))return catalogue.byId.get('l:'+src);
       const r=refs.get(src);if(!r)return null;
-      return tracks.find(t=>t.origin===r.origin&&t.sourceId===r.remote_id)||null;
+      return catalogue.byOrigin.get(originKey(r.origin,r.remote_id))||null;
     }).filter(Boolean);
     return protocolResponse({playlist:{id:pl.id,name:pl.name,owner:auth.username,public:!!pl.is_public,songCount:resolved.length,entry:resolved.map(songOut)}},null,format);
   }
@@ -453,7 +519,11 @@ export async function handleMobileRest(req,env,url){
   }
   if(action==='getArtistInfo'||action==='getArtistInfo2')return protocolResponse({[action==='getArtistInfo'?'artistInfo':'artistInfo2']:{biography:'',musicBrainzId:''}},null,format);
   if(action==='getAlbumInfo'||action==='getAlbumInfo2')return protocolResponse({[action==='getAlbumInfo'?'albumInfo':'albumInfo2']:{notes:'',musicBrainzId:''}},null,format);
-  if(action==='getSongsByGenre')return protocolResponse({songsByGenre:{song:[]}},null,format);
+  if(action==='getSongsByGenre'){
+    const genre=normalize(p.get('genre'));
+    return protocolResponse({songsByGenre:{song:tracks.filter(t=>genre&&normalize(t.genre)===genre)
+      .slice(n(p.get('offset'),0,100000),n(p.get('offset'),0,100000)+n(p.get('count'),10,500)).map(songOut)}},null,format);
+  }
   if(action==='getScanStatus')return protocolResponse({scanStatus:{scanning:false}},null,format);
   if(action==='getLyrics'||action==='getLyricsBySongId'){
     // Lyrics are an optional compatibility function. Do not initiate remote
