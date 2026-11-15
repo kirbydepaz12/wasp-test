@@ -6,7 +6,7 @@
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.0';
+const WASP_VERSION = '16.0.1';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -47,10 +47,31 @@ export function legacyMd5(value){
   }
   return [a0,b0,c0,d0].map(x=>[0,8,16,24].map(s=>((x>>>s)&255).toString(16).padStart(2,'0')).join('')).join('');
 }
-function encryptionSeed(env){return String(env.MOBILE_BRIDGE_SECRET || env.SCANNER_SECRET || '');}
+// Server-managed bridge secret. Only the server reads this settings row; no
+// endpoint ever returns its value. Optional Docker legacy fallback preserves
+// credentials created under the original v16.0.0 SCANNER_SECRET deployment.
+const SEED_SETTING='mobile_bridge_secret_v1';
+const secretLooksValid=s=>typeof s==='string' && s.length>=32;
+async function encryptionSeed(env){
+  const row=await env.DB.prepare('SELECT value FROM settings WHERE key=?').bind(SEED_SETTING).first();
+  if(secretLooksValid(row?.value))return row.value;
+  const docker=String(env.SCANNER_SECRET||'');
+  if(secretLooksValid(docker))return docker;
+  // Migration-only fallback: existing v16.0.0 Cloudflare credentials keep
+  // working until the operator explicitly configures WASP-managed storage.
+  const legacy=String(env.MOBILE_BRIDGE_SECRET||'');
+  return secretLooksValid(legacy)?legacy:'';
+}
+async function secretStatus(env){
+  const row=await env.DB.prepare('SELECT value FROM settings WHERE key=?').bind(SEED_SETTING).first();
+  if(secretLooksValid(row?.value))return {secret_ready:true,secret_source:'wasp'};
+  if(secretLooksValid(String(env.SCANNER_SECRET||'')))return {secret_ready:true,secret_source:'docker'};
+  if(secretLooksValid(String(env.MOBILE_BRIDGE_SECRET||'')))return {secret_ready:true,secret_source:'legacy'};
+  return {secret_ready:false,secret_source:'none'};
+}
 async function encryptionKey(env){
-  const secret=encryptionSeed(env);
-  if(secret.length<24) throw Error('Configure a strong MOBILE_BRIDGE_SECRET in staging Worker secrets (or Docker SCANNER_SECRET) before generating mobile credentials.');
+  const secret=await encryptionSeed(env);
+  if(!secretLooksValid(secret)) throw Error('Mobile Bridge setup required. Ask the administrator to generate a secure secret under Network → Mobile Bridge.');
   const bytes=await crypto.subtle.digest('SHA-256',encoder.encode('WASP-MOBILE-BRIDGE-v1\0'+secret));
   return crypto.subtle.importKey('raw',bytes,{name:'AES-GCM'},false,['encrypt','decrypt']);
 }
@@ -79,21 +100,50 @@ export async function manageMobileBridge(req,env,role,userId){
   await ensureMobileSchema(env.DB);
   const path=new URL(req.url).pathname,method=req.method;
   if(path==='/api/admin/mobile-bridge' && role==='admin'){
-    if(method==='GET')return webJson({enabled:await enabled(env.DB),secret_ready:encryptionSeed(env).length>=24});
+    if(method==='GET')return webJson({enabled:await enabled(env.DB),...await secretStatus(env)});
     if(method==='PUT'){
       const body=await req.json().catch(()=>({}));
       if(typeof body.enabled!=='boolean')return webJson({error:'enabled must be boolean'},400);
       await env.DB.prepare("INSERT INTO settings(key,value) VALUES('mobile_bridge_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.enabled?'1':'0').run();
-      return webJson({enabled:body.enabled,secret_ready:encryptionSeed(env).length>=24});
+      return webJson({enabled:body.enabled,...await secretStatus(env)});
     }
+  }
+  if(path==='/api/admin/mobile-bridge/secret' && role==='admin' && method==='POST'){
+    const body=await req.json().catch(()=>({}));
+    const current=await secretStatus(env);
+    const replacing=body.action==='rotate';
+    if(body.action==='migrate'){
+      if(current.secret_source==='wasp')return webJson({error:'Already using a WASP-managed secret.'},409);
+      if(!current.secret_ready)return webJson({error:'No legacy secret is available to migrate.'},400);
+      const previous=await encryptionSeed(env);
+      await env.DB.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(SEED_SETTING,previous).run();
+      return webJson({ok:true,enabled:await enabled(env.DB),...await secretStatus(env),revoked_all:false});
+    }
+    if(!['generate','import','rotate'].includes(body.action))return webJson({error:'Unknown secret setup action'},400);
+    if(current.secret_ready&&!replacing)return webJson({error:'A Mobile Bridge secret already exists. Use Reset secret only if necessary.'},409);
+    if(replacing && (!current.secret_ready || body.confirm!=='RESET'))return webJson({error:'Type RESET to confirm revoking all mobile credentials.'},400);
+    if(body.action==='import' && current.secret_ready)return webJson({error:'An existing secret is already configured.'},409);
+    let secret;
+    if(body.action==='import'){
+      secret=String(body.secret||'').trim();
+      // Imported values must be cryptographically generated, not simple words.
+      if(!/^[a-f0-9]{64,128}$/i.test(secret))return webJson({error:'Paste a securely generated 64–128 character hexadecimal secret.'},400);
+    }else secret=bytesHex(crypto.getRandomValues(new Uint8Array(32)));
+    // A reset is atomic: never leave old credentials around with a new key.
+    const statement=env.DB.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(SEED_SETTING,secret);
+    if(replacing){
+      await env.DB.batch([env.DB.prepare('DELETE FROM mobile_scrobble_events'),env.DB.prepare('DELETE FROM mobile_bridge_keys'),statement]);
+    }else await statement.run();
+    return webJson({ok:true,enabled:await enabled(env.DB),...await secretStatus(env),revoked_all:replacing});
   }
   if(path==='/api/user/mobile-keys' && role==='user' && userId){
     if(method==='GET'){
       const rows=(await env.DB.prepare('SELECT id,label,created_at,last_used FROM mobile_bridge_keys WHERE user_id=? ORDER BY created_at DESC').bind(userId).all()).results;
-      return webJson({enabled:await enabled(env.DB),secret_ready:encryptionSeed(env).length>=24,keys:rows});
+      return webJson({enabled:await enabled(env.DB),secret_ready:(await secretStatus(env)).secret_ready,keys:rows});
     }
     if(method==='POST'){
       if(!await enabled(env.DB))return webJson({error:'Mobile Bridge is disabled by the server administrator.'},403);
+      if(!(await secretStatus(env)).secret_ready)return webJson({error:'Mobile Bridge setup required. An administrator must generate the server secret under Network → Mobile Bridge.'},503);
       const body=await req.json().catch(()=>({})),label=clean(body.label,64);
       if(label.length<2)return webJson({error:'Give the device a name (2-64 characters).'},400);
       const count=await env.DB.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys WHERE user_id=?').bind(userId).first();

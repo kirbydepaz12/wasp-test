@@ -26,7 +26,7 @@ window.fetch=async(input,opts={})=>{
  else if(['/api/active-streams','/api/requests','/api/playlists','/api/user-playlists','/api/network/peers'].includes(p))body=[];
  else if(['/api/peer-reactions','/api/entity-reactions'].includes(p))body={};
  else if(p==='/api/user/peer-tracks'){body={error:'none'};status=401;}
- else if(p==='/api/user/mobile-keys'&&m==='GET')body={enabled:true,secret_ready:true,keys:mt.keys};
+ else if(p==='/api/user/mobile-keys'&&m==='GET')body={enabled:true,secret_ready:mt.ready!==false,keys:mt.keys};
  else if(p==='/api/user/mobile-keys'&&m==='POST'){
     let label=JSON.parse(opts.body).label;const item={id:'key1',label,created_at:Date.now(),last_used:0};
     mt.keys.push(item);body={...item,secret:'wm_test_secret'};mt.secrets.push('wm_test_secret');status=201;
@@ -60,6 +60,12 @@ with sync_playwright() as pw:
  page.locator('#mobileKeyList [data-revoke-mobile="key1"]').click()
  page.wait_for_function('window.__mobileTest.keys.length===0')
  assert page.evaluate('window.__mobileTest.requests.some(x=>x[0].endsWith("/key1")&&x[1]==="DELETE")')
+ page.evaluate('window.__mobileTest.ready=false')
+ page.locator('#accountSettingsDialog [data-settings-tab="account"]').click()
+ page.locator('#accountSettingsDialog [data-settings-tab="mobile"]').click()
+ page.locator('#createMobileKey button[type="submit"]').wait_for(timeout=10000)
+ assert page.locator('#createMobileKey button[type="submit"]').is_disabled()
+ assert 'Setup required' in page.locator('#accountSettingsContent').inner_text()
  page.keyboard.press('Escape')
  page.locator('#accountSettingsDialog').wait_for(state='hidden',timeout=10000)
  assert page.evaluate('location.hash')=='#listened'

@@ -4,10 +4,10 @@ from playwright.sync_api import sync_playwright
 import re
 P=Path(__file__).resolve().parents[1]/'public'
 style=(P/'style.css').read_text()
-admin_html=(P/'admin.html').read_text().replace('<link rel="stylesheet" href="/style.css?v=15.0.6">',f'<style>{style}</style>')
+admin_html=re.sub(r'<link rel="stylesheet" href="/style.css(?:\?v=[^"]+)?">',f'<style>{style}</style>',(P/'admin.html').read_text())
 admin_html=re.sub(r'<script[^>]*src="/admin.js(?:\?v=[^"]+)?"[^>]*></script>','',admin_html)
 admin_script=re.sub(r'^import .*?;\n','',(P/'admin.js').read_text(),flags=re.M)
-app_html=(P/'index.html').read_text().replace('<head>','<head><base href="https://wasp-test.invalid/">').replace('<link rel="stylesheet" href="/style.css?v=15.0.6">',f'<style>{style}</style>')
+app_html=re.sub(r'<link rel="stylesheet" href="/style.css(?:\?v=[^"]+)?">',f'<style>{style}</style>',(P/'index.html').read_text().replace('<head>','<head><base href="https://wasp-test.invalid/">'))
 app_html=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',app_html)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')

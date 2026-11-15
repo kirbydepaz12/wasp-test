@@ -6,8 +6,8 @@
 
 
 > [!IMPORTANT]
-> **WASP v16.0.0 STAGING — Mobile Bridge (Subsonic / OpenSubsonic translator)**
-> This repository contains a **test release** intended for a **separate GitHub repository, Cloudflare Worker, D1 database, R2 bucket and Docker stack**, not an in-place upgrade over your active v15 site. Keep your existing v15 server as a read-only network peer supplying music to v16. The `/mobile` endpoint is optional and disabled by default. **Start with [the v16 staging deployment and security guide](docs/V16-0-0-MOBILE-BRIDGE-STAGING.md)** before importing this source.
+> **WASP v16.0.1 STAGING — Mobile Bridge Setup (Subsonic / OpenSubsonic translator)**
+> This repository contains a **test release** intended for a **separate GitHub repository, Cloudflare Worker, D1 database, R2 bucket and Docker stack**, not an in-place upgrade over your active v15 site. Keep your existing v15 server as a read-only network peer supplying music to v16. The `/mobile` endpoint is optional and disabled by default. **Start with [the v16.0.1 Mobile Bridge setup guide](docs/V16-0-1-MOBILE-BRIDGE-MANAGED-SECRET.md)** before importing this source.
 
 WASP is a **peer-to-peer music webapp** that lets people host their own music libraries and connect them to other WASP-compatible servers. You can listen to music on your own server or discover music shared by connected hosts. Each host controls their own library and whether to share it over the network.
 

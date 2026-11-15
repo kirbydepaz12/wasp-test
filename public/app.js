@@ -2174,10 +2174,10 @@ async function renderAccountSettingsSection(which="account"){
       if(!response.ok)throw Error('Could not load Mobile Bridge access.');
       const mobile=await response.json();
       if(token!==accountSettingsTabToken||!d.open)return;
-      place.innerHTML=`<div class="settings-panel"><h3>WASP Mobile Bridge <span class="muted">· v16 staging</span></h3>
+      place.innerHTML=`<div class="settings-panel"><h3>WASP Mobile Bridge <span class="muted">· v16.0.1 staging</span></h3>
         <p class="muted">Connect Subsonic / OpenSubsonic applications to this WASP server. Use a separate key per device. Do not enter your WASP website password into a mobile player.</p>
         <p><strong>Server URL:</strong> <code>${esc(location.origin)}/mobile</code> <button type="button" class="btn ghost" id="copyMobileUrl">Copy URL</button></p>
-        <p class="muted">Server status: ${mobile.enabled?'Enabled':'Disabled by administrator'}. ${mobile.secret_ready?'Mobile credentials available.':'Server encryption secret is missing.'}</p>
+        <p class="muted">Server status: ${mobile.enabled?'Enabled':'Disabled by administrator'}. ${mobile.secret_ready?'Mobile credentials available.':'Setup required. Ask an administrator to configure the secret under Admin → Network → Mobile Bridge.'}</p>
         <form id="createMobileKey" class="password-form" autocomplete="off"><label>Device / app name
           <input name="label" required minlength="2" maxlength="64" placeholder="My Android music player"></label>
           <button type="submit" class="btn" ${!mobile.enabled||!mobile.secret_ready?'disabled':''}>Generate mobile app key</button></form>
@@ -2202,7 +2202,7 @@ async function renderAccountSettingsSection(which="account"){
           row.append(label,revoke);list.querySelector('.muted')?.remove();list.prepend(row);
           settingsFeedback(place.querySelector('#mobileFeedback'),'Mobile key created. Store it securely.');
         }catch(err){settingsFeedback(place.querySelector('#mobileFeedback'),err.message,true);}
-        finally{button.disabled=false;}
+        finally{button.disabled=!mobile.enabled||!mobile.secret_ready;}
       };
       place.querySelector('#mobileKeyList').addEventListener('click',async e=>{
         const button=e.target.closest('[data-revoke-mobile]');if(!button)return;

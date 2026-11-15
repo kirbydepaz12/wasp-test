@@ -1,4 +1,6 @@
-# WASP v16.0.0 — Mobile Bridge (STAGING RELEASE)
+# WASP v16.0.0 — Mobile Bridge (ORIGINAL STAGING RELEASE)
+
+> **Superseded for new deployments:** Use `V16-0-1-MOBILE-BRIDGE-MANAGED-SECRET.md` for current staging setup. This document preserves the original v16.0.0 procedures, which required a runtime secret. v16.0.1 does not require that Cloudflare secret.
 
 **Audience:** Operators who want to test Subsonic/OpenSubsonic clients against WASP while leaving a working v15 production deployment untouched.
 

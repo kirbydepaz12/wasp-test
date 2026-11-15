@@ -30,7 +30,7 @@ function fixture(){
   db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('playlist01','user1','My Songs',0,Date.now());
   db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('playlist01','local01',Date.now());
   const DB={prepare(sql){let args=[];return {bind(...values){args=values;return this;},first(){return db.prepare(sql).get(...args)||null;},all(){return {results:db.prepare(sql).all(...args)};},run(){const x=db.prepare(sql).run(...args);return {meta:{changes:x.changes}};}};},batch(stmts){return stmts.map(x=>x.run());}};
-  const env={DB,MOBILE_BRIDGE_SECRET:'a-really-long-random-mobile-stage-secret-should-be-outside-code'};
+  const env={DB};
   return {db,DB,env};
 }
 const data=async response=>response.json();
@@ -45,6 +45,7 @@ async function enable(env){
 }
 async function provision(env){
   await enable(env);
+  await manageMobileBridge(new Request('https://stage.example.com/api/admin/mobile-bridge/secret',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'generate'})}),env,'admin');
   const req=new Request('https://stage.example.com/api/user/mobile-keys',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label:'Test Phone'})});
   const res=await manageMobileBridge(req,env,'user','user1');
   assert.equal(res.status,201);return data(res);
@@ -162,4 +163,66 @@ test('scrobble writes only staging data; does not write to upstream peer',async(
   await handleMobileRest(new Request(url),env,url); // retry must not double count
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM recent_listens').get().n,1);
   assert.equal(db.prepare('SELECT plays FROM peer_listens').get().plays,1);
+});
+
+async function secretAction(env,body){
+  return manageMobileBridge(new Request('https://stage.example.com/api/admin/mobile-bridge/secret',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}),env,'admin');
+}
+test('without a configured secret, members cannot generate keys even with mobile bridge enabled',async()=>{
+  const {env,db}=fixture();await enable(env);
+  const before=await data(await manageMobileBridge(new Request('https://stage.example.com/api/admin/mobile-bridge'),env,'admin'));
+  assert.equal(before.secret_ready,false);assert.equal(before.secret_source,'none');
+  const list=await data(await manageMobileBridge(new Request('https://stage.example.com/api/user/mobile-keys'),env,'user','user1'));
+  assert.equal(list.secret_ready,false);assert.equal(list.keys.length,0);
+  const denied=await manageMobileBridge(new Request('https://stage.example.com/api/user/mobile-keys',{method:'POST',headers:{'content-type':'application/json'},body:'{"label":"My Phone"}'}),env,'user','user1');
+  assert.equal(denied.status,503);
+  assert.match((await data(denied)).error,/setup required/i);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys').get().n,0);
+});
+test('administrator can generate or import a managed server secret; neither status endpoint returns its value',async()=>{
+  const {env,db}=fixture();
+  const invalid=await secretAction(env,{action:'import',secret:'password'.repeat(10)});
+  assert.equal(invalid.status,400);
+  const accepted=await secretAction(env,{action:'generate'});
+  assert.equal(accepted.status,200);const status=await data(accepted);
+  assert.equal(status.secret_ready,true);assert.equal(status.secret_source,'wasp');
+  assert.equal(status.secret,undefined);
+  const row=db.prepare("SELECT value FROM settings WHERE key='mobile_bridge_secret_v1'").get();
+  assert.match(row.value,/^[a-f0-9]{64}$/);
+  const duplicate=await secretAction(env,{action:'generate'});assert.equal(duplicate.status,409);
+  const admin=await data(await manageMobileBridge(new Request('https://stage.example.com/api/admin/mobile-bridge'),env,'admin'));
+  assert.equal(admin.secret,undefined);assert.equal(admin.secret_ready,true);
+  const other=fixture();
+  const imported=await secretAction(other.env,{action:'import',secret:'a'.repeat(64)});
+  assert.equal(imported.status,200);assert.equal((await data(imported)).secret_source,'wasp');
+});
+test('reset requires exact confirmation and atomically revokes previous mobile keys',async()=>{
+  const {env,db}=fixture();const {secret}=await provision(env);
+  const denied=await secretAction(env,{action:'rotate',confirm:'reset'});
+  assert.equal(denied.status,400);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys').get().n,1);
+  const reset=await secretAction(env,{action:'rotate',confirm:'RESET'});
+  assert.equal(reset.status,200);assert.equal((await data(reset)).revoked_all,true);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys').get().n,0);
+  const url=endpoint('ping',{apiKey:secret,f:'json'});
+  const result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(result.status,'failed');
+  const newer=await manageMobileBridge(new Request('https://stage.example.com/api/user/mobile-keys',{method:'POST',headers:{'content-type':'application/json'},body:'{"label":"Replacement phone"}'}),env,'user','user1');
+  assert.equal(newer.status,201);
+});
+test('existing Docker and Cloudflare runtime secrets can migrate into D1 without invalidating mobile keys',async()=>{
+  const {env,db}=fixture();env.MOBILE_BRIDGE_SECRET='migratable-legacy-secret-value-that-is-long-enough';
+  const {secret}=await provision(env);
+  // Provision generated a WASP secret in this fixture. Exercise a true older
+  // configuration by dropping its managed setting and re-sealing as v16.0.0.
+  db.prepare("DELETE FROM settings WHERE key='mobile_bridge_secret_v1'").run();
+  db.prepare('DELETE FROM mobile_bridge_keys').run();
+  const old=await manageMobileBridge(new Request('https://stage.example.com/api/user/mobile-keys',{method:'POST',headers:{'content-type':'application/json'},body:'{"label":"Old app"}'}),env,'user','user1');
+  assert.equal(old.status,201);const oldKey=(await data(old)).secret;
+  const result=await data(await secretAction(env,{action:'migrate'}));
+  assert.equal(result.secret_source,'wasp');
+  delete env.MOBILE_BRIDGE_SECRET;
+  const salt='abc123';const url=endpoint('ping',{u:'listener',t:legacyMd5(oldKey+salt),s:salt,f:'json'});
+  assert.equal((await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].status,'ok');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM mobile_bridge_keys').get().n,1);
 });

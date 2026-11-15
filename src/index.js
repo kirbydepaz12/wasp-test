@@ -5,8 +5,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "16.0.0";
-const BUILD_LABEL = "Mobile Bridge · OpenSubsonic Staging";
+const BUILD_VERSION = "16.0.1";
+const BUILD_LABEL = "Mobile Bridge Setup · OpenSubsonic Staging";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2218,7 +2218,7 @@ async function api(req, env, url, ctx) {
   // ---------- admin only ----------
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
-  if(path==="/api/admin/mobile-bridge") return manageMobileBridge(req,env,"admin",null);
+  if(path==="/api/admin/mobile-bridge" || path==="/api/admin/mobile-bridge/secret") return manageMobileBridge(req,env,"admin",null);
   if(path==="/api/admin/version" && m==="GET") return json({version:BUILD_VERSION,label:BUILD_LABEL},200,{"cache-control":"no-store"});
   if(path==="/api/admin/docs" && m==="GET") {
     const name=url.searchParams.get("name");
