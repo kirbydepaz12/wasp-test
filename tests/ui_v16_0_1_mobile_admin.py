@@ -2,11 +2,11 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 p=Path(__file__).resolve().parents[1]
-html=(p/'public/admin.html').read_text().replace('<script type="module" src="/admin.js?v=16.0.2"></script>','')
+html=(p/'public/admin.html').read_text().replace('<script type="module" src="/admin.js?v=16.0.3"></script>','')
 css=(p/'public/style.css').read_text()
-html=html.replace('<link rel="stylesheet" href="/style.css?v=16.0.2">',f'<style>{css}</style>')
+html=html.replace('<link rel="stylesheet" href="/style.css?v=16.0.3">',f'<style>{css}</style>')
 src=(p/'public/admin.js').read_text()
-segment=src[src.index('// WASP v16.0.2 Mobile Bridge:'):src.index('// ---------- general settings: branding')]
+segment=src[src.index('// WASP v16.0.3 Mobile Bridge:'):src.index('// ---------- general settings: branding')]
 nav=src[src.index('let cronsLoaded=false;'):src.index('function cronJobTemplate(key){')]
 script="""const $=s=>document.querySelector(s);
 const post=(url,body,method='POST')=>fetch(url,{method,headers:{'content-type':'application/json'},body:JSON.stringify(body)});

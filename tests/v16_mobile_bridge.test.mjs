@@ -13,6 +13,8 @@ function fixture(){
     'CREATE TABLE peer_catalogue_cache(peer_id TEXT PRIMARY KEY,synced_at INTEGER)',
     'CREATE TABLE peer_catalogue_chunks(peer_id TEXT,kind TEXT,shard INTEGER,body TEXT)',
     'CREATE TABLE user_playlists(id TEXT,user_id TEXT,name TEXT,is_public INTEGER,created_at INTEGER)',
+    'CREATE TABLE playlists(id TEXT,name TEXT,created_at INTEGER)',
+    'CREATE TABLE playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE user_playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE peer_track_refs(ref TEXT,origin TEXT,remote_id TEXT)',
     'CREATE TABLE user_song_reactions(user_id TEXT,track_id TEXT,kind TEXT)',
@@ -28,6 +30,8 @@ function fixture(){
   db.prepare('INSERT INTO peer_catalogue_chunks VALUES (?,?,?,?)').run('p1','playlists',0,JSON.stringify([{id:'peerpl1',name:'Peer Playlist',tracks:['remote01']}]))
 
   db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('playlist01','user1','My Songs',0,Date.now());
+  db.prepare('INSERT INTO playlists VALUES (?,?,?)').run('server01','WASP server radio',Date.now());
+  db.prepare('INSERT INTO playlist_tracks VALUES (?,?,?)').run('server01','local01',Date.now());
   db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('playlist01','local01',Date.now());
   const DB={prepare(sql){let args=[];return {bind(...values){args=values;return this;},first(){return db.prepare(sql).get(...args)||null;},all(){return {results:db.prepare(sql).all(...args)};},run(){const x=db.prepare(sql).run(...args);return {meta:{changes:x.changes}};}};},batch(stmts){return stmts.map(x=>x.run());}};
   const env={DB};
@@ -64,7 +68,7 @@ test('mobile bridge starts disabled and does not reveal data without enabling',a
 });
 test('key creation, API key authentication, XML, POST, legacy password and salted MD5',async()=>{
   const {env}=fixture();const key=await provision(env);
-  assert.match(key.secret,/^[A-Za-z0-9]{16}$/);
+  assert.match(key.secret,/^[A-Z0-9]{8}$/);
   const url=endpoint('ping',{apiKey:key.secret,f:'json',v:'1.16.1',c:'Test'});
   assert.equal((await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'].status,'ok');
   const xmlUrl=endpoint('ping',{apiKey:key.secret});
@@ -109,13 +113,37 @@ test('catalogue contains local tracks and synced read-only v15 peer tracks',asyn
   url=endpoint('getMusicDirectory',{...p,id:'1'});
   body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
   assert.equal(body.directory.child.length,2);
+  url=endpoint('getMusicFolders',p);
+  body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.musicFolders.musicFolder.length,3);
+  const localFolder=body.musicFolders.musicFolder.find(f=>f.id===2);
+  assert.equal(localFolder.name,'This WASP server');
+  const peerFolder=body.musicFolders.musicFolder.find(f=>f.name.includes('v15.example.com'));
+  assert.ok(peerFolder);
+  url=endpoint('getMusicDirectory',{...p,id:String(peerFolder.id)});
+  body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.directory.child.length,1);
+  url=endpoint('getMusicDirectory',{...p,id:body.directory.child[0].id});
+  body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.directory.child.length,1);
+  url=endpoint('getMusicDirectory',{...p,id:body.directory.child[0].id});
+  body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.directory.child.length,1);
+  assert.equal(body.directory.child[0].title,'Second Song');
   url=endpoint('getPlaylists',p);
   body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
-  assert.equal(body.playlists.playlist[0].name,'My Songs');
-  assert.equal(body.playlists.playlist[1].name,'Peer Playlist');
+  assert.equal(body.playlists.playlist.find(x=>x.id==='playlist01').name,'My Songs');
+  assert.equal(body.playlists.playlist.find(x=>x.id==='sv:server01').name,'WASP server radio');
+  assert.equal(body.playlists.playlist.find(x=>x.id==='vp:p1:peerpl1').name,'Peer Playlist');
+  assert.equal(body.playlists.playlist.find(x=>x.id==='playlist01').songCount,1);
+  assert.equal(body.playlists.playlist.find(x=>x.id==='sv:server01').songCount,1);
   url=endpoint('getPlaylist',{...p,id:'vp:p1:peerpl1'});
   body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
   assert.equal(body.playlist.entry[0].id,'p:p1:remote01');
+  url=endpoint('getPlaylist',{...p,id:'sv:server01'});
+  body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.playlist.entry.length,1);
+  assert.equal(body.playlist.entry[0].id,'l:local01');
   url=endpoint('getPlaylist',{...p,id:'playlist01'});
   body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
   assert.equal(body.playlist.entry[0].title,'Rose & Thorn');
@@ -340,4 +368,79 @@ test('federation deduplicates mirrored songs and preserves a fallback streaming 
     assert.equal(response.status,206);assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[1,2,3]);
     assert.ok(requested.includes(a+'/audio/same01'));assert.ok(requested.includes(b+'/audio/same01'));
   }finally{globalThis.fetch=old;}
+});
+
+// v16.0.3: Short-key rate limiting and multi-source playlist visibility.
+test('eight-character mobile secrets are random uppercase alphanumeric and blocked after repeated bad credentials',async()=>{
+  const {env}=fixture();
+  const original=await provision(env);
+  assert.match(original.secret,/^[A-Z0-9]{8}$/);
+  const secrets=new Set([original.secret]);
+  for(let i=0;i<8;i++){
+    const response=await manageMobileBridge(new Request('https://stage.example.com/api/user/mobile-keys',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({label:'Device '+i})}),env,'user','user1');
+    assert.equal(response.status,201);
+    const key=(await data(response)).secret;
+    assert.match(key,/^[A-Z0-9]{8}$/);assert.ok(!secrets.has(key));secrets.add(key);
+  }
+  const good=endpoint('ping',{u:'listener',p:original.secret,f:'json'});
+  assert.equal((await data(await handleMobileRest(new Request(good),env,good)))['subsonic-response'].status,'ok');
+  for(let i=0;i<12;i++){
+    const bad=endpoint('ping',{u:'listener',p:'WRONGKEY',f:'json'});
+    const result=(await data(await handleMobileRest(new Request(bad),env,bad)))['subsonic-response'];
+    assert.equal(result.status,'failed');
+  }
+  const blocked=(await data(await handleMobileRest(new Request(good),env,good)))['subsonic-response'];
+  assert.equal(blocked.status,'failed');
+  assert.match(blocked.error.message,/too many failed/i);
+});
+test('server, public user and remote peer playlist contents resolve without leaking private playlists',async()=>{
+  const {env,db}=fixture();
+  db.prepare('INSERT INTO user_accounts VALUES (?,?)').run('user2','publicauthor');
+  db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('public01','user2','Community favorites',1,Date.now());
+  db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('public01','local01',Date.now());
+  db.prepare('INSERT INTO user_playlists VALUES (?,?,?,?,?)').run('private02','user2','Secret private',0,Date.now());
+  const {secret}=await provision(env);const p={apiKey:secret,f:'json'};
+  let url=endpoint('getPlaylists',p);
+  let result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  const ids=result.playlists.playlist.map(x=>x.id);
+  assert.ok(ids.includes('sv:server01'));assert.ok(ids.includes('public01'));assert.ok(ids.includes('playlist01'));
+  assert.ok(ids.includes('vp:p1:peerpl1'));assert.ok(!ids.includes('private02'));
+  assert.equal(result.playlists.playlist.find(x=>x.id==='public01').owner,'publicauthor');
+  url=endpoint('getPlaylist',{...p,id:'public01'});
+  result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(result.playlist.songCount,1);
+  url=endpoint('getPlaylist',{...p,id:'private02'});
+  result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(result.status,'failed');
+});
+test('mobile playlists resolve permitted cross-peer references and stream peer bytes, but discard unauthorized origins',async()=>{
+  const {env,db}=fixture();
+  db.prepare('INSERT INTO peer_track_refs VALUES (?,?,?)').run('peer:validref','https://v15.example.com','remote01');
+  db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('playlist01','peer:validref',Date.now()+1);
+  db.prepare('INSERT INTO playlist_tracks VALUES (?,?,?)').run('server01','peer:validref',Date.now()+1);
+  db.prepare('INSERT INTO peer_track_refs VALUES (?,?,?)').run('peer:private','http://192.168.1.12','hidden');
+  db.prepare('INSERT INTO user_playlist_tracks VALUES (?,?,?)').run('playlist01','peer:private',Date.now()+2);
+  const {secret}=await provision(env),p={apiKey:secret,f:'json'};
+  for(const id of ['playlist01','sv:server01']){
+    const url=endpoint('getPlaylist',{...p,id});
+    const response=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+    assert.equal(response.playlist.songCount,2);
+    assert.equal(response.playlist.entry[1].id,'p:p1:remote01');
+  }
+  const originalFetch=globalThis.fetch;let remoteUrl='';
+  globalThis.fetch=async(input,init)=>{remoteUrl=String(input);return new Response('abc',{status:206,headers:{'content-type':'audio/mpeg','content-range':'bytes 0-2/100'}});};
+  try{
+    const url=endpoint('stream',{...p,id:'p:p1:remote01'});
+    assert.equal((await handleMobileRest(new Request(url,{headers:{range:'bytes=0-2'}}),env,url)).status,206);
+    assert.equal(remoteUrl,'https://v15.example.com/audio/remote01');
+  }finally{globalThis.fetch=originalFetch;}
+});
+
+test('mobile auth throttle schema initializes when an existing installation has not opened account settings',async()=>{
+  const {env,db}=fixture();const {secret}=await provision(env);
+  db.prepare('DROP TABLE mobile_auth_limits').run();
+  const url=endpoint('ping',{u:'listener',p:secret,f:'json'});
+  const result=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(result.status,'ok');
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mobile_auth_limits'").get());
 });

@@ -56,6 +56,13 @@ with sync_playwright() as pw:
  page.locator('#createMobileKey input[name="label"]').fill('Android test app')
  page.locator('#createMobileKey button[type="submit"]').click()
  page.locator('#mobileSecretBox').get_by_text('wm_test_secret').wait_for(timeout=10000)
+ assert page.locator('.mobile-key-pill').count()==1
+ assert page.locator('.mobile-key-value').inner_text()=='wm_test_secret'
+ assert page.locator('.mobile-key-copy[aria-label="Copy mobile app key"]').count()==1
+ page.evaluate("Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(value)=>{window.__copiedMobileKey=value}}})")
+ page.locator('.mobile-key-copy').click()
+ assert page.locator('.mobile-key-notice').inner_text()=='Mobile app key copied to clipboard!'
+ assert page.evaluate('window.__copiedMobileKey')=='wm_test_secret' 
  assert page.evaluate('window.__mobileTest.keys.length')==1
  page.locator('#mobileKeyList [data-revoke-mobile="key1"]').click()
  page.wait_for_function('window.__mobileTest.keys.length===0')

@@ -1,4 +1,6 @@
 import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
+import {readMobilePlaylists} from './mobile-playlists.js';
+import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
 /**
  * WASP v16 staging: an opt-in read-focused Subsonic/OpenSubsonic compatibility
  * adapter. WASP's native API, player, peer protocol, and music storage remain
@@ -7,7 +9,7 @@ import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.2';
+const WASP_VERSION = '16.0.3';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -19,14 +21,15 @@ const bytesHex = b => [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0
 const unhex = h => Uint8Array.from(h.match(/../g)||[],v=>parseInt(v,16));
 const same = (a,b) => {a=String(a);b=String(b);if(a.length!==b.length)return false;let x=0;for(let i=0;i<a.length;i++)x|=a.charCodeAt(i)^b.charCodeAt(i);return x===0;};
 async function digest(s) {return bytesHex(await crypto.subtle.digest('SHA-256', encoder.encode(s)));}
-// 16 independent random base62 characters (~95 bits). Rejection sampling avoids
-// modulo bias; the key is an app-password, never a WASP login password.
-const ALPHABET='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+// Eight cryptographically random characters in A-Z / 0-9. Roughly 41 bits.
+// Short device credentials require persistent online-guess throttling (below).
+// Previously issued longer credentials continue working until revoked.
+const ALPHABET='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const randomSecret = () => {
   let out='';
-  while(out.length<16){
-    const bytes=crypto.getRandomValues(new Uint8Array(32));
-    for(const value of bytes){if(value<Math.floor(256/ALPHABET.length)*ALPHABET.length)out+=ALPHABET[value%ALPHABET.length];if(out.length===16)break;}
+  while(out.length<8){
+    const bytes=crypto.getRandomValues(new Uint8Array(24));
+    for(const value of bytes){if(value<Math.floor(256/ALPHABET.length)*ALPHABET.length)out+=ALPHABET[value%ALPHABET.length];if(out.length===8)break;}
   }
   return out;
 };
@@ -100,6 +103,7 @@ export async function ensureMobileSchema(DB){
   await DB.prepare(KEYS_TABLE).run();
   await DB.prepare('CREATE INDEX IF NOT EXISTS idx_mobile_bridge_keys_user ON mobile_bridge_keys(user_id)').run();
   await DB.prepare('CREATE TABLE IF NOT EXISTS mobile_scrobble_events (credential_id TEXT NOT NULL, track_id TEXT NOT NULL, reported_at INTEGER NOT NULL, PRIMARY KEY(credential_id,track_id,reported_at))').run();
+  await DB.prepare('CREATE TABLE IF NOT EXISTS mobile_auth_limits (bucket TEXT PRIMARY KEY, window_started INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0)').run();
 }
 async function enabled(DB){
   const row=await DB.prepare("SELECT value FROM settings WHERE key='mobile_bridge_enabled'").first();
@@ -206,8 +210,32 @@ async function readParams(req,url){
   }
   return params;
 }
-async function authenticate(params,env){
+async function authenticate(params,env,req){
   const DB=env.DB,key=clean(params.get('apiKey'),100);
+  const username=clean(params.get('u'),32).toLowerCase();
+  // Username and IP limit buckets are hashed before persistence; the throttle
+  // never stores raw credentials, passwords, or client IP addresses.
+  const address=clean(req.headers.get('cf-connecting-ip')||req.headers.get('x-real-ip')||'unknown',90);
+  const bucket=await digest('mobile-limit-v1:'+(username?'u:'+username:'ip:'+address));
+  const now=Date.now(),period=15*60*1000,maxFailures=12;
+  let guard;
+  try{guard=await DB.prepare('SELECT failures,window_started FROM mobile_auth_limits WHERE bucket=?').bind(bucket).first();}
+  catch(e){
+    // Existing v16 installations may receive API traffic before an admin ever
+    // opens Account Settings. Install this additive table lazily on first use.
+    if(!/no such table.*mobile_auth_limits/i.test(String(e?.message||'')))throw e;
+    await DB.prepare('CREATE TABLE IF NOT EXISTS mobile_auth_limits (bucket TEXT PRIMARY KEY, window_started INTEGER NOT NULL, failures INTEGER NOT NULL DEFAULT 0)').run();
+    guard=null;
+  }
+  if(guard && now-Number(guard.window_started)<period && Number(guard.failures)>=maxFailures)
+    return {error:{code:40,message:'Too many failed mobile logins. Try again in 15 minutes.'}};
+  const onFailure=async()=>{
+    await DB.prepare(`INSERT INTO mobile_auth_limits(bucket,window_started,failures) VALUES(?,?,1)
+      ON CONFLICT(bucket) DO UPDATE SET
+      failures=CASE WHEN ?-window_started>=? THEN 1 ELSE failures+1 END,
+      window_started=CASE WHEN ?-window_started>=? THEN ? ELSE window_started END`)
+      .bind(bucket,now,now,period,now,period,now).run();
+  };
   let row;
   if(key){
     row=await DB.prepare(`SELECT k.id,k.user_id,u.username FROM mobile_bridge_keys k JOIN user_accounts u ON u.id=k.user_id WHERE k.key_hash=?`).bind(await digest(key)).first();
@@ -231,7 +259,7 @@ async function authenticate(params,env){
       }
     }else return {error:{code:41,message:'Use a mobile API key or app password'}};
   }
-  if(!row)return {error:{code:40,message:'Invalid or revoked mobile credentials'}};
+  if(!row){await onFailure();return {error:{code:40,message:'Invalid or revoked mobile credentials'}};}
   // Throttle D1 writes: no DB update on every audio range request.
   return {id:row.id,userId:row.user_id,username:row.username};
 }
@@ -403,20 +431,25 @@ export async function handleMobileRest(req,env,url){
   // existing WASP endpoints if a mobile client requests an unknown operation.
   // This extension discovery endpoint must be accessible even without a token.
   if(action==='getOpenSubsonicExtensions')return protocolResponse({openSubsonicExtensions:[{name:'apiKeyAuthentication',versions:[1]}]},null,format);
-  const auth=await authenticate(p,env);
+  const auth=await authenticate(p,env,req);
   if(auth.error)return protocolResponse({},auth.error,format);
   if(action==='ping')return protocolResponse({},null,format);
   if(action==='getLicense')return protocolResponse({license:{valid:true}},null,format);
   if(action==='tokenInfo')return protocolResponse({tokenInfo:{username:auth.username}},null,format);
-  if(action==='getMusicFolders')return protocolResponse({musicFolders:{musicFolder:[{id:'1',name:'WASP virtual library'}]}},null,format);
   let catalogue;
   try{catalogue=await libraryForRequest(env.DB);}catch{return protoError(0,'Unable to read music catalogue',format);}
   const {tracks,albums,artists}=catalogue;
+  const folderView=makeMobileFolders(catalogue);
+  if(action==='getMusicFolders')return protocolResponse({musicFolders:{musicFolder:folderView.folders}},null,format);
+  const scoped=folderView.roots.get(clean(p.get('musicFolderId'))) || folderView.roots.get('1');
+  const visibleTracks=p.has('musicFolderId')?scoped.songs:tracks;
+  const visibleArtists=new Set(visibleTracks.map(x=>x.artistId));
+  const visibleAlbums=new Set(visibleTracks.map(x=>x.albumId));
   const sortedArtists=[...artists.values()].sort((a,b)=>a.name.localeCompare(b.name));
   const sortedAlbums=[...albums.values()].sort((a,b)=>a.name.localeCompare(b.name));
   const id=clean(p.get('id'),240);
   if(action==='getArtists'||action==='getIndexes'){
-    const grouped=new Map();for(const a of sortedArtists){const letter=/^[a-z]/i.test(a.name)?a.name[0].toUpperCase():'#';
+    const grouped=new Map();for(const a of sortedArtists.filter(x=>visibleArtists.has(x.id))){const letter=/^[a-z]/i.test(a.name)?a.name[0].toUpperCase():'#';
       if(!grouped.has(letter))grouped.set(letter,[]);grouped.get(letter).push(artistOut(a));}
     const index=[...grouped].map(([name,artist])=>({name,artist}));
     return protocolResponse(action==='getArtists'?{artists:{index,ignoredArticles:'The El La Los Las'}}:{indexes:{index,ignoredArticles:'The El La Los Las'}},null,format);
@@ -434,7 +467,27 @@ export async function handleMobileRest(req,env,url){
     return protocolResponse({song:songOut(song)},null,format);
   }
   if(action==='getMusicDirectory'){
-    if(id==='1')return protocolResponse({directory:{id:'1',name:'WASP virtual library',child:sortedArtists.map(a=>({...artistOut(a),isDir:true}))}},null,format);
+    const source=folderView.roots.get(id);
+    if(source){
+      const index=folderArtistIndex(source.songs);
+      return protocolResponse({directory:{id,name:source.name,child:[...index.values()].sort((a,b)=>a.name.localeCompare(b.name))
+        .map(a=>({id:`fa:${id}:${a.id}`,parent:id,title:a.name,artist:a.name,isDir:true,coverArt:a.songs[0]?.id}))}},null,format);
+    }
+    const virtual=folderView.parse(id);
+    if(virtual){
+      const folderId=virtual.folder.id;
+      const index=folderArtistIndex(virtual.folder.songs,virtual.type==='fa'?virtual.id:undefined);
+      if(virtual.type==='fa'){
+        const artist=index.get(virtual.id);
+        if(!artist)return protoError(70,'Music directory not found',format);
+        return protocolResponse({directory:{id,name:artist.name,child:[...artist.albums.values()].map(album=>({
+          id:`fb:${folderId}:${album.id}`,parent:id,title:album.name,artist:artist.name,isDir:true,coverArt:album.songs[0]?.id
+        }))}},null,format);
+      }
+      const album=[...index.values()].flatMap(a=>[...a.albums.values()]).find(a=>a.id===virtual.id);
+      if(!album)return protoError(70,'Music directory not found',format);
+      return protocolResponse({directory:{id,name:album.name,child:album.songs.map(songOut)}},null,format);
+    }
     if(artists.has(id)){
       const a=artists.get(id);return protocolResponse({directory:{id,name:a.name,child:[...a.albums].map(x=>({...albumOut(albums.get(x)),isDir:true}))}},null,format);
     }
@@ -452,9 +505,9 @@ export async function handleMobileRest(req,env,url){
   }
   if(action==='search3'||action==='search2'||action==='search'){
     const query=normalize(p.get('query'));
-    const songHits=tracks.filter(t=>!query||[t.title,t.artist,t.album].some(s=>normalize(s).includes(query)));
-    const artistHits=sortedArtists.filter(a=>!query||normalize(a.name).includes(query));
-    const albumHits=sortedAlbums.filter(a=>!query||[a.name,a.artist].some(s=>normalize(s).includes(query)));
+    const songHits=visibleTracks.filter(t=>!query||[t.title,t.artist,t.album].some(s=>normalize(s).includes(query)));
+    const artistHits=sortedArtists.filter(a=>visibleArtists.has(a.id)&&!query||normalize(a.name).includes(query));
+    const albumHits=sortedAlbums.filter(a=>visibleAlbums.has(a.id)&&!query||[a.name,a.artist].some(s=>normalize(s).includes(query)));
     const result={artist:listSlice(artistHits,p,'artist',250).map(artistOut),album:listSlice(albumHits,p,'album',250).map(albumOut),song:listSlice(songHits,p,'song',500).map(songOut)};
     const key=action==='search3'?'searchResult3':action==='search2'?'searchResult2':'searchResult';
     return protocolResponse({[key]:result},null,format);
@@ -464,7 +517,7 @@ export async function handleMobileRest(req,env,url){
       return protocolResponse({randomSongs:{song:[...tracks].sort(()=>Math.random()-.5).slice(0,n(p.get('size'),30,100)).map(songOut)}},null,format);
     }
     if(action==='getTopSongs')return protocolResponse({topSongs:{song:tracks.filter(x=>normalize(x.artist)===normalize(p.get('artist'))).sort((a,b)=>b.plays-a.plays).slice(0,30).map(songOut)}},null,format);
-    const type=p.get('type')||'alphabeticalByName';const rows=[...sortedAlbums];
+    const type=p.get('type')||'alphabeticalByName';const rows=sortedAlbums.filter(a=>visibleAlbums.has(a.id));
     if(type==='newest'||type==='recent')rows.sort((a,b)=>b.created_at-a.created_at);
     else if(type==='frequent')rows.sort((a,b)=>b.songs.reduce((s,x)=>s+x.plays,0)-a.songs.reduce((s,x)=>s+x.plays,0));
     else if(type==='random')rows.sort(()=>Math.random()-.5);
@@ -472,40 +525,12 @@ export async function handleMobileRest(req,env,url){
     return protocolResponse({[action==='getAlbumList'?'albumList':'albumList2']:{album:listSlice(rows,p,'',500).map(albumOut)}},null,format);
   }
   if(action==='getPlaylists'||action==='getPlaylist'){
-    const own=(await env.DB.prepare('SELECT id,name,is_public,created_at FROM user_playlists WHERE user_id=? ORDER BY created_at DESC LIMIT 200').bind(auth.userId).all()).results;
-    const publicList=(await env.DB.prepare('SELECT id,name,is_public,created_at FROM user_playlists WHERE is_public=1 AND user_id!=? ORDER BY created_at DESC LIMIT 100').bind(auth.userId).all()).results;
-    const pls=[...own,...publicList];
-    const peerPls=catalogue.peerPlaylists||[];
-    if(action==='getPlaylists')return protocolResponse({playlists:{playlist:[...pls.map(x=>({id:x.id,name:x.name,owner:x.is_public?'WASP community':auth.username,public:!!x.is_public,created:new Date(x.created_at||Date.now()).toISOString(),songCount:0})),...peerPls.map(x=>({id:x.id,name:x.name,owner:x.owner,public:true,created:new Date(x.created_at||Date.now()).toISOString(),songCount:x.tracks.length}))]}},null,format);
-    const peerPlaylist=peerPls.find(x=>x.id===id);
-    if(peerPlaylist){
-      const songs=peerPlaylist.tracks.map(item=>{
-        const ref=typeof item==='string'?item:String(item?.id||'');
-        const remote=peerPlaylist.track_sources?.[ref];
-        if(remote){
-          const origin=String(remote.origin||'').replace(/\/$/,'');
-          if(!catalogue.authorizedOrigins.has(origin))return null;
-          return catalogue.byOrigin.get(originKey(origin,String(remote.remote_id||'')))||null;
-        }
-        return catalogue.byOrigin.get(originKey(peerPlaylist.origin,ref))||catalogue.byId.get(ref)||null;
-      }).filter(Boolean);
-      return protocolResponse({playlist:{id:peerPlaylist.id,name:peerPlaylist.name,owner:peerPlaylist.owner,public:true,songCount:songs.length,entry:songs.map(songOut)}},null,format);
-    }
-    const pl=pls.find(x=>x.id===id);
-    if(!pl)return protoError(70,'Playlist not found or private',format);
-    const links=(await env.DB.prepare('SELECT track_id FROM user_playlist_tracks WHERE playlist_id=? ORDER BY added_at,rowid LIMIT 1500').bind(id).all()).results;
-    const remoteRefs=links.filter(x=>x.track_id.startsWith('peer:')).map(x=>x.track_id);
-    let refs=new Map();
-    if(remoteRefs.length){
-      const rows=(await env.DB.prepare('SELECT ref,origin,remote_id FROM peer_track_refs WHERE ref IN ('+remoteRefs.map(()=>'?').join(',')+')').bind(...remoteRefs).all()).results;
-      refs=new Map(rows.map(x=>[x.ref,x]));
-    }
-    const resolved=links.map(x=>{
-      const src=x.track_id;if(catalogue.byId.has('l:'+src))return catalogue.byId.get('l:'+src);
-      const r=refs.get(src);if(!r)return null;
-      return catalogue.byOrigin.get(originKey(r.origin,r.remote_id))||null;
-    }).filter(Boolean);
-    return protocolResponse({playlist:{id:pl.id,name:pl.name,owner:auth.username,public:!!pl.is_public,songCount:resolved.length,entry:resolved.map(songOut)}},null,format);
+    const playlists=await readMobilePlaylists(env.DB,catalogue,auth);
+    if(action==='getPlaylists')return protocolResponse({playlists:{playlist:playlists.rows.map(({raw,kind,...metadata})=>metadata)}},null,format);
+    const playlist=playlists.find(id);
+    if(!playlist)return protoError(70,'Playlist not found or private',format);
+    const {raw,kind,...metadata}=playlist;
+    return protocolResponse({playlist:{...metadata,entry:raw.map(songOut)}},null,format);
   }
   if(action==='getStarred2'||action==='getStarred'){
     const stars=(await env.DB.prepare("SELECT track_id FROM user_song_reactions WHERE user_id=? AND kind='heart' LIMIT 1000").bind(auth.userId).all()).results;
@@ -515,13 +540,13 @@ export async function handleMobileRest(req,env,url){
   if(action==='getNowPlaying')return protocolResponse({nowPlaying:{entry:[]}},null,format);
   if(action==='getUser'){
     const wanted=clean(p.get('username'),32);if(wanted && wanted.toLowerCase()!==auth.username.toLowerCase())return protoError(50,'Not authorized',format);
-    return protocolResponse({user:{username:auth.username,email:'',scrobblingEnabled:true,adminRole:false,settingsRole:false,downloadRole:true,uploadRole:false,playlistRole:true,coverArtRole:true,commentRole:false,podcastRole:false,streamRole:true,jukeboxRole:false,shareRole:false,folder:[1]}},null,format);
+    return protocolResponse({user:{username:auth.username,email:'',scrobblingEnabled:true,adminRole:false,settingsRole:false,downloadRole:true,uploadRole:false,playlistRole:true,coverArtRole:true,commentRole:false,podcastRole:false,streamRole:true,jukeboxRole:false,shareRole:false,folder:folderView.folders.map(x=>x.id)}},null,format);
   }
   if(action==='getArtistInfo'||action==='getArtistInfo2')return protocolResponse({[action==='getArtistInfo'?'artistInfo':'artistInfo2']:{biography:'',musicBrainzId:''}},null,format);
   if(action==='getAlbumInfo'||action==='getAlbumInfo2')return protocolResponse({[action==='getAlbumInfo'?'albumInfo':'albumInfo2']:{notes:'',musicBrainzId:''}},null,format);
   if(action==='getSongsByGenre'){
     const genre=normalize(p.get('genre'));
-    return protocolResponse({songsByGenre:{song:tracks.filter(t=>genre&&normalize(t.genre)===genre)
+    return protocolResponse({songsByGenre:{song:visibleTracks.filter(t=>genre&&normalize(t.genre)===genre)
       .slice(n(p.get('offset'),0,100000),n(p.get('offset'),0,100000)+n(p.get('count'),10,500)).map(songOut)}},null,format);
   }
   if(action==='getScanStatus')return protocolResponse({scanStatus:{scanning:false}},null,format);

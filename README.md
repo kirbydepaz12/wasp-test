@@ -6,7 +6,7 @@
 
 
 > [!IMPORTANT]
-> **WASP v16.0.2 STAGING — Federated Mobile Bridge.** This release extends the existing v16 adapter to include **publicly reachable music sources and playlists connected through a trusted v15 peer gateway**, with no MP3 copying. It also adds metadata-based genre browsing and shorter (16-character) mobile app credentials. Start with [the v16.0.2 federation guide](docs/V16-0-2-MOBILE-FEDERATION.md) before promoting anything to production. The v15 live Worker remains a separate installation.
+> **WASP v16.0.3 STAGING — Federated Mobile Bridge.** This release extends the existing v16 adapter to include **publicly reachable music sources and playlists connected through a trusted v15 peer gateway**, with no MP3 copying. It also adds metadata-based genre browsing and shorter (16-character) mobile app credentials. Start with [the v16.0.3 federation guide](docs/V16-0-2-MOBILE-FEDERATION.md) before promoting anything to production. The v15 live Worker remains a separate installation.
 
 > [!IMPORTANT]
 > **WASP v16.0.1 legacy setup notes**

@@ -2174,7 +2174,7 @@ async function renderAccountSettingsSection(which="account"){
       if(!response.ok)throw Error('Could not load Mobile Bridge access.');
       const mobile=await response.json();
       if(token!==accountSettingsTabToken||!d.open)return;
-      place.innerHTML=`<div class="settings-panel"><h3>WASP Mobile Bridge <span class="muted">· v16.0.2 staging</span></h3>
+      place.innerHTML=`<div class="settings-panel"><h3>WASP Mobile Bridge <span class="muted">· v16.0.3 staging</span></h3>
         <p class="muted">Connect Subsonic / OpenSubsonic applications to this WASP server. Use a separate key per device. Do not enter your WASP website password into a mobile player.</p>
         <p><strong>Server URL:</strong> <code>${esc(location.origin)}/mobile</code> <button type="button" class="btn ghost" id="copyMobileUrl">Copy URL</button></p>
         <p class="muted">Server status: ${mobile.enabled?'Enabled':'Disabled by administrator'}. ${mobile.secret_ready?'Mobile credentials available.':'Setup required. Ask an administrator to configure the secret under Admin → Network → Mobile Bridge.'}</p>
@@ -2192,10 +2192,27 @@ async function renderAccountSettingsSection(which="account"){
           const res=await postJSON('/api/user/mobile-keys',{label:form.elements.label.value});
           const v=await res.json();if(!res.ok)throw Error(v.error||'Could not create mobile key.');
           const secret=place.querySelector('#mobileSecretBox');secret.classList.remove('hidden');secret.replaceChildren();
-          const heading=document.createElement('p');heading.textContent='Copy this key now — it will not be shown again.';
-          const code=document.createElement('code');code.textContent=v.secret;code.style.overflowWrap='anywhere';
-          const copy=document.createElement('button');copy.type='button';copy.className='btn ghost';copy.textContent='Copy key';copy.onclick=async()=>{await navigator.clipboard.writeText(v.secret);copy.textContent='Copied';};
-          secret.append(heading,code,document.createElement('br'),copy);
+          secret.classList.add('mobile-key-reveal');
+          const heading=document.createElement('p');heading.className='mobile-key-heading';heading.textContent='Copy this key now — it will not be shown again.';
+          const pill=document.createElement('div');pill.className='mobile-key-pill';
+          const code=document.createElement('code');code.className='mobile-key-value';code.textContent=v.secret;
+          const copy=document.createElement('button');copy.type='button';copy.className='mobile-key-copy';
+          copy.setAttribute('aria-label','Copy mobile app key');copy.setAttribute('title','Copy mobile app key');
+          copy.innerHTML='<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+          const notice=document.createElement('p');notice.className='mobile-key-notice';notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');
+          copy.onclick=async()=>{
+            try{
+              await navigator.clipboard.writeText(v.secret);
+              notice.textContent='Mobile app key copied to clipboard!';
+              notice.classList.remove('err');
+              settingsFeedback(place.querySelector('#mobileFeedback'),'Key copied successfully.');
+            }catch{
+              notice.textContent='Automatic copy unavailable. Select the key above to copy it.';
+              notice.classList.add('err');
+              settingsFeedback(place.querySelector('#mobileFeedback'),'Could not copy key automatically.',true);
+            }
+          };
+          pill.append(code,copy);secret.append(heading,pill,notice);
           form.reset();const list=place.querySelector('#mobileKeyList');
           const row=document.createElement('div');row.className='published-peer-row';const label=document.createElement('strong');label.textContent=v.label;
           const revoke=document.createElement('button');revoke.type='button';revoke.className='btn ghost';revoke.textContent='Revoke';revoke.dataset.revokeMobile=v.id;
