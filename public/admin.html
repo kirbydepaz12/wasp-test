@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin · WASP</title>
+<link rel="icon" id="favicon" href="/wasp-icon.png">
+<link rel="stylesheet" href="/style.css?v=16.0.0">
+</head>
+<body style="--ph:0px;padding-bottom:0">
+
+<div id="login" class="wrap narrow hidden">
+  <div class="top"><a class="brand" href="/">← Back to the site</a></div>
+  <section class="card" style="max-width:420px">
+    <h2>Log in</h2>
+    <form class="form" id="loginForm" style="flex-direction:column;align-items:stretch">
+      <label for="id" class="muted">ID</label>
+      <input id="id" type="text" autocomplete="username" required>
+      <label for="pw" class="muted">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" required>
+      <button class="btn" type="submit">Log in</button>
+    </form>
+    <p class="msg err" id="loginMsg" role="alert"></p>
+  </section>
+</div>
+
+<div id="panel" class="app hidden">
+  <aside class="side">
+    <a class="brand" href="/" title="Back to the site">Admin</a>
+    <nav id="anav" aria-label="Admin sections"></nav>
+
+    <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <a class="nav-item" id="docsNav" href="#docs">Update documentations</a>
+      <a class="nav-item" href="/">View site</a>
+      <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
+    </div>
+    <div class="admin-build" id="adminBuild" role="status">WASP · Checking version…</div>
+  </aside>
+
+  <div class="main">
+    <!-- Music collection -->
+    <section class="pane" id="s-collection">
+      <h1>Music collection</h1>
+      <div class="card">
+        <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><span class="form"><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button><button class="btn ghost" id="updateBios" type="button">Update artist bio</button></span></div>
+        <p class="msg" id="bioMsg" role="status"></p>
+        <label for="songQ" class="hidden">Search songs</label>
+        <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
+        <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+        <nav class="pager" id="pager" aria-label="Song pages"></nav>
+      </div>
+    </section>
+
+    <!-- Storage: SHA-256 duplicate review and safe cleanup -->
+    <section class="pane hidden" id="s-duplicates">
+      <h1>Duplicate management</h1>
+      <div class="card">
+        <h2>SHA-256 folder scan</h2>
+        <p class="muted">Hashes existing /music files read-only and compares them with web uploads. Exact file bytes only; no audio rewriting or renaming. Scheduled scans are configured under Network → Crons.</p>
+        <button class="btn" id="hashScanNow" type="button">Scan music folder now</button>
+        <p class="msg" id="hashScanMsg" role="status"></p>
+        <progress id="hashScanProgress" max="100" value="0" style="width:100%"></progress>
+        <p class="muted" id="hashScanState">Not scanned yet</p>
+      </div>
+      <div class="card">
+        <h2>Exact duplicates <span id="duplicateCount">0</span></h2>
+        <p class="muted">Only identical SHA-256 fingerprints are grouped. Managed web uploads may be eligible for deletion if unreferenced and unplayed. Original /music files are never deleted.</p>
+        <div id="duplicateList">Open this page to review duplicate groups.</div>
+        <p class="msg" id="duplicateMsg" role="status"></p>
+      </div>
+    </section>
+
+    <!-- Add music -->
+    <section class="pane hidden" id="s-add">
+      <h1>Add music</h1>
+      <div class="card">
+        <fieldset><legend class="muted">Upload as</legend>
+          <label><input type="radio" name="mode" value="singles" checked> Singles</label>
+          <label><input type="radio" name="mode" value="playlist"> Playlist</label>
+          <label><input type="radio" name="mode" value="album"> Album</label>
+        </fieldset>
+        <p class="muted" id="hint" style="margin-top:0"></p>
+        <div id="plField" class="form hidden" style="margin-bottom:12px">
+          <label for="plName" class="muted">Playlist name</label>
+          <input id="plName" type="text" list="plList" maxlength="80" placeholder="New or existing playlist">
+          <datalist id="plList"></datalist>
+        </div>
+        <div id="alField" class="form hidden" style="margin-bottom:12px">
+          <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
+          <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
+        </div>
+        <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
+        <p class="msg err" id="upMsg" role="alert"></p>
+        <div class="batch hidden" id="batch" aria-live="polite">
+          <div class="form" style="justify-content:space-between;margin-bottom:8px"><strong id="batchText"></strong><span class="muted" id="batchSub"></span></div>
+          <div class="bar big" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchBarWrap"><i id="batchBar"></i></div>
+          <p class="muted" id="batchSummary" style="margin:8px 0 0"></p>
+        </div>
+        <div id="queue"></div>
+      </div>
+    </section>
+
+    <!-- Playlists -->
+    <section class="pane hidden" id="s-playlists">
+      <h1>Playlists</h1>
+      <div class="card">
+        <p class="muted" style="margin-top:0">By default a playlist shows a grid of its album covers. <b>View</b> lists its songs (click one to play it, remove it, or add more); <b>Change image</b> sets your own cover.</p>
+        <label for="plQ" class="hidden">Search playlists</label>
+        <input id="plQ" type="search" placeholder="Search playlists" style="width:100%;max-width:360px;margin-bottom:12px">
+        <div id="plPlayer" class="hidden" style="margin-bottom:12px"><div class="muted" id="plNow" style="margin-bottom:4px"></div><audio id="plAudio" controls preload="none" style="width:100%"></audio></div>
+        <div id="plRows" class="muted">No playlists yet.</div>
+        <nav class="pager" id="plPager" aria-label="Playlist pages"></nav>
+        <input id="plImg" type="file" accept="image/jpeg,image/png,image/webp" class="hidden">
+        <p class="msg" id="plMsg" role="status"></p>
+      </div>
+    </section>
+
+    <!-- Requests -->
+    <section class="pane hidden" id="s-requests">
+      <h1>Requests</h1>
+      <div class="tabs sub" role="tablist" aria-label="Request administration">
+        <button class="tab" id="reqTabQueue" type="button" role="tab" aria-controls="reqQueuePanel" aria-selected="true">Request queue</button>
+        <button class="tab" id="reqTabSpotify" type="button" role="tab" aria-controls="reqSpotifyPanel" aria-selected="false">Spotify settings</button>
+      </div>
+      <div id="reqQueuePanel" role="tabpanel" aria-labelledby="reqTabQueue">
+        <div class="card">
+          <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded, and move to Previous requests. For a Spotify playlist, Refresh reads the playlist again and checks which of its songs are already in the library; when all of them are, the playlist is added to the Playlists tab with Spotify's picture and leaves the queue. Open the arrow to see what is still missing.</p>
+          <p class="msg" id="reqMsg" role="status"></p>
+          <div id="reqRows" class="muted">The queue is empty.</div>
+        </div>
+      </div>
+      <div id="reqSpotifyPanel" class="hidden" role="tabpanel" aria-labelledby="reqTabSpotify">
+        <div class="card">
+          <h2>Spotify playlist search</h2>
+          <p class="muted">Enter your Spotify Developer app credentials to enable playlist search in <strong>Request → Make a request → Playlist</strong>. These settings apply only to this WASP server.</p>
+          <p class="muted hidden" id="spotifyHttpsWarning" role="alert" style="color:var(--danger)">You are using HTTP. Switch to HTTPS before entering a Spotify Client Secret so it cannot be intercepted in transit.</p>
+          <form id="spotifySettingsForm" class="spotify-config-form" autocomplete="off">
+            <label for="spotifyClientId">Spotify Client ID</label>
+            <input id="spotifyClientId" type="text" maxlength="128" required spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Your Spotify Client ID">
+            <label for="spotifyClientSecret">Spotify Client Secret</label>
+            <input id="spotifyClientSecret" type="password" maxlength="256" autocomplete="new-password" spellcheck="false" placeholder="Enter or replace the client secret">
+            <p class="muted" id="spotifySecretHint">The secret is encrypted on the server and is never displayed after saving.</p>
+            <div class="form spotify-actions">
+              <button class="btn" id="spotifyConfigSave" type="submit">Save credentials</button>
+              <button class="btn ghost" id="spotifyConfigDelete" type="button">Remove saved credentials</button>
+            </div>
+            <p class="msg" id="spotifyConfigMsg" role="status" aria-live="polite"></p>
+            <p class="muted" id="spotifyConfigState"></p>
+          </form>
+          <p class="muted spotify-config-footnote">Get credentials from the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify Developer Dashboard</a>. The client secret stays server-side, and Spotify's API policies still apply. The manual Spotify playlist link option works without credentials.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- General settings -->
+    <section class="pane hidden" id="s-settings">
+      <h1>General settings</h1>
+      <div class="card" id="mobileBridgeAdminPanel">
+        <h2>WASP Mobile Bridge <span class="muted">· v16 staging</span></h2>
+        <p class="muted">Optional Subsonic / OpenSubsonic compatibility for third-party mobile apps. Uses independent WASP credentials and existing synced peer libraries. Disabled by default.</p>
+        <label class="brand-icon-toggle"><input id="mobileBridgeToggle" type="checkbox"> Enable Mobile Bridge on this server</label>
+        <div class="form"><button type="button" id="mobileBridgeSave" class="btn">Save Mobile Bridge settings</button></div>
+        <p id="mobileBridgeAdminStatus" class="msg" role="status"></p>
+      </div>
+      <div class="card">
+        <h2>Branding</h2>
+        <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
+          <label for="siteName" class="muted">Site name (top left of the site)</label>
+          <input id="siteName" type="text" maxlength="60" placeholder="WASP">
+          <label for="brandMode" class="muted">Top-left site name format</label>
+          <select id="brandMode"><option value="text">Text</option><option value="image">Custom image</option></select>
+          <div class="form" id="brandImageControls">
+            <img class="favprev hidden" id="brandPreview" alt="Current site name image">
+            <button class="btn ghost" id="brandImageBtn" type="button">Choose site name image</button>
+            <button class="btn ghost" id="brandImageRemove" type="button">Remove image</button>
+            <input id="brandImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden">
+          </div>
+          <span class="muted">PNG, JPEG, WebP or GIF, up to 1 MB. This image replaces the top-left text when Image is chosen.</span>
+          <label class="brand-icon-toggle" for="brandIconOn"><input id="brandIconOn" type="checkbox"> Show browser icon before site name</label>
+          <label for="tabTitle" class="muted">Browser tab name</label>
+          <input id="tabTitle" type="text" maxlength="80" placeholder="Same as the site name if empty">
+          <span class="muted">Browser icon</span>
+          <div class="form">
+            <img class="favprev hidden" id="favPrev" alt="Current browser icon">
+            <span class="muted" id="favNone">No custom icon</span>
+            <button class="btn ghost" id="favBtn" type="button">Choose image</button>
+            <button class="btn ghost hidden" id="favRm" type="button">Remove</button>
+            <input id="favFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,image/x-icon,.ico" class="hidden">
+          </div>
+          <span class="muted">PNG, ICO, SVG, JPEG, WebP or GIF up to 512 KB. Square images look best.</span>
+          <div class="form"><button class="btn" id="brandSave" type="button">Save branding</button><span class="msg" id="brandMsg" role="status"></span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Sidebar credits and branding</h2>
+        <p class="muted">Optional credits, links or a small logo at the very bottom of the left sidebar. The footer grows upward only as you add content. Use BBCode instead of HTML or JavaScript; blank by default.</p>
+        <label class="check"><input type="checkbox" id="sidebarOn"> Show sidebar credits</label>
+        <label for="sidebarCode" class="muted">Sidebar credits (BBCode)</label>
+        <textarea class="code" id="sidebarCode" spellcheck="false" placeholder="Powered by WASP&#10;[b]Music powered by Docker[/b]&#10;[url=https://github.com/]View our repository[/url]"></textarea>
+        <p class="muted sidebar-help">Supported: <code>[b]bold[/b]</code>, <code>[i]italic[/i]</code>, <code>[u]underline[/u]</code>, <code>[url=https://example.com]link[/url]</code>, <code>[img]https://example.com/logo.png[/img]</code>, <code>[color=#C8F169]text[/color]</code> and <code>[center]text[/center]</code>. Only HTTPS or same-site links/images are accepted. HTML and scripts are never executed.</p>
+        <label class="muted" for="sidebarPreview">Live preview</label>
+        <div class="sidebar-credits-content sidebar-credits-preview" id="sidebarPreview" aria-live="polite"></div>
+        <div class="form"><button class="btn" id="sidebarSave" type="button">Save sidebar</button><span class="msg" id="sidebarMsg" role="status"></span></div>
+      </div>
+      <div class="card">
+        <h2>Advertising</h2>
+        <p class="muted" style="margin-top:0">An ad shows at the top of the front page (Recently added &rsaquo; Songs), above the songs. Write it in HTML, CSS and JavaScript, for example a slider with clickable buttons. Only you can change it. It runs in an isolated frame, so it cannot touch the rest of the site or your admin session. Links open in a new tab; add <code>target="_top"</code> to a link to stay in the app. When the ad is off, the page looks as it did before.</p>
+        <div class="form" style="margin-bottom:12px">
+          <label class="check"><input type="checkbox" id="spOn"> Show the ad on the front page</label>
+          <label for="spH" class="muted">Height (px)</label><input id="spH" type="number" min="60" max="1000" value="340">
+        </div>
+        <label for="spCode" class="muted">Ad code (HTML, CSS and JavaScript)</label>
+        <textarea class="code" id="spCode" spellcheck="false" placeholder="Paste or write your ad here"></textarea>
+        <div class="form" style="margin-top:12px">
+          <button class="btn" id="spSave" type="button">Save advertising</button>
+          <button class="btn ghost" id="spPreviewBtn" type="button">Preview</button>
+          <button class="btn ghost" id="spSample" type="button">Insert sample slider</button>
+          <span class="msg" id="spMsg" role="status"></span>
+        </div>
+        <div id="spPrev" style="margin-top:16px"></div>
+      </div>
+    </section>
+
+    <!-- Account settings -->
+    <section class="pane hidden" id="s-account">
+      <h1>Account settings</h1>
+      <div class="card" style="max-width:520px">
+        <p class="muted" style="margin-top:0">Signed in as <b id="adminAccountName">admin</b></p>
+        <form id="adminNameForm" class="form account-name-form">
+          <label>Change administrator username<input id="adminNewName" type="text" name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]{3,32}" required autocomplete="off"></label>
+          <label>Current admin password<input id="adminNamePassword" type="password" name="password" autocomplete="current-password" required></label>
+          <button class="btn" type="submit">Save username</button>
+        </form>
+        <p class="muted">Changing the username does not grant administrator access to other accounts.</p>
+        <button class="linkrow" id="pwOpen" type="button" aria-haspopup="dialog">Change password <span aria-hidden="true">›</span></button>
+        <p class="msg" id="acctMsg" role="status"></p>
+      </div>
+    </section>
+
+    <!-- Network (peer-to-peer) -->
+    <section class="pane hidden" id="s-network">
+      <h1>Network</h1>
+      <div class="tabs sub" role="tablist" aria-label="Network administration">
+        <button class="tab" id="netTabPeers" type="button" role="tab" aria-selected="true" aria-controls="netPeersPanel">Connected peers</button>
+        <button class="tab" id="netTabCrons" type="button" role="tab" aria-selected="false" aria-controls="netCronsPanel">Crons</button>
+      </div>
+      <div id="netPeersPanel" role="tabpanel" aria-labelledby="netTabPeers">
+      <div class="card">
+        <h2>Share this library</h2>
+        <p class="muted" style="margin-top:0">When sharing is on, other music-app instances can add your link and stream songs from this library. Your files stay on this server; peers only read the catalogue and stream audio.</p>
+        <label class="check"><input type="checkbox" id="netShare"> Share this library on the network</label>
+        <div id="netShareBox" class="hidden" style="margin-top:14px">
+          <label class="muted" for="netLink">Your share link</label>
+          <div class="form" style="margin-top:6px">
+            <input id="netLink" type="text" readonly style="flex:1;min-width:200px" aria-label="Share link">
+            <button class="btn ghost" id="netCopy" type="button">Copy</button>
+          </div>
+          <p class="msg" id="netShareMsg" role="status"></p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="form" style="justify-content:space-between;margin-bottom:12px">
+          <h2 style="margin:0">Connected peers</h2>
+          <button class="btn" id="netAddBtn" type="button">+ Add peer</button>
+        </div>
+        <p class="muted" style="margin-top:0">Paste a share link from another instance. When connected, its songs appear in this library for everyone (played from that server).</p>
+        <div id="netAddForm" class="hidden" style="margin-bottom:16px;padding:14px;border:1px solid var(--line2);border-radius:12px">
+          <label for="netPeerUrl" class="muted">Peer link</label>
+          <div class="form" style="margin-top:6px">
+            <input id="netPeerUrl" type="url" placeholder="https://other-music-app.example" style="flex:1;min-width:200px" maxlength="300">
+            <button class="btn" id="netConnect" type="button">Connect</button>
+            <button class="btn ghost" id="netAddCancel" type="button">Cancel</button>
+          </div>
+          <p class="msg" id="netAddMsg" role="status"></p>
+        </div>
+        <div id="netPeers" class="muted">No peers yet.</div>
+        <div id="netSyncProgress" hidden style="margin-top:12px" role="status" aria-live="polite">
+          <label id="netSyncStatus" for="netSyncBar" class="muted">Syncing metadata…</label>
+          <progress id="netSyncBar" max="100" value="0" style="width:100%;height:15px;accent-color:var(--accent,#c8f169)"></progress>
+        </div>
+        <p class="msg" id="netMsg" role="status"></p>
+      </div>
+      </div>
+      <div id="netCronsPanel" class="hidden" role="tabpanel" aria-labelledby="netTabCrons">
+        <div class="card">
+          <h2>Scheduled maintenance</h2>
+          <p class="muted">Enable jobs only when needed. Each schedule runs on this WASP server, using its saved timezone. Jobs update cached information and do not remove music or playlists.</p>
+          <form id="cronForm" autocomplete="off">
+            <label for="cronTimezone">Timezone</label>
+            <select id="cronTimezone" name="timezone" required></select>
+            <div id="cronJobs"></div>
+            <div class="form" style="margin-top:16px">
+              <button class="btn" type="submit" id="cronSave">Save schedules</button>
+            </div>
+            <p class="msg" id="cronMsg" role="status" aria-live="polite"></p>
+          </form>
+          <p class="muted">Daily jobs use a 24-hour time. Weekly jobs run on the chosen weekday at 00:00; monthly jobs run on days 1–30 at 00:00. Months without the selected day skip that month. Enabled jobs are checked every minute, with one execution per scheduled minute.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Admin-only release notes, supplied through authenticated API -->
+    <section class="pane hidden" id="s-docs">
+      <h1>Update documentations</h1>
+      <div class="card"><label for="docsSelect">Select release documentation</label>
+        <select id="docsSelect" style="width:100%;max-width:560px"></select>
+        <p class="msg" id="docsMsg" role="status"></p>
+      </div>
+      <article class="card markdown-view" id="docsBody" aria-label="Release documentation">Choose a release note.</article>
+    </section>
+
+    <!-- Danger -->
+    <section class="pane hidden" id="s-danger">
+      <h1>Danger</h1>
+      <div class="card" style="max-width:520px;border-color:var(--danger)">
+        <h2>Clean database</h2>
+        <p class="muted" style="margin-top:0">Deletes every song, playlist, request, artwork file, play count and reaction. Your admin login, site name, browser icon and ad are kept.</p>
+        <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
+        <p class="msg" id="cleanMsg" role="status"></p>
+      </div>
+    </section>
+    <!-- Read-only registered user statistics -->
+    <section class="pane hidden" id="s-users">
+      <h1>Users</h1>
+      <div class="card users-summary">
+        <h2>Registered accounts</h2>
+        <p class="muted">Grant publishing permission per account (off by default). Submitted link addresses are not shown here—only counts and how many are online. Existing anonymous activity cannot always be attributed retroactively.</p>
+        <label class="check publish-global-label"><input type="checkbox" id="publishAllUsers" aria-label="Allow all users to publish WASP links"> Allow all registered users, including new accounts, to publish</label>
+        <p class="muted publish-global-note">Off by default. Individual user permissions override this setting; uncheck a user below to block that account.</p>
+        <label class="muted" for="usersSearch">Search username</label>
+        <input id="usersSearch" type="search" placeholder="Search registered users…" autocomplete="off" aria-label="Search usernames">
+        <p id="usersMsg" class="msg" role="status"></p>
+        <div id="usersList" aria-live="polite">Open this page to load users.</div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<dialog id="deleteUserDlg" aria-labelledby="deleteUserTitle">
+  <form id="deleteUserForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="deleteUserTitle">Delete user account</h2>
+    <p id="deleteUserDescription" class="muted">This permanently deletes the account, playlists, attributed reactions and submitted peers. Shared MP3 files remain.</p>
+    <label>Administrator password<input type="password" id="deleteUserPassword" autocomplete="current-password" required></label>
+    <label>Type <b>delete</b> to confirm<input type="text" id="deleteUserWord" autocomplete="off" required></label>
+    <p id="deleteUserMsg" class="msg err" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="deleteUserCancel">Cancel</button><button class="btn danger" type="submit">Delete user</button></div>
+  </form>
+</dialog>
+
+<dialog id="pwDlg" aria-labelledby="pwT">
+  <form id="pwForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="pwT" style="margin:0">Change password</h2>
+    <label for="cur" class="muted">Current password</label>
+    <input id="cur" type="password" autocomplete="current-password" required>
+    <label for="nw" class="muted">New password (8+ characters)</label>
+    <input id="nw" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="nw2" class="muted">Confirm new password</label>
+    <input id="nw2" type="password" autocomplete="new-password" minlength="8" required>
+    <p class="msg err" id="pwMsg" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="pwCancel">Cancel</button><button class="btn" type="submit">Save password</button></div>
+  </form>
+</dialog>
+
+<dialog id="cleanDlg" aria-labelledby="cleanT">
+  <form id="cleanForm" class="form" style="flex-direction:column;align-items:stretch">
+    <h2 id="cleanT" style="margin:0;color:var(--danger)">Delete everything?</h2>
+    <p style="margin:0">This permanently deletes <b>every song</b> in storage, all playlists, the request queue, artwork, play counts, hearts, likes and dislikes. It cannot be undone.</p>
+    <label for="cPw" class="muted">Enter password</label>
+    <input id="cPw" type="password" autocomplete="current-password" required>
+    <label for="cWord" class="muted">Write “confirm” to continue</label>
+    <input id="cWord" type="text" autocomplete="off" required>
+    <p class="msg err" id="cMsg" role="alert"></p>
+    <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
+  </form>
+</dialog>
+<script type="module" src="/admin.js?v=16.0.0"></script>
+</body>
+</html>

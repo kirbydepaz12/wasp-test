@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>WASP Mobile Bridge · v16 staging</title>
+<link rel="icon" href="/wasp-icon.png"><style>
+:root{color-scheme:dark;font:16px/1.6 system-ui,sans-serif;background:#11130f;color:#f3f4ef}*{box-sizing:border-box}
+main{max-width:750px;margin:7vh auto;padding:32px;background:#1b1e19;border:1px solid #3a4233;border-radius:20px}h1{line-height:1.2;color:#cbf06d}code{background:#30382b;color:#dbf9a4;padding:5px 8px;border-radius:6px;word-break:break-all}p{color:#ddd}a{color:#caf06e}small{color:#aaa}ul{padding-left:20px}img{width:55px;vertical-align:middle;margin-right:10px}button{border:0;background:#caf06e;border-radius:8px;padding:12px;cursor:pointer;font-weight:700}
+</style></head><body><main>
+<h1><img src="/wasp-icon.png" alt="">WASP Mobile Bridge</h1><p>Staging compatibility endpoint for Subsonic and OpenSubsonic music apps. WASP remains the music server; this layer only translates client requests.</p>
+<p>Server URL for compatible apps: <code id="uri"></code></p><button id="copy" type="button">Copy server URL</button>
+<ul><li>Sign into your WASP member account in the <a href="/#settings/mobile">web player</a>.</li><li>Open Account Settings → Mobile and generate a device credential (the administrator must first enable Mobile Bridge).</li><li>Enter this server URL, your WASP username, and the generated <em>app password</em> in your music player. OpenSubsonic apps supporting API keys can instead use the generated key directly.</li><li>Music from connected v15 peers appears after the WASP staging administrator adds and syncs the peer in Admin → Network.</li></ul>
+<small>Staging release: not a full Subsonic server. Source peer audio is streamed on demand, not imported. Never enter your regular website password into a third-party mobile player.</small>
+</main><script>const u=location.origin+'/mobile';document.querySelector('#uri').textContent=u;document.querySelector('#copy').onclick=async()=>{await navigator.clipboard.writeText(u);document.querySelector('#copy').textContent='Copied';};</script></body></html>

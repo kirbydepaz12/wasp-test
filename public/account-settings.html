@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WASP · Account settings</title></head>
+<body>
+  <!-- Fetched as a same-origin HTML document and mounted into the existing player page.
+       Scripts do not run here; app.js binds the live form and permission actions. -->
+  <section id="accountSettingsLayout" class="settings-modal-shell">
+    <header class="settings-modal-head">
+      <div><p class="settings-modal-kicker">WASP ACCOUNT</p><h2 id="accountSettingsTitle">Account settings</h2>
+        <p class="settings-modal-description">Manage your account without leaving the music.</p></div>
+      <button id="accountSettingsClose" class="settings-modal-close" type="button" aria-label="Close account settings" title="Close account settings">×</button>
+    </header>
+    <nav class="settings-modal-tabs" role="tablist" aria-label="Account settings sections">
+      <button type="button" role="tab" data-settings-tab="account" aria-selected="true">Account</button>
+      <button type="button" role="tab" data-settings-tab="publish" aria-selected="false">Publish</button>
+      <button type="button" role="tab" data-settings-tab="mobile" aria-selected="false">Mobile</button>
+    </nav>
+    <div id="accountSettingsContent" class="settings-modal-body" aria-live="polite"></div>
+  </section>
+</body>
+</html>
