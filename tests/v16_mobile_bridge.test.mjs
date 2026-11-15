@@ -20,6 +20,7 @@ function fixture(){
     'CREATE TABLE user_song_reactions(user_id TEXT,track_id TEXT,kind TEXT)',
     'CREATE TABLE recent_listens(id TEXT,track_id TEXT,origin TEXT,remote_id TEXT,title TEXT,artist TEXT,album TEXT,played_at INTEGER)',
     'CREATE TABLE mobile_scrobble_events(credential_id TEXT,track_id TEXT,reported_at INTEGER,PRIMARY KEY(credential_id,track_id,reported_at))',
+    "CREATE TABLE active_streams(session_id TEXT PRIMARY KEY,origin TEXT NOT NULL DEFAULT '',track_id TEXT NOT NULL,expires_at INTEGER NOT NULL,started_at INTEGER NOT NULL DEFAULT 0)",
     'CREATE TABLE peer_listens(origin TEXT,remote_id TEXT,plays INTEGER,synced_plays INTEGER DEFAULT 0,PRIMARY KEY(origin,remote_id))',
   ])db.exec(sql);
   db.prepare('INSERT INTO user_accounts VALUES (?,?)').run('user1','listener');
@@ -170,6 +171,48 @@ test('peer range streaming forwards bytes but never mobile credentials or cookie
     res=await handleMobileRest(new Request(url,{redirect:'manual'}),env,url);
     assert.equal(res.status,307);assert.equal(res.headers.get('location'),'https://stage.example.com/audio/local01');
   }finally{globalThis.fetch=original;}
+});
+test('mobile stream requests update anonymous active status for local and peer music, without counting downloads or HEAD',async()=>{
+  const {env,db}=fixture();const {secret}=await provision(env);
+  const old=globalThis.fetch;
+  globalThis.fetch=async()=>new Response(new Uint8Array([1,2,3]),{status:206,headers:{'content-type':'audio/mpeg','content-range':'bytes 0-2/300'}});
+  try{
+    const credentials={apiKey:secret};
+    let url=endpoint('stream',{...credentials,id:'p:p1:remote01'});
+    const peer=await handleMobileRest(new Request(url),env,url);
+    assert.equal(peer.status,206);
+    let rows=db.prepare('SELECT session_id,origin,track_id,expires_at,started_at FROM active_streams').all();
+    assert.equal(rows.length,1);assert.equal(rows[0].origin,'https://v15.example.com');assert.equal(rows[0].track_id,'remote01');
+    assert.ok(rows[0].expires_at>Date.now()+60000);
+    const originalStarted=rows[0].started_at;
+    // Range re-requests for the same device/song update the same session.
+    await handleMobileRest(new Request(url,{headers:{range:'bytes=100-200'}}),env,url);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM active_streams').get().n,1);
+    assert.equal(db.prepare('SELECT started_at FROM active_streams').get().started_at,originalStarted);
+    // Downloads and HEAD requests must not claim someone is actively listening.
+    url=endpoint('download',{...credentials,id:'l:local01'});
+    await handleMobileRest(new Request(url),env,url);
+    url=endpoint('stream',{...credentials,id:'l:local01'});
+    await handleMobileRest(new Request(url,{method:'HEAD'}),env,url);
+    assert.equal(db.prepare('SELECT track_id FROM active_streams').get().track_id,'remote01');
+    const local=await handleMobileRest(new Request(url),env,url);
+    assert.equal(local.status,307);
+    rows=db.prepare('SELECT origin,track_id,started_at FROM active_streams').all();
+    assert.equal(rows.length,1);assert.equal(rows[0].origin,'');assert.equal(rows[0].track_id,'local01');
+    assert.ok(rows[0].started_at>=originalStarted);
+    // Presence is anonymous: the public state stores no account names or keys.
+    assert.ok(!JSON.stringify(rows).includes('listener'));
+    assert.ok(!JSON.stringify(rows).includes(secret));
+  }finally{globalThis.fetch=old;}
+});
+test('Subsonic playback-start scrobbles mark the song live but do not count as completed plays',async()=>{
+  const {env,db}=fixture();const {secret}=await provision(env);
+  const url=endpoint('scrobble',{apiKey:secret,id:'p:p1:remote01',submission:'false',f:'json'});
+  const body=(await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  assert.equal(body.status,'ok');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM recent_listens').get().n,0);
+  assert.equal(db.prepare('SELECT track_id FROM active_streams').get().track_id,'remote01');
+  assert.ok(db.prepare('SELECT expires_at FROM active_streams').get().expires_at>Date.now());
 });
 test('revocation blocks further API use; secret is never listed again',async()=>{
   const {env}=fixture();const key=await provision(env);

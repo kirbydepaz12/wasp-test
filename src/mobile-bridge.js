@@ -1,6 +1,7 @@
 import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
 import {readMobilePlaylists} from './mobile-playlists.js';
 import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
+import {recordMobilePlayback} from './mobile-live.js';
 /**
  * WASP v16 staging: an opt-in read-focused Subsonic/OpenSubsonic compatibility
  * adapter. WASP's native API, player, peer protocol, and music storage remain
@@ -9,7 +10,7 @@ import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.4';
+const WASP_VERSION = '16.0.5';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -614,7 +615,18 @@ export async function handleMobileRest(req,env,url){
     // writes on a source peer simply to discover metadata in staging.
     return protocolResponse(action==='getLyrics'?{lyrics:{artist:clean(p.get('artist')),title:clean(p.get('title'))}}:{lyricsList:{structuredLyrics:[]}},null,format);
   }
-  if(action==='stream'||action==='download')return audio(req,env,respondForSong(catalogue,id));
+  if(action==='stream'||action==='download'){
+    const track=respondForSong(catalogue,id);
+    const response=await audio(req,env,track);
+    // Only actual authenticated stream GETs, never HEAD or downloads. A
+    // successful local redirect or remote 200/206 gives a bounded presence
+    // signal even if the client never sends Subsonic playback-start scrobbles.
+    // Status is approximate: Subsonic does not standardize pause/stop events.
+    if(action==='stream'&&req.method==='GET'&&[200,206,307].includes(response.status)){
+      try{await recordMobilePlayback(env.DB,auth,track);}catch{} // Live status must never interrupt playback.
+    }
+    return response;
+  }
   if(action==='getCoverArt'){
     if(id.startsWith('pl:')){
       const playlists=await readMobilePlaylists(env.DB,catalogue,auth);
@@ -626,7 +638,13 @@ export async function handleMobileRest(req,env,url){
   if(action==='scrobble'){
     // Only submitted *completed* listens count; client-side playback start is
     // not proof of listening. Peer sources are never written to by this API.
-    if(p.get('submission')==='false')return protocolResponse({},null,format);
+    if(['false','0'].includes(p.get('submission'))){
+      // Subsonic clients may report a playback start without a confirmed play.
+      // Record anonymous live presence; never increment play counts here.
+      const startedTrack=respondForSong(catalogue,id);
+      if(startedTrack){try{await recordMobilePlayback(env.DB,auth,startedTrack);}catch{}}
+      return protocolResponse({},null,format);
+    }
     const track=respondForSong(catalogue,id);
     if(!track)return protoError(70,'Song not found',format);
     const played=Date.now();

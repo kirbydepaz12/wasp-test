@@ -5,6 +5,12 @@
 </div>
 
 
+## WASP v16.0.5 — Mobile Live Streaming Activity (staging hotfix)
+
+Mobile playback through supported Subsonic/OpenSubsonic clients now contributes **best-effort anonymous live presence** to the existing WASP `/#listened` streaming section, including approved peer tracks. The Mobile Bridge records successful stream requests and start-scrobble signals in the current `active_streams` table; it does not create extra scrobbles or copy audio. Multiple byte-range requests from one mobile key count as only one session. There is **no database migration**.
+
+**Compatibility limit:** Third-party clients may pause, preload entire tracks, or play offline without sending status updates. Live presence therefore expires after a bounded time and can briefly overstate or miss actual playback. WASP's native web-player presence remains more accurate because it sends explicit play/pause/stop signals. For cross-server dashboards, the mobile-hosting WASP must be reachable as an approved peer. See [`docs/V16-0-5-MOBILE-LIVE-PRESENCE.md`](docs/V16-0-5-MOBILE-LIVE-PRESENCE.md).
+
 ## WASP v16.0.4 — Mobile Bridge / Subsonic & OpenSubsonic integration
 
 **WASP now supports connecting compatible Subsonic/OpenSubsonic mobile music players to its existing peer-to-peer music network.** An Android client has successfully authenticated to the v16 staging Mobile Bridge and displayed server playlists with real song entries. This confirms **mobile API connection and playlist browsing**; the v16.0.4 playlist-artwork fix still requires a fresh on-device test, and a successful full-network playback test remains a production-release requirement.
