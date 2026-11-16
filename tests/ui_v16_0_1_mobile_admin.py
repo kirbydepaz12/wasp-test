@@ -1,10 +1,11 @@
 """Browser regression: Mobile Bridge moved to Network and manages D1 secrets."""
 from pathlib import Path
+import re
 from playwright.sync_api import sync_playwright
 p=Path(__file__).resolve().parents[1]
-html=(p/'public/admin.html').read_text().replace('<script type="module" src="/admin.js?v=16.0.5"></script>','')
+html=re.sub(r'<script type="module" src="/admin.js(?:\?v=[^"]+)?"></script>', '', (p/'public/admin.html').read_text())
 css=(p/'public/style.css').read_text()
-html=html.replace('<link rel="stylesheet" href="/style.css?v=16.0.5">',f'<style>{css}</style>')
+html=re.sub(r'<link rel="stylesheet" href="/style.css(?:\?v=[^"]+)?">',f'<style>{css}</style>',html)
 src=(p/'public/admin.js').read_text()
 segment=src[src.index('// WASP v16.0.5 Mobile Bridge:'):src.index('// ---------- general settings: branding')]
 nav=src[src.index('let cronsLoaded=false;'):src.index('function cronJobTemplate(key){')]

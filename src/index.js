@@ -1,5 +1,5 @@
 import {RELEASE_DOCS} from "./release-docs.js";
-import {recordTelemetryListen, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
+import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
@@ -7,8 +7,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.0";
-const BUILD_LABEL = "HIVE Telemetry · Lazy-Loaded Views";
+const BUILD_VERSION = "17.0.1";
+const BUILD_LABEL = "HIVE Telemetry · Interactive Charts";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1625,6 +1625,7 @@ async function api(req, env, url, ctx) {
           .bind(track.title,track.artist,track.album,track.track_no,track.duration,track.size,track.id),
         ...artistIndexStatements(DB,track),
       ]);
+      if(t.release_year||t.genre)await rememberTrackMetadata(env,track.id,{release_year:t.release_year,genre:t.genre}).catch(()=>{});
     }
     return json({ok:true,indexed:body.tracks.length});
   }
@@ -2641,6 +2642,7 @@ async function api(req, env, url, ctx) {
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
     stmts.push(...artistIndexStatements(DB,t));
     await DB.batch(stmts);
+    if(meta.year||meta.genre)await rememberTrackMetadata(env,t.id,{release_year:meta.year,genre:meta.genre}).catch(()=>{});
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
     // Automatically warm biography and artwork for new artists/albums. Never
     // fail an upload because a third-party artwork service is unavailable.

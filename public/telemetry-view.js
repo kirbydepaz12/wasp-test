@@ -7,6 +7,18 @@ const clip=s=>String(s||'').slice(0,190);
 const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'year',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:new Date().toISOString().slice(0,10),request:0};
 const names={top:'Most listened',hearts:'Most hearted',likes:'Most liked',dislikes:'Most disliked'};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const tagColors=['#c8f169','#49d8be','#7ba7ff','#a88bff','#ffba67','#ec86b6','#62bfed','#89b8a0'];
+const tooltip=document.createElement('div');tooltip.className='telemetry-tooltip';tooltip.hidden=true;
+document.body.appendChild(tooltip);
+function showTooltip(e,content){
+  if(!content){tooltip.hidden=true;return;}
+  tooltip.textContent=content;tooltip.hidden=false;
+  const width=tooltip.offsetWidth,height=tooltip.offsetHeight;
+  const x=Math.max(8,Math.min(innerWidth-width-8,e.clientX+14));
+  const y=e.clientY+17+height>innerHeight?e.clientY-height-10:e.clientY+17;
+  tooltip.style.left=x+'px';tooltip.style.top=Math.max(6,y)+'px';
+}
+
 function tell(type,extra={}){if(window.parent!==window)window.parent.postMessage({type,...extra},location.origin);}
 const int=(v,min,max)=>Math.max(min,Math.min(max,Number(v)||min));
 const cover=(src,alt)=>src?`<img loading="lazy" class="cover" src="${safe(src)}" alt="${safe(alt)}" onerror="this.style.display='none'">`:'<span class="cover empty">♫</span>';
@@ -28,10 +40,96 @@ function bars(rows,weekly=false){
   const values=weekly?Array.from({length:7},(_,i)=>({label:['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i],plays:Number(rows.find(x=>Number(x.weekday)===i)?.plays)||0})):
     rows.map(x=>({label:x.label,plays:Number(x.plays)||0}));
   const max=Math.max(1,...values.map(x=>x.plays));
-  return `<div class="chart" role="img" aria-label="Listening activity bars">${values.length?values.map(v=>`<div class="bar-slot" title="${safe(v.label)}: ${n(v.plays)} confirmed plays"><i class="bar" style="height:${Math.max(1,100*v.plays/max)}%"></i><small>${safe(v.label.slice(-5))}</small></div>`).join(''):'<p class="message">No recorded activity for this period.</p>'}</div>`;
+  return `<div class="chart" role="img" aria-label="Listening activity bars">${values.length?values.map(v=>`<div class="bar-slot" tabindex="0" data-tip="${safe(v.label)}: ${n(v.plays)} confirmed plays"><i class="bar" style="height:${Math.max(1,100*v.plays/max)}%"></i><small>${safe(v.label.slice(-5))}</small></div>`).join(''):'<p class="message">No recorded activity for this period.</p>'}</div>`;
 }
-function hourChart(rows){const max=Math.max(1,...rows.map(x=>Number(x.plays)||0));return `<div class="hour-chart" role="img" aria-label="Listening by time of day">
-  ${Array.from({length:24},(_,i)=>{const value=Number(rows.find(x=>Number(x.hour)===i)?.plays)||0;return `<div class="hour" title="${i}:00 — ${n(value)} confirmed plays"><i style="height:${Math.max(2,90*value/max)}%"></i><small>${i%3===0?String(i).padStart(2,'0'):''}</small></div>`;}).join('')}</div>`;}
+function anglePoint(cx,cy,r,angle){const q=angle*Math.PI/180;return [cx+r*Math.cos(q),cy+r*Math.sin(q)];}
+function annularPath(cx,cy,inside,outside,start,end){
+  const a=anglePoint(cx,cy,outside,start),b=anglePoint(cx,cy,outside,end),
+    c=anglePoint(cx,cy,inside,end),d=anglePoint(cx,cy,inside,start);
+  return `M${a.join(',')} A${outside},${outside} 0 0 1 ${b.join(',')} L${c.join(',')} A${inside},${inside} 0 0 0 ${d.join(',')} Z`;
+}
+function hourChart(rows){
+  const counts=Array.from({length:24},(_,i)=>Number(rows.find(x=>Number(x.hour)===i)?.plays)||0);
+  const max=Math.max(1,...counts),total=counts.reduce((a,b)=>a+b,0);
+  const busiest=counts.indexOf(Math.max(...counts));
+  const parts=counts.map((v,i)=>{
+    const degree=-90+i*15,depth=v>0?32*(.3+.7*v/max):0;
+    const path=annularPath(160,150,78,78+depth,degree+1,degree+14);
+    return `<path class="clock-sector ${v?'has-plays':'no-plays'}" tabindex="0" role="img" aria-label="${i}:00: ${v} plays" data-tip="${String(i).padStart(2,'0')}:00–${String((i+1)%24).padStart(2,'0')}:00: ${n(v)} confirmed plays${total?' · '+(100*v/total).toFixed(1)+'% of this period':''}" d="${path}" style="--intensity:${v/max}"></path>`;
+  }).join('');
+  const ticks=[0,6,12,18].map(i=>{
+    const [x,y]=anglePoint(160,150,132,-90+i*15);
+    return `<text x="${x}" y="${y+4}" text-anchor="middle" class="clock-tick">${String(i).padStart(2,'0')}</text>`;
+  }).join('');
+  return `<div class="clock-wrap"><svg viewBox="0 0 320 305" role="group" aria-label="24-hour listening clock">
+    <circle cx="160" cy="150" r="94" fill="none" stroke="#383734" stroke-width="33"/>
+    ${parts}${ticks}<text x="160" y="141" text-anchor="middle" class="clock-center-small">BUSIEST HOUR</text>
+    <text x="160" y="166" text-anchor="middle" class="clock-center-big">${total?String(busiest).padStart(2,'0')+':00':'—'}</text>
+    <text x="160" y="186" text-anchor="middle" class="clock-center-small">${n(counts[busiest])} plays</text>
+    </svg><div class="clock-caption"><b>${total?n(counts[busiest]):'0'}</b> confirmed plays at the busiest hour<br>
+    <small>Each segment is one hour in your selected timezone.</small></div></div>`;
+}
+function tagStream(tags,series){
+  if(!tags?.length)return `<p class="message">Genre information is not yet available for the songs in this period. Artist tags are used only when confirmed by WASP metadata.</p>`;
+  const labels=[...new Set((series||[]).map(r=>r.label))];
+  if(!labels.length)for(const r of tags[0]?.periods||[])labels.push(r.label);
+  const W=640,H=200,margin=18;
+  const rows=tags.slice(0,8).map((t,i)=>({
+    ...t,color:tagColors[i],values:labels.map(k=>Number(t.periods?.find(r=>r.label===k)?.plays)||0)}));
+  const sum=labels.map((_,i)=>rows.reduce((a,r)=>a+r.values[i],0));
+  const max=Math.max(1,...sum),scale=145/max;
+  const xpos=i=>margin+(labels.length<2?W/2:(W-2*margin)*i/(labels.length-1));
+  const baseline=sum.map(total=>H/2+total*scale/2);
+  const layers=rows.map((t,j)=>{
+    const lower=t.values.map((_,i)=>baseline[i]-rows.slice(0,j).reduce((s,r)=>s+r.values[i],0)*scale);
+    const upper=t.values.map((v,i)=>lower[i]-v*scale);
+    const points=upper.map((y,i)=>[xpos(i),y]).concat(lower.map((y,i)=>[xpos(i),y]).reverse());
+    const d=points.map(([x,y],i)=>`${i?'L':'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')+' Z';
+    const peak=t.periods?.reduce((a,b)=>Number(b.plays)>Number(a?.plays||0)?b:a,null);
+    const tip=`${t.name}: ${n(t.plays)} tagged plays${peak?' · Peak '+peak.label+': '+n(peak.plays):''}`;
+    return `<path class="genre-layer" tabindex="0" role="img" data-genre="${safe(t.name)}" data-tip="${safe(tip)}" d="${d}" fill="${t.color}" />`;
+  }).join('');
+  const ticks=labels.filter((_,i)=>i%Math.max(1,Math.ceil(labels.length/8))===0);
+  const tickLabels=ticks.map(label=>{const i=labels.indexOf(label);return `<text x="${xpos(i)}" y="216" text-anchor="middle" fill="#aaa299" font-size="11">${safe(label.slice(-7))}</text>`;}).join('');
+  return `<div class="stream-wrap"><svg class="genre-chart" viewBox="0 0 640 230" aria-label="Genre listening activity over time" role="group">
+     <line x1="18" y1="100" x2="622" y2="100" stroke="#55534d" stroke-dasharray="2,4" opacity=".45" />
+     ${layers}${tickLabels}</svg><div class="tag-legend">${rows.map(t=>`<button type="button" class="tag-key" data-genre="${safe(t.name)}" data-tip="${safe(t.name)}: ${n(t.plays)} tagged plays"><i style="background:${t.color}"></i><span>${safe(t.name)}</span><b>${n(t.plays)}</b></button>`).join('')}</div>
+     <p class="note">Tags can overlap: a play may count toward more than one genre. Labels come from available artist or track metadata.</p></div>`;
+}
+function decadesChart(rows,total,yearMetadataPlays){
+  const decades=rows||[];
+  if(!decades.length)return `<p class="message">No verified release-year metadata yet. Future indexed tracks will use their ID3 release year; unknown years are never estimated.</p>`;
+  const max=Math.max(1,...decades.map(r=>Number(r.plays)||0));
+  const bars=decades.map(r=>{
+    const d=Number(r.decade),label=d<1960?'Pre-1960':`${d}s`,plays=Number(r.plays)||0;
+    const pct=total?100*plays/total:0;
+    const details=[`${label}: ${n(plays)} plays (${pct.toFixed(1)}%)`,`${n(r.artists)} artists, ${n(r.albums)} albums, ${n(r.tracks)} tracks`,r.topAlbum?`Top album: ${r.topAlbum} · ${r.topArtist}`:''].filter(Boolean).join(' · ');
+    return `<div class="decade-row" tabindex="0" data-tip="${safe(details)}"><span>${safe(label)}</span><div class="decade-track"><div class="decade-fill" style="width:${Math.max(1,100*plays/max)}%"></div></div><b>${n(plays)}</b><small>${pct.toFixed(1)}%</small></div>`;
+  }).join('');
+  const best=[...decades].sort((a,b)=>Number(b.plays)-Number(a.plays))[0];
+  return `<div class="decades-chart">${bars}<div class="decade-summary"><b>Most played era: ${Number(best.decade)}s</b><small>${best.topAlbum?`Top album: ${safe(best.topAlbum)} · ${safe(best.topArtist)}`:'Decade with the most confirmed plays'}</small></div>
+  <p class="note">${n(yearMetadataPlays)} of ${n(total)} plays have verified release-year metadata. Unknown years are excluded.</p></div>`;
+}
+let worldPromise=null;
+async function mountWorldMap(request,countries,unknown){
+  const target=root.querySelector('#worldMap');if(!target)return;
+  try{
+    if(!worldPromise)worldPromise=fetch('/telemetry-world.json?v=17.0.1').then(r=>{if(!r.ok)throw Error('Map unavailable');return r.json();});
+    const countriesMap=new Map((countries||[]).map(r=>[r.code,r]));
+    const shapes=await worldPromise;
+    if(request!==state.request||!target.isConnected)return;
+    if(!Array.isArray(shapes))throw Error('Map is unavailable');
+    const max=Math.max(1,...[...countriesMap.values()].map(x=>Number(x.plays)||0));
+    const paths=shapes.map(c=>{
+      const row=countriesMap.get(c.code),plays=Number(row?.plays)||0;
+      const strength=plays>0?.2+.8*Math.sqrt(plays/max):0;
+      const fill=plays>0?`rgba(200,241,105,${strength.toFixed(3)})`:'#343735';
+      return `<path class="map-country${plays?' active':''}" tabindex="0" data-tip="${safe(c.name+': '+n(plays)+' confirmed plays'+(row?' · '+n(row.artists)+' artists':''))}" aria-label="${safe(c.name+': '+n(plays)+' plays')}" d="${safe(c.d)}" fill="${fill}"/>`;
+    }).join('');
+    target.innerHTML=`<svg viewBox="0 0 900 435" role="group" aria-label="Listening activity by verified artist origin country">${paths}</svg>`;
+    resized();
+  }catch {if(target.isConnected)target.textContent='Map data unavailable.';}
+}
 function fingerprint(data){
   const values=[Number(data.consistency)||0,1-(Number(data.concentration)||0),Number(data.repeatRate)||0,Number(data.artists||0)/Math.max(1,Number(data.plays)||1),Number(data.activeDays||0)/Math.max(1,Number(data.plays)||1)];
   const labels=['Consistency','Diversity','Repeat rate','Artist variety','Activity spread'];
@@ -81,9 +179,16 @@ async function showHive(){
           <div><span>Busiest listening hour</span><b>${data.busiestHour==null?'—':String(data.busiestHour).padStart(2,'0')+':00'}</b><small>${n(data.busiestHourPlays)} plays</small></div>
           <div><span>Active days in selected period</span><b>${n(data.activeDays)}</b></div>
         </div></div></div></div>
-      <div class="two-col section"><div class="info-card"><h3>Genres & discovery</h3><p>Additional breakdowns appear when verified genre and release-year metadata becomes available. WASP won't invent missing tags or artist geography.</p></div>
-      <div class="info-card"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div></div>
+      <div class="section"><div class="panel"><div class="chart-head"><h2>Top tags · genre trends</h2><small>Hover to highlight a genre</small></div>${tagStream(data.topTags||[],data.series||[])}</div></div>
+      <div class="two-col section"><div class="panel"><div class="chart-head"><h2>Artist origin heat map</h2><small>Verified country metadata only</small></div>
+        <div id="worldMap" class="world-map"><p class="message">Preparing country map…</p></div>
+        <div class="world-legend"><span>Lower activity</span><i></i><strong>Higher activity</strong></div>
+        <p class="note">${n(data.unknownCountryPlays)} plays have unknown artist origin. Artist geography is not inferred from IP addresses or user locations.</p>
+      </div><div class="panel"><div class="chart-head"><h2>Music by decade</h2><small>Album / track release years</small></div>
+        ${decadesChart(data.decades||[],Number(data.plays)||0,Number(data.yearMetadataPlays)||0)}</div></div>
+      <div class="info-card section"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div>
       <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs.</p>`;
+    void mountWorldMap(request,data.countries||[],data.unknownCountryPlays||0);
   }catch(e){if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
   resized();
 }
@@ -100,6 +205,22 @@ function movePeriod(delta){
   else state.year+=delta;
   state.year=int(state.year,2000,2100);
 }
+function updateTagFocus(el){
+  const tag=el?.closest?.('[data-genre]')?.dataset.genre;
+  root.querySelectorAll('[data-genre]').forEach(node=>node.classList.toggle('dimmed',Boolean(tag)&&node.dataset.genre!==tag));
+  root.querySelectorAll('[data-genre]').forEach(node=>node.classList.toggle('highlighted',Boolean(tag)&&node.dataset.genre===tag));
+}
+root.addEventListener('pointermove',e=>{
+  const active=e.target.closest?.('[data-tip]');
+  updateTagFocus(active);
+  showTooltip(e,active?.dataset.tip||'');
+});
+root.addEventListener('pointerleave',()=>{showTooltip(null,'');updateTagFocus(null);});
+root.addEventListener('focusin',e=>{
+  const active=e.target.closest?.('[data-tip]');updateTagFocus(active);
+  if(active){const r=active.getBoundingClientRect();showTooltip({clientX:r.left+r.width/2,clientY:r.top},active.dataset.tip);}
+});
+root.addEventListener('focusout',()=>{showTooltip(null,'');updateTagFocus(null);});
 root.addEventListener('change',e=>{
   if(e.target.id==='year')state.year=int(e.target.value,2000,2100);
   else if(e.target.id==='month')state.month=int(e.target.value,1,12);

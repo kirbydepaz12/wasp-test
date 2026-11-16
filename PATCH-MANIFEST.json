@@ -1,48 +1,104 @@
 {
-  "release": "17.0.0",
-  "requires": "16.0.6",
+  "release": "17.0.1",
+  "base": "17.0.0",
+  "applies_to": "exact WASP v17.0.0 source",
+  "base_zip_sha256": "3c341421f01e06361fe99c4f9fe794adefa578fd8bbbcb65fbe1dc7ae2d2acb9",
   "changed_files": [
-    "README.md",
-    "docs/V17-0-0-HIVE-TELEMETRY.md",
-    "package.json",
-    "public/admin.html",
-    "public/admin.js",
-    "public/app.js",
-    "public/index.html",
-    "public/style.css",
-    "public/telemetry-view.js",
-    "public/telemetry.css",
-    "public/telemetry.html",
-    "src/index.js",
-    "src/mobile-bridge.js",
-    "src/release-docs.js",
-    "src/telemetry.js",
-    "tests/ui_v17_playback_continuity.py",
-    "tests/ui_v17_telemetry_chart.py",
-    "tests/v14_0_2_refresh_crons_peerplays.test.mjs",
-    "tests/v16_0_6_sample_slider.test.mjs",
-    "tests/v17_telemetry.test.mjs"
+    {
+      "path": "README.md",
+      "sha256": "bcf00ebec20a830fe6e02f500421762bd4cfb4baa404b19239f3468ea42e1043",
+      "bytes": 24471
+    },
+    {
+      "path": "docker/gateway.mjs",
+      "sha256": "4f40fac887c1c35e661ef2fba0d79c05fc86bb2849662eb00ecea2b6c7fbcd56",
+      "bytes": 11150
+    },
+    {
+      "path": "docs/V17-0-1-TELEMETRY-VISUAL-REFINEMENT.md",
+      "sha256": "2acef8edacb9dde51086fcbc4ffba83e05152845dcfc1b767020f6d707013adc",
+      "bytes": 4609
+    },
+    {
+      "path": "package.json",
+      "sha256": "5f80684d4d0855b9a5fe9272d89e6547bfa2028b37c67e09d41cbeb70b96be83",
+      "bytes": 465
+    },
+    {
+      "path": "public/id3.js",
+      "sha256": "da52f7c9a5817f97e1d3c242acad5afbf18ea0b52474a688b0309911252341f5",
+      "bytes": 2740
+    },
+    {
+      "path": "public/index.html",
+      "sha256": "93b8ebe15a6947a98e57ae0ed540f22ec0dad2df799a636dce0788bcf4a23aab",
+      "bytes": 12640
+    },
+    {
+      "path": "public/telemetry-view.js",
+      "sha256": "3f3936d2b0a779cdf455d84519c86fd431b387042fb6e6de5e86c77f9346e664",
+      "bytes": 23429
+    },
+    {
+      "path": "public/telemetry-world.json",
+      "sha256": "ce253925cd9ada5c6e710ae9631833a673cd0890b938ad34b86ad7a5d1c49bc4",
+      "bytes": 53883
+    },
+    {
+      "path": "public/telemetry.css",
+      "sha256": "41a592f8b59a528d70c3a7e7b377b52f8cdf9ca679af97b29161af6f563a369b",
+      "bytes": 11115
+    },
+    {
+      "path": "public/telemetry.html",
+      "sha256": "3f1425399050cf29bc0d3a8ee53b24120b11f0c96fa78e09597901ac45cab70a",
+      "bytes": 423
+    },
+    {
+      "path": "src/index.js",
+      "sha256": "7d2f88ee81a57e9d2df8f79d450d37253c78f0323b2dda0a1f82591cf8e2ca15",
+      "bytes": 205047
+    },
+    {
+      "path": "src/mobile-bridge.js",
+      "sha256": "9913bb7899415879caf560a34b04747dcdbbf30364a16dde1bcb015b92f03553",
+      "bytes": 51244
+    },
+    {
+      "path": "src/release-docs.js",
+      "sha256": "78faf733199fc44e222b749f2407351917ed789501755cd976db85199e008add",
+      "bytes": 154539
+    },
+    {
+      "path": "src/telemetry.js",
+      "sha256": "b93b0602d4716db4f4aba739a328017b8764e0d69ee170e427325b68065218c6",
+      "bytes": 25312
+    },
+    {
+      "path": "tests/ui_v16_0_1_mobile_admin.py",
+      "sha256": "cfbb54ee530af09bdd0a44f9d5080a40d39f77f188c55d5a18b19c6e4b122f06",
+      "bytes": 3732
+    },
+    {
+      "path": "tests/ui_v17_0_1_charts.py",
+      "sha256": "c34c41a88bd5ff76619fea2045fe82a54a6a68cece99cc6fa237be180ea8b70c",
+      "bytes": 3692
+    },
+    {
+      "path": "tests/v14_0_2_refresh_crons_peerplays.test.mjs",
+      "sha256": "bbd5e79df7f8ec88b9411e6eebedcab1d6c0f59ffa8afcc62ea58a60e75539f7",
+      "bytes": 8175
+    },
+    {
+      "path": "tests/v17_0_1_visual_aggregates.test.mjs",
+      "sha256": "e7bff85728e95506018f224f49a6dea01fd65191f90ede92712f4ac8b835dd6d",
+      "bytes": 4356
+    },
+    {
+      "path": "tests/v17_telemetry.test.mjs",
+      "sha256": "4c0f7708e763ce86e2c956adda4e0995f1d8491c3a80101b09151d02450ec4e8",
+      "bytes": 6180
+    }
   ],
-  "sha256": {
-    "README.md": "1a1e207faf4c8d2494a2c40c6051910aff4b6d4e55c61e208c48c70afa4499f0",
-    "docs/V17-0-0-HIVE-TELEMETRY.md": "e3dcf45af763c59b773439ac4666ad7cc35dad6850e34abc7f47c1ca42a78919",
-    "package.json": "a5c99735c333fa0eb95078a892398319db288a1abf941d8aeeb028a03fec6b6d",
-    "public/admin.html": "077ee618d2b34f1b95a6b6e6436ff794c95c1e144e89d1e55768110876ed18f7",
-    "public/admin.js": "13bf81e21ee7cfd74b283b300178d5cd637d13945d2f4aab3f1427bb8fc6faaa",
-    "public/app.js": "c0b8f53c3fd8939bfbcff70b2156a7965446fe1352ad79722fb3518c4f9a12d0",
-    "public/index.html": "cee86ea87b23e4ea7d9cbe8e6916ed2544372443c4f673bf715fc12226d1b61d",
-    "public/style.css": "d9b1e77f8c1f92ac73d4808f947621eaf6789809931abf01fccc53d5cd5154b1",
-    "public/telemetry-view.js": "90e2b8ec94dd05feb122467369ffde44c048b9ded794db8ec124f81182dcb530",
-    "public/telemetry.css": "2af3ff0a38839cc79a21a7b63991bbd28d304e6ceafc62cb97a858248f6e615a",
-    "public/telemetry.html": "7e91c2669e1ce8c77f44c73befa8c8fbab1620e93424d44c09715aa2c86739c2",
-    "src/index.js": "d0f6b2d2db1ef95c377446b6fea4a929cb0e88c4d1fd9880b58efc21a8057df9",
-    "src/mobile-bridge.js": "f95e70177b3ca5edd92752f62036d8aa4ba0576ac1c2fca22ddc623f9b64ccad",
-    "src/release-docs.js": "a595069bdb476ea6cf4b8f54ca6527336041508b3783367098e8026e857b16fa",
-    "src/telemetry.js": "d754b54f71c3e92227c820c6dfd5e1b08b6ef5cfbc79540e65282578aa7f5777",
-    "tests/ui_v17_playback_continuity.py": "bfae24963972f2a2dcf875908392f323a3e35a307862ef57c65e5b9b5bbc014a",
-    "tests/ui_v17_telemetry_chart.py": "3ea644f06e41783c1de1ef018a499be528d455ddb25d06d492125ad3f86e5871",
-    "tests/v14_0_2_refresh_crons_peerplays.test.mjs": "dc2d51e1d9f586ac1dc5aa491a46e7703b357ce795876766758a23614ed4a144",
-    "tests/v16_0_6_sample_slider.test.mjs": "153f68a3ba3ea14e4db2364ec0808e54eea8f286cce1a754010b738d293e0169",
-    "tests/v17_telemetry.test.mjs": "698d765961bb57bc788719e6acbe22df3a5db767bd6762b227bb305a9e67bb18"
-  }
+  "removed_files": []
 }

@@ -11,13 +11,30 @@ const result = (data, status = 200) => new Response(JSON.stringify(data), {
 });
 const changes = x => Number(x?.meta?.changes ?? x?.changes ?? 0);
 const toRows = x => x?.results || [];
+const validYear = v => {const m=String(v??'').match(/^(\d{4})(?:[-/].*)?$/);const n=m?Number(m[1]):Number(v);return Number.isInteger(n)&&n>=1850&&n<=new Date().getUTCFullYear()+1?n:0;};
+const validCountry = v => /^[A-Z]{3}$/.test(String(v||'').toUpperCase())?String(v).toUpperCase():'';
+const normTag = v => text(v,80).toLowerCase().replace(/\s+/g,' ');
+export async function rememberTrackMetadata(env,trackId,metadata={}) {
+  const releaseYear=validYear(metadata.release_year),genre=normTag(metadata.genre);
+  if((!releaseYear&&!genre)||!trackId)return false;
+  await ensureTelemetrySchema(env);
+  await env.DB.prepare(`INSERT INTO telemetry_track_metadata(track_id,release_year,genre) VALUES(?,?,?)
+    ON CONFLICT(track_id) DO UPDATE SET
+      release_year=CASE WHEN excluded.release_year>0 THEN excluded.release_year ELSE telemetry_track_metadata.release_year END,
+      genre=CASE WHEN excluded.genre<>'' THEN excluded.genre ELSE telemetry_track_metadata.genre END`)
+    .bind(text(trackId,160),releaseYear,genre).run();
+  return true;
+}
+export async function rememberTrackYear(env,trackId,year) {
+  return rememberTrackMetadata(env,trackId,{release_year:year});
+}
 
 export function ensureTelemetrySchema(env) {
   if(schemaPromises.has(env.DB))return schemaPromises.get(env.DB);
   const task=(async () => {
     const db = env.DB;
     const marker = await db.prepare("SELECT value FROM settings WHERE key='wasp_telemetry_schema'").first();
-    if (marker?.value === '17.1') return;
+    if (marker?.value === '17.2') return;
     // Additive only; existing history, accounts, volumes and peer catalogues remain unchanged.
     const statements = [
       `CREATE TABLE IF NOT EXISTS telemetry_events (
@@ -29,6 +46,10 @@ export function ensureTelemetrySchema(env) {
         UNIQUE(origin_id,event_id))`,
       `CREATE INDEX IF NOT EXISTS idx_telemetry_time ON telemetry_events(played_at)`,
       `CREATE INDEX IF NOT EXISTS idx_telemetry_origin_time ON telemetry_events(origin_id,played_at)`,
+      `CREATE TABLE IF NOT EXISTS telemetry_track_metadata (
+        track_id TEXT PRIMARY KEY, release_year INTEGER NOT NULL DEFAULT 0, genre TEXT NOT NULL DEFAULT '')`,
+      `CREATE TABLE IF NOT EXISTS telemetry_artist_metadata (
+        artist_key TEXT PRIMARY KEY, country_code TEXT NOT NULL DEFAULT '')`,
       `CREATE TABLE IF NOT EXISTS telemetry_peer_cursors (
         url TEXT PRIMARY KEY, node_id TEXT NOT NULL DEFAULT '', cursor INTEGER NOT NULL DEFAULT 0,
         synced_at INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')`,
@@ -36,6 +57,14 @@ export function ensureTelemetrySchema(env) {
         key TEXT PRIMARY KEY, body TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
     ];
     for(const sql of statements) await db.prepare(sql).run();
+    // On existing v17 databases these columns are additive; do not replace or clear the ledger.
+    for(const sql of [
+      "ALTER TABLE telemetry_events ADD COLUMN genre TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE telemetry_events ADD COLUMN release_year INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE telemetry_events ADD COLUMN country_code TEXT NOT NULL DEFAULT ''"
+    ]) try {await db.prepare(sql).run();} catch(e) {
+      if(!/duplicate column|already exists/i.test(String(e.message)))throw e;
+    }
     await db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('telemetry_instance_id',?)")
       .bind(crypto.randomUUID()).run();
     // Existing Recently Listened history is partial: label it explicitly in the UI.
@@ -45,7 +74,7 @@ export function ensureTelemetrySchema(env) {
       (origin_id,event_id,played_at,track_id,title,artist,album,duration)
       SELECT ?,id,played_at,track_id,title,artist,album,0 FROM recent_listens
       WHERE played_at>0 AND title<>'' ORDER BY played_at DESC LIMIT 1000`).bind(instance).run();
-    await db.prepare("INSERT INTO settings(key,value) VALUES('wasp_telemetry_schema','17.1') ON CONFLICT(key) DO UPDATE SET value='17.1'").run();
+    await db.prepare("INSERT INTO settings(key,value) VALUES('wasp_telemetry_schema','17.2') ON CONFLICT(key) DO UPDATE SET value='17.2'").run();
   })().catch(e => {schemaPromises.delete(env.DB); throw e;});
   schemaPromises.set(env.DB,task);
   return task;
@@ -56,10 +85,12 @@ export async function recordTelemetryListen(env, event) {
   const originId=(await env.DB.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value;
   if(!originId) return;
   await env.DB.prepare(`INSERT OR IGNORE INTO telemetry_events
-    (origin_id,event_id,played_at,track_id,title,artist,album,duration) VALUES(?,?,?,?,?,?,?,?)`)
+    (origin_id,event_id,played_at,track_id,title,artist,album,duration,genre,release_year,country_code)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(originId,text(event.id || crypto.randomUUID(),80),Number(event.played_at)||Date.now(),
       text(event.track_id,160),text(event.title),text(event.artist),text(event.album),
-      Math.max(0,Math.min(86400,Number(event.duration)||0))).run();
+      Math.max(0,Math.min(86400,Number(event.duration)||0)),text(event.genre,80),
+      validYear(event.release_year),validCountry(event.country_code)).run();
 }
 
 function readDateWindow(params) {
@@ -102,7 +133,7 @@ export async function telemetrySummary(env,url) {
   const d=readDateWindow(url.searchParams),scope=url.searchParams.get('scope')||'hive';
   const local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   const f=scopeSql(scope,local);
-  const key=`v17:${scope}:${d.start}:${d.end}:${d.offset}`;
+  const key=`v17.1:${scope}:${d.start}:${d.end}:${d.offset}`;
   const cached=await db.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
   if(cached?.body) {try {return JSON.parse(cached.body);} catch { /* rebuild */ }}
   const clause=`played_at>=? AND played_at<?${f.where}`;
@@ -140,6 +171,61 @@ export async function telemetrySummary(env,url) {
   const previousStart=d.start-d.span;
   const previous=await db.prepare(`SELECT COUNT(*) AS plays FROM telemetry_events
     WHERE played_at>=? AND played_at<?${f.where}`).bind(previousStart,d.start,...f.extra).first();
+  // v17.0.1 visual enrichment: aggregate by artist/period before reading JS metadata.
+  // These queries reuse the time index and never poll public metadata APIs on dashboard loads.
+  const periodUnit=d.mode==='year'&&!d.month?'%Y-%m':'%Y-%m-%d';
+  const genreSource=await q(`SELECT LOWER(e.artist) AS artist_key,
+    strftime('${periodUnit}',(e.played_at+${d.offsetMs})/1000,'unixepoch') AS bucket,
+    COUNT(*) AS plays, COALESCE(NULLIF(e.genre,''),NULLIF(m.genre,''),'') AS event_genre
+    FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON m.track_id=e.track_id
+    WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
+      AND e.artist<>'' GROUP BY artist_key,bucket,event_genre ORDER BY plays DESC LIMIT 2400`);
+  const artistInfo=await db.prepare("SELECT name, genres FROM artist_info WHERE genres IS NOT NULL AND genres!='[]'").all().then(toRows).catch(()=>[]);
+  const knownGenres=new Map();
+  for(const row of artistInfo){
+    try {const parsed=JSON.parse(row.genres||'[]');if(Array.isArray(parsed))
+      knownGenres.set(normTag(row.name),[...new Set(parsed.map(normTag).filter(Boolean))].slice(0,3));}
+    catch { /* ignore malformed artist records */ }
+  }
+  const tagByMonth=new Map(),tagCounts=new Map();
+  for(const row of genreSource){
+    const genres=knownGenres.get(normTag(row.artist_key))||[normTag(row.event_genre)].filter(Boolean);
+    for(const genre of genres){
+      const plays=Number(row.plays)||0;
+      tagCounts.set(genre,(tagCounts.get(genre)||0)+plays);
+      let buckets=tagByMonth.get(genre);if(!buckets)tagByMonth.set(genre,buckets=new Map());
+      buckets.set(row.bucket,(buckets.get(row.bucket)||0)+plays);
+    }
+  }
+  const topTags=[...tagCounts.entries()].sort((a,b)=>b[1]-a[1]).slice(0,8).map(([name,plays])=>({name,plays,
+    periods:[...(tagByMonth.get(name)||new Map())].map(([label,plays])=>({label,plays})).sort((a,b)=>a.label.localeCompare(b.label))}));
+  // Release years are taken from explicit event metadata, or known local ID3 tags.
+  // No year is inferred from a song name, upload date, or guessed artist era.
+  const decades=await q(`SELECT CAST(COALESCE(NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
+       COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists,
+       COUNT(DISTINCT LOWER(e.album)||'~'||LOWER(e.artist)) AS albums,
+       COUNT(DISTINCT LOWER(e.title)||'~'||LOWER(e.artist)) AS tracks
+     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id
+     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
+       AND COALESCE(NULLIF(e.release_year,0),m.release_year,0)>=1850
+     GROUP BY decade ORDER BY decade`);
+  const decadesTop=await q(`SELECT CAST(COALESCE(NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
+    e.album AS album,e.artist AS artist,COUNT(*) AS plays FROM telemetry_events e
+    LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id
+    WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
+    AND COALESCE(NULLIF(e.release_year,0),m.release_year,0)>=1850 AND e.album<>''
+    GROUP BY decade,LOWER(e.album),LOWER(e.artist) ORDER BY plays DESC LIMIT 250`);
+  for(const drow of decades){const best=decadesTop.find(r=>Number(r.decade)===Number(drow.decade));
+    drow.topAlbum=best?.album||'';drow.topArtist=best?.artist||'';}
+  const countries=await q(`SELECT COALESCE(NULLIF(e.country_code,''),a.country_code,'') AS code,
+    COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists
+    FROM telemetry_events e LEFT JOIN telemetry_artist_metadata a ON LOWER(e.artist)=a.artist_key
+    WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
+    GROUP BY code ORDER BY plays DESC LIMIT 180`);
+  const verifiedCountries=countries.filter(r=>/^[A-Z]{3}$/.test(r.code));
+  const unknownCountryPlays=countries.filter(r=>!/^[A-Z]{3}$/.test(r.code)).reduce((sum,r)=>sum+Number(r.plays||0),0);
+  const yearsKnown=decades.reduce((sum,r)=>sum+Number(r.plays||0),0);
+  const topTagKnown=genreSource.filter(r=>knownGenres.has(normTag(r.artist_key))||r.event_genre).reduce((sum,r)=>sum+Number(r.plays||0),0);
   const sourceRow=await db.prepare(`SELECT COUNT(DISTINCT origin_id) AS nodes FROM telemetry_events WHERE ${clause}`).bind(...bind).first();
   const checked=await db.prepare('SELECT MAX(synced_at) AS updated,COUNT(*) AS peers FROM telemetry_peer_cursors WHERE synced_at>0').first();
   const output={period:d.mode,year:d.year,month:d.month,start:d.start,end:d.end,scope,
@@ -148,6 +234,8 @@ export async function telemetrySummary(env,url) {
     // Catalogued song duration is not playback duration. Do not claim listening hours.
     indexedDuration:Number(totalRow?.indexed_duration||0),
     topArtists,topAlbums,topTracks,series,weekdays,hours,
+    topTags,taggedPlays:topTagKnown,decades,countries:verifiedCountries,
+    yearMetadataPlays:yearsKnown,unknownCountryPlays,
     activeDays:daily.length,longestStreak,mostActiveDay:mostActive?.day||null,
     mostActiveDayPlays:Number(mostActive?.plays||0),busiestHour:busiestHour?Number(busiestHour.hour):null,
     busiestHourPlays:Number(busiestHour?.plays||0),
@@ -173,8 +261,14 @@ export async function telemetryFeed(env,url) {
   const cursor=Number(url.searchParams.get('cursor')||0);
   if(!Number.isSafeInteger(cursor)||cursor<0)return result({error:'Invalid cursor'},400);
   const max=Math.max(1,Math.min(MAX_BATCH,Number(url.searchParams.get('limit'))||MAX_BATCH));
-  const rows=toRows(await env.DB.prepare(`SELECT seq,origin_id,event_id,played_at,track_id,title,artist,album,duration
-    FROM telemetry_events WHERE seq>? ORDER BY seq LIMIT ?`).bind(cursor,max).all());
+  const rows=toRows(await env.DB.prepare(`SELECT e.seq,e.origin_id,e.event_id,e.played_at,e.track_id,e.title,e.artist,e.album,e.duration,
+      COALESCE(NULLIF(e.genre,''),NULLIF(m.genre,''),CASE WHEN json_valid(ai.genres) THEN json_extract(ai.genres,'$[0]') ELSE NULL END,'') AS genre,
+      COALESCE(NULLIF(e.release_year,0),m.release_year,0) AS release_year,
+      COALESCE(NULLIF(e.country_code,''),am.country_code,'') AS country_code
+    FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id
+    LEFT JOIN artist_info ai ON LOWER(ai.name)=LOWER(e.artist)
+    LEFT JOIN telemetry_artist_metadata am ON am.artist_key=LOWER(e.artist)
+    WHERE e.seq>? ORDER BY e.seq LIMIT ?`).bind(cursor,max).all());
   const instance=(await env.DB.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value;
   const next=rows.length?Number(rows.at(-1).seq):cursor;
   // Only coarse five-minute buckets leave the server; no exact playback timestamps.
@@ -188,7 +282,8 @@ function validateEvent(row) {
   const when=Number(row.played_at);
   if(!Number.isSafeInteger(when)||when<Date.UTC(2000,0,1)||when>Date.now()+5*MINUTE)return null;
   return [text(row.origin_id,90),text(row.event_id,90),when,text(row.track_id,160),
-    text(row.title),text(row.artist),text(row.album),Math.max(0,Math.min(86400,Number(row.duration)||0))];
+    text(row.title),text(row.artist),text(row.album),Math.max(0,Math.min(86400,Number(row.duration)||0)),
+    text(row.genre,80),validYear(row.release_year),validCountry(row.country_code)];
 }
 
 export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
@@ -247,7 +342,7 @@ export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
       if(!Number.isSafeInteger(next)||next<cursor|| (rows.length&&next<=cursor))throw Error('Invalid telemetry cursor');
       // A batch applies atomically with its cursor: no event can be lost between the two.
       const inserts=rows.map(v=>db.prepare(`INSERT OR IGNORE INTO telemetry_events
-        (origin_id,event_id,played_at,track_id,title,artist,album,duration) VALUES(?,?,?,?,?,?,?,?)`).bind(...v));
+        (origin_id,event_id,played_at,track_id,title,artist,album,duration,genre,release_year,country_code) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(...v));
       inserts.push(db.prepare(`INSERT INTO telemetry_peer_cursors(url,node_id,cursor,synced_at,last_error) VALUES(?,?,?,?, '')
         ON CONFLICT(url) DO UPDATE SET node_id=excluded.node_id,cursor=excluded.cursor,
           synced_at=excluded.synced_at,last_error=''`).bind(url,j.nodeId,next,now));

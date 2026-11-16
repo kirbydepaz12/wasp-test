@@ -11,7 +11,7 @@ import {recordMobilePlayback} from './mobile-live.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '17.0.0';
+const WASP_VERSION = '17.0.1';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,

@@ -1,3 +1,9 @@
+## WASP v17.0.1 — Interactive HIVE Telemetry Charts (staging)
+
+This focused visual refinement keeps the v17.0.0 federated music architecture and the persistent main-page audio player. It adds a 24-hour circular listening clock, hoverable genre stream with visible legend, numerical history tooltips, a compact artist-country heat map, and release-decade distributions using verified metadata only. Existing album/audio/peer routes are unchanged. See `docs/V17-0-1-TELEMETRY-VISUAL-REFINEMENT.md` for metadata limitations and deployment checks.
+
+---
+
 ## WASP v17.0.0 — HIVE Telemetry & Loading Time Enhancement (staging)
 
 WASP now includes a **website-only, federated HIVE Telemetry** page under **Most listened → Telemetry** (`/#top/telemetry`). It provides cached listening trends, historical week/month/year selection, top music, listening-clock charts, and aggregate activity across participating WASP peers. Approved admin-connected peers and approved user-published peers can synchronize deduplicated, anonymous confirmed plays without copying music or exposing personal account identifiers. Legacy peers continue to work for music, although they cannot yet provide historical telemetry. Historical backfill is partial until v17 collects sufficient new records.

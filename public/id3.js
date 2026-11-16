@@ -15,7 +15,7 @@ export async function readTags(file) {
       const ver = head[3];
       const size = (head[6] << 21) | (head[7] << 14) | (head[8] << 7) | head[9];
       const buf = new Uint8Array(await file.slice(10, 10 + size).arrayBuffer());
-      const map = { TIT2: "title", TPE1: "artist", TALB: "album", TRCK: "track" };
+      const map = { TIT2: "title", TPE1: "artist", TALB: "album", TRCK: "track", TDRC: "year", TYER: "year", TCON: "genre" };
       const find = (d, sig) => { for (let i = 0; i < Math.min(d.length - sig.length, 400); i++) if (sig.every((b, j) => d[i + j] === b)) return i; return -1; };
       let p = 0;
       while (p + 10 <= buf.length) {

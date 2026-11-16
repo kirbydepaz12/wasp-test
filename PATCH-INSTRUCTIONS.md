@@ -1,12 +1,7 @@
-# WASP v17.0.0 — staging upgrade from v16.0.6 ONLY
+# WASP v17.0.1 — Changes-only upgrade patch
 
-This is a changes-only patch. **Do not apply it to any version other than exactly v16.0.6.**
+Apply only to the complete **WASP v17.0.0** source repository. Unzip these files over the repository root (not into another nested folder). The patch preserves files not listed in PATCH-MANIFEST.json. Keep existing database, R2 storage, Docker volume mounts, secrets, user accounts and peer registry unchanged. Do not delete persistent data volumes.
 
-1. Back up your staging installation's database, uploads, peer settings, mobile encryption key and Docker volumes. Pin the current Git revision.
-2. Extract/copy the contents of this patch over the matching v16.0.6 staging repository root; preserve all files not included in this patch.
-3. Commit/push to the **staging branch/repository**, not your production v15 repo. Let Cloudflare deploy with the same bindings, or rebuild in Portainer while preserving existing volume mounts. Never use `down -v`.
-4. Verify admin version v17.0.0. With a song playing, visit `/#top/telemetry`, `/#hearts`, `/#likes`, `/#dislikes`, and back. It must remain the same playing track.
-5. Enable sharing only on peer servers you intend to expose music/listening trends from. Test v17-to-v17 peer sync and historical pages; old peers are skipped for telemetry.
-6. See docs/V17-0-0-HIVE-TELEMETRY.md for limits, privacy, migration, rollback, and full test checklist.
+Suggested process: back up staging D1/Docker state, commit current Git revision, extract, inspect changes, commit and deploy to staging. On rollback, restore code at the saved v17.0.0 revision; database additions are additive, but restoring data requires the backup. Verify `/#top/telemetry` and active playback before production consideration.
 
-No running WASP service or database has been modified simply by creating these files.
+Included: source changes, `public/telemetry-world.json` public-domain local map geometry, new backend tests, a new UI test, and release documentation. No live servers are modified by this ZIP.

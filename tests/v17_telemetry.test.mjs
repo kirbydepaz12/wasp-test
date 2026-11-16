@@ -6,6 +6,7 @@ import {ensureTelemetrySchema,recordTelemetryListen,telemetryFeed,telemetrySumma
 function makeEnv(){
   const sql=new DatabaseSync(':memory:');
   sql.exec(`CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE artist_info(name TEXT PRIMARY KEY, genres TEXT);
     CREATE TABLE recent_listens(id TEXT PRIMARY KEY,track_id TEXT NOT NULL,origin TEXT NOT NULL DEFAULT '',remote_id TEXT NOT NULL DEFAULT '',title TEXT NOT NULL DEFAULT '',artist TEXT NOT NULL DEFAULT '',album TEXT NOT NULL DEFAULT '',cover_url TEXT NOT NULL DEFAULT '',played_at INTEGER NOT NULL);
     CREATE TABLE peers(id TEXT PRIMARY KEY,url TEXT,name TEXT,added_at INTEGER);
     CREATE TABLE user_peer_permissions(user_id TEXT PRIMARY KEY,enabled INTEGER);

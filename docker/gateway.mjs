@@ -34,7 +34,7 @@ async function walk(root,found){
      covers.set(id,{data:Buffer.from(pic.data),type:pic.format});
    found.set(id,{id,path:full,mtime:stat.mtimeMs,size:stat.size,title:meta.common.title||path.parse(full).name,
     artist:meta.common.artist||meta.common.albumartist||'Unknown Artist',album:meta.common.album||'Unknown Album',
-    duration:meta.format.duration||0,track_no:meta.common.track?.no||0});
+    duration:meta.format.duration||0,track_no:meta.common.track?.no||0,release_year:meta.common.year||0,genre:meta.common.genre?.[0]||''});
   }catch(e){console.warn('Skipping unreadable file',full,e.message);}
  }
 }
