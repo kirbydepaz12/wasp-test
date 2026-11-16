@@ -699,7 +699,7 @@ $("#favRm").addEventListener("click", async () => {
   await fetch("/api/admin/favicon", { method: "DELETE" }); site.favicon = 0; paintFavicon(); flashMsg("#brandMsg", "Browser icon removed.");
 });
 
-const SAMPLE_AD = `<style>
+const SAMPLE_FEATURED = `<style>
   .deck{position:relative;height:100%;min-height:240px;overflow:hidden;border-radius:16px;isolation:isolate}
   .slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:32px 72px;opacity:0;visibility:hidden;transition:opacity .6s,visibility .6s;color:#fff}
   .slide.on{opacity:1;visibility:visible}
@@ -717,6 +717,7 @@ const SAMPLE_AD = `<style>
   .s4{background:linear-gradient(135deg,#4a3410,#150f05 65%)}   /* most liked */
   .s5{background:linear-gradient(135deg,#44310d,#171107 65%)}   /* join the HIVE */
   .s6{background:linear-gradient(135deg,#2b1b4d,#0d0819 65%)}   /* random play */
+  .s7{background:linear-gradient(135deg,#152b16,#09130a 65%)}   /* HIVE Telemetry */
 
   .slide .cta-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:4px}
   .slide .cta-row a{margin-top:0}
@@ -789,6 +790,14 @@ const SAMPLE_AD = `<style>
     <h2>Shuffle the pit</h2>
     <p>One tap drops a random track from the whole library into your player. No browsing, no picking.</p>
     <a href="#recent/songs" target="_top" data-random data-cta="random">Surprise me</a>
+  </div>
+
+  <!-- 7 — WASP HIVE Telemetry; opens within the persistent music player -->
+  <div class="slide s7">
+    <p class="kicker">Discover HIVE Telemetry</p>
+    <h2>ONE HIVE. EVERY BEAT.</h2>
+    <p>Explore the listening trends connecting WASP servers. Discover top music, listening hours, favorite periods and the history of the HIVE — by week, month or year.</p>
+    <a href="#top/telemetry" target="_top" data-cta="telemetry">Explore HIVE Telemetry</a>
   </div>
 
   <button class="nav prev" type="button" aria-label="Previous slide">‹</button>
@@ -889,27 +898,23 @@ const SAMPLE_AD = `<style>
     var r = t.closest('[data-random]');
     if (r) {
       e.preventDefault();
-      try { window.parent.postMessage({ type: 'ad:shuffle' }, '*'); } catch (_) {}
-      if (typeof window.trackAd === 'function') window.trackAd({ cta: 'random', slide: i + 1 });
-      return;
+      try { window.parent.postMessage({ type: 'wasp:featured-shuffle' }, '*'); } catch (_) {}
+        return;
     }
 
     /* Normal links */
     var a = t.closest('a[data-cta]');
     if (!a) return;
-    if (typeof window.trackAd === 'function') {
-      window.trackAd({ cta: a.getAttribute('data-cta'), slide: i + 1, href: a.getAttribute('href') });
-    }
   });
 
   go(0);
   start();
 })();
 </script>`;
-$("#spSample").addEventListener("click", () => { if (!$("#spCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#spCode").value = SAMPLE_AD; });
+$("#spSample").addEventListener("click", () => { if (!$("#spCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#spCode").value = SAMPLE_FEATURED; });
 $("#spPreviewBtn").addEventListener("click", () => {
   const f = document.createElement("iframe");
-  f.title = "Ad preview"; f.setAttribute("sandbox", AD_SANDBOX); f.className = "spframe";
+  f.title = "Featured slides preview"; f.setAttribute("sandbox", AD_SANDBOX); f.className = "spframe";
   f.style.height = (Math.min(1000, Math.max(60, +$("#spH").value || 340))) + "px";
   const sum = (k) => (window.__tracks || []).reduce((n, t) => n + (t[k] || 0), 0), stats = { "song-count": (window.__tracks || []).length.toLocaleString() };
   if (sum("hearts")) stats["heart-count"] = sum("hearts").toLocaleString();

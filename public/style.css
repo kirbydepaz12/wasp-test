@@ -693,3 +693,6 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .mobile-key-copy:hover{background:var(--accent);color:#151515}
 .mobile-key-notice{min-height:20px;margin:0;color:var(--accent);font-size:12px;font-weight:650}
 .mobile-key-notice.err{color:var(--danger)}
+
+/* v17: lazy telemetry content never gets an inner scrollbar and never overlaps the fixed audio player. */
+.wasp-telemetry-frame{display:block;width:100%;border:0;overflow:hidden;background:transparent;min-height:250px}

@@ -1,4 +1,5 @@
 import {RELEASE_DOCS} from "./release-docs.js";
+import {recordTelemetryListen, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
@@ -6,8 +7,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "16.0.6";
-const BUILD_LABEL = "Album Grouping · Mobile Favorites & Artist Info";
+const BUILD_VERSION = "17.0.0";
+const BUILD_LABEL = "HIVE Telemetry · Lazy-Loaded Views";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1386,9 +1387,14 @@ async function syncPeerAll(env,peer){
   await touchCatalogue(env.DB);
   return counts;
 }
-async function recordListen(DB,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url=''}){
+async function recordListen(env,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url='',duration=0},{relayed=false}={}){
+  const DB=env.DB, eventId=crypto.randomUUID(), playedAt=Date.now();
   await DB.prepare("INSERT INTO recent_listens (id,track_id,origin,remote_id,title,artist,album,cover_url,played_at) VALUES (?,?,?,?,?,?,?,?,?)")
-    .bind(crypto.randomUUID(),clean(track_id,200),clean(origin,300),clean(remote_id,100),clean(title,200),clean(artist,200),clean(album,200),clean(cover_url,500),Date.now()).run();
+    .bind(eventId,clean(track_id,200),clean(origin,300),clean(remote_id,100),clean(title,200),clean(artist,200),clean(album,200),clean(cover_url,500),playedAt).run();
+  // Never allow a telemetry or D1 failure to interrupt a native listening event.
+  // A peer's relay /api/play increments its old play counter but is not a second listener.
+  if(!relayed)try{await recordTelemetryListen(env,{id:eventId,track_id,title,artist,album,duration,played_at:playedAt});}
+    catch(e){console.warn('Telemetry recording unavailable:',e.message);}
   // Bound storage without a full-table cleanup on every play.
   if(Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run();
 }
@@ -1446,6 +1452,11 @@ async function api(req, env, url, ctx) {
   const m = req.method;
   const DB = env.DB;
   let x;
+  if(path==='/api/telemetry'||path==='/api/telemetry/feed')return telemetryApi(req,env,url);
+  if(path==='/api/admin/telemetry/sync'){
+    const info=await sessionInfo(req,env);
+    return telemetryApi(req,env,url,{admin:info?.role==='admin'});
+  }
 
   // ---------- public ----------
   if(path==="/api/catalog-version" && m==="GET") {
@@ -1469,7 +1480,7 @@ async function api(req, env, url, ctx) {
       }
     }catch{}
     await DB.prepare("INSERT INTO peer_listens(origin,remote_id,plays) VALUES(?,?,1) ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1").bind(canonical,remote).run();
-    await recordListen(DB,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url});
+    await recordListen(env,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url,duration:b.duration});
     // Docker can send genuine listening events directly to its configured
     // source peer via Bridge. The source already exposes an anonymous /api/play
     // counter; this is what lets main Cloudflare charts reflect Docker listens.
@@ -1479,7 +1490,7 @@ async function api(req, env, url, ctx) {
       ctx.waitUntil((async()=>{
         try{
           const response=await fetch(origin+"/api/play/"+encodeURIComponent(remote),{
-            method:"POST",signal:AbortSignal.timeout(6000)});
+            method:"POST",signal:AbortSignal.timeout(6000),headers:{"X-WASP-Relay-Play":"1"}});
           if(response.ok)await DB.prepare("UPDATE peer_listens SET synced_plays=synced_plays+1 WHERE origin=? AND remote_id=? AND synced_plays<plays").bind(canonical,remote).run();
         }catch{/* Remains locally counted if the peer cannot be reached. */}
       })());
@@ -1585,7 +1596,18 @@ async function api(req, env, url, ctx) {
   // Local-only scanner authentication. This secret is never configured on the production Worker.
   if(path==="/api/internal/cron-tick" && m==="POST") {
     if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
-    return json({ok:true,runs:await runDueCronJobs(env)},200,{"cache-control":"no-store"});
+    // Docker installations do not execute Cloudflare scheduled handlers.
+    // Reuse the same five-minute, lease-controlled HIVE sync without affecting music.
+    const runs=await runDueCronJobs(env);
+    // Keep the private Docker cron-tick HTTP request responsive even when a
+    // remote HIVE peer is slow. The five-minute sync lease protects D1 writes.
+    if(typeof ctx?.waitUntil==='function') {
+      ctx.waitUntil(syncTelemetryPeers(env).catch(e=>console.warn('WASP Docker telemetry sync unavailable:',e.message)));
+    } else {
+      try { await syncTelemetryPeers(env); }
+      catch(e) { console.warn('WASP Docker telemetry sync unavailable:',e.message); }
+    }
+    return json({ok:true,runs},200,{"cache-control":"no-store"});
   }
   if (path === "/api/internal/folder-index" && m === "POST") {
     if (!env.SCANNER_SECRET || req.headers.get("x-scanner-secret") !== env.SCANNER_SECRET) return json({error:"Forbidden"},403);
@@ -1991,8 +2013,8 @@ async function api(req, env, url, ctx) {
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     const played = await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
     if(Number(played.meta?.changes ?? played.changes ?? 0) === 0) return json({error:"Track not found"},404);
-    const track=await DB.prepare("SELECT id,title,artist,album FROM tracks WHERE id=?").bind(x[1]).first();
-    if(track)await recordListen(DB,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album});
+    const track=await DB.prepare("SELECT id,title,artist,album,duration FROM tracks WHERE id=?").bind(x[1]).first();
+    if(track)await recordListen(env,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album,duration:track.duration},{relayed:req.headers.get("x-wasp-relay-play")==="1"});
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/react\/([\w-]+)$/)) && m === "POST") {
@@ -2883,7 +2905,15 @@ async function api(req, env, url, ctx) {
 export default {
   async scheduled(controller,env,ctx) {
     await init(env);
-    await runDueCronJobs(env,controller.scheduledTime||Date.now());
+    const when=controller.scheduledTime||Date.now();
+    const cronResults=await runDueCronJobs(env,when);
+    // Separate bounded five-minute HIVE job. Do not multiply a peer check
+    // already running at the same minute; music handling is never on this path.
+    const schedule=await getCronConfig(env.DB);
+    const peerJobDue=shouldRunCron(schedule.jobs.peers,cronLocalDate(new Date(when),schedule.timezone));
+    if(Math.floor(when/60000)%5===0 && !peerJobDue) {
+      try{await syncTelemetryPeers(env);}catch(e){console.warn('Telemetry background sync unavailable:',e.message);}
+    }
   },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -2938,7 +2968,7 @@ export default {
       if (url.pathname.startsWith("/api/")) {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
-        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens" || url.pathname === "/api/active-streams");
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens" || url.pathname === "/api/active-streams" || url.pathname === "/api/telemetry/feed");
         const output=withCors(res,publicPeer);
         if(req.method !== "GET" && output.ok && changesCatalogue(url.pathname)) {
           try { await touchCatalogue(env.DB); } catch(e) {console.warn("Unable to update catalogue revision",e.message);}

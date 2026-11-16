@@ -528,6 +528,7 @@ const errorBox = (text, detail) => `<div class="empty"><p>${esc(text)}</p>${deta
 // ---------- routing ----------
 const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: "Playlists" };
 const SUBMAPS = {
+  top: { items: { ranked: "Most listened", telemetry: "Telemetry" }, def: "ranked" },
   recent: { items: SUBS, def: "songs" },
   hearts: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   likes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
@@ -686,6 +687,12 @@ function renderPage() {
   renderNav(tab);
   renderSub(tab, sub);
   const el = $("#list");
+  // v17: telemetry/rankings use a lazy same-origin document. The fixed #audio
+  // element, queue and control handlers in index.html are NEVER replaced.
+  if(tab==='top'||RX.includes(tab)){
+    renderTelemetryMount(el,tab,sub);
+    return;
+  }
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
   // Reaction charts may contain locally cached peer songs even if the remote
   // catalogue is temporarily offline (and this installation has no uploads).
@@ -781,6 +788,75 @@ function songList(el) {
   view = { ids: l.map((t) => t.id), label: "Recently added", pl: null };
   el.innerHTML = l.length ? songTiles(l) : empty("Nothing matches your search.");
 }
+
+// A persistent player lives in index.html. The separate telemetry document
+// receives display-only rows and sends explicit, origin-checked play/navigation
+// messages to this existing player. No iframe is allowed to own audio.
+function telemetryRankRows(tab,sub){
+  const field=tab;
+  if(tab==='top' && sub==='telemetry')return [];
+  if(tab==='top'||sub==='songs'){
+    let rows=(tab==='top'?tracks:reactedSongPool()).filter(match);
+    const totals=tab==='top'?null:peerRankingTotals();
+    const score=t=>tab==='top'?(Number(t.plays)||0):chartScore(t,field,totals);
+    if(tab!=='top')rows=rows.filter(t=>score(t)>0);
+    rows.sort((a,b)=>score(b)-score(a)||(Number(b.created_at)||0)-(Number(a.created_at)||0));
+    rows=rows.slice(0,LIMIT[tab]);
+    view={ids:rows.map(t=>t.id),label:TABS[tab],pl:null};
+    return rows.map(t=>({kind:'song',id:t.id,title:t.title,subtitle:artistLine(t),
+      cover:albumArt(t),score:score(t),scoreLabel:tab==='top'?'plays':field}));
+  }
+  noView();
+  if(sub==='artists')return Object.keys(entity.artist).map(name=>({name,score:Number(entity.artist[name]?.[field])||0}))
+    .filter(r=>r.score>0&&(!query||r.name.toLowerCase().includes(query)))
+    .sort((a,b)=>b.score-a.score).slice(0,LIMIT[tab])
+    .map(r=>({kind:'artist',title:r.name,id:r.name,cover:artistArt(r.name),score:r.score,scoreLabel:field}));
+  return allRatedPlaylists().map(p=>({p,score:Number(ecount('playlist',p.id)[field])||0}))
+    .filter(r=>r.score>0&&(!query||r.p.name.toLowerCase().includes(query)))
+    .sort((a,b)=>b.score-a.score).slice(0,LIMIT[tab])
+    .map(r=>({kind:'playlist',id:r.p.id,title:r.p.name,cover:playlistCoverUrl(r.p),
+      subtitle:r.p.username?`By ${r.p.username}`:'WASP',score:r.score,scoreLabel:field}));
+}
+function sendTelemetryRows(frame,tab,sub){
+  if(!frame?.contentWindow)return;
+  frame.contentWindow.postMessage({type:'wasp:telemetry-data',mode:tab,sub,
+    query,items:telemetryRankRows(tab,sub)},location.origin);
+}
+function renderTelemetryMount(el,tab,sub){
+  // Preserve the already-loaded feature document when changing telemetry tabs.
+  // The parent audio player is never removed or re-instantiated.
+  const existing=el.querySelector(':scope > iframe.wasp-telemetry-frame');
+  if(existing){sendTelemetryRows(existing,tab,sub);return;}
+  const frame=document.createElement('iframe');
+  frame.className='wasp-telemetry-frame';frame.title='WASP HIVE Telemetry and charts';
+  frame.setAttribute('referrerpolicy','same-origin');
+  frame.setAttribute('loading','lazy');
+  frame.style.height='540px';
+  // Build the same-origin feature view only after the navigation actually opens it.
+  frame.src='/telemetry.html';
+  el.replaceChildren(frame);
+  noView();
+  frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
+}
+window.addEventListener('message',event=>{
+  const frame=document.querySelector('#list .wasp-telemetry-frame');
+  if(!frame||event.source!==frame.contentWindow||event.origin!==location.origin)return;
+  const data=event.data;
+  if(!data||typeof data!=='object'||typeof data.type!=='string')return;
+  if(data.type==='wasp:telemetry-ready'){
+    const {a,arg}=parse();
+    if(a==='top'||RX.includes(a))sendTelemetryRows(frame,a,arg.split('/')[0]||(a==='top'?'ranked':'songs'));
+  } else if(data.type==='wasp:telemetry-height'){
+    const h=Number(data.height);
+    if(Number.isFinite(h))frame.style.height=Math.max(250,Math.min(15000,h+8))+'px';
+  } else if(data.type==='wasp:telemetry-play'){
+    const id=String(data.id||'');
+    if(byId[id])play(id); // Never create a second audio element.
+  } else if(data.type==='wasp:telemetry-navigate'){
+    const allowed=/^#(?:artist|album|playlist|top|hearts|likes|dislikes)(?:\/[^?#]*)?$/;
+    if(typeof data.href==='string'&&data.href.length<=500&&allowed.test(data.href))location.hash=data.href;
+  }
+});
 
 // Most listened / hearted / liked / disliked
 function listView(el, tab) {
@@ -1241,7 +1317,7 @@ const adStats = () => {
 };
 window.addEventListener("message", (e) => { // the slider (a sandboxed frame) asks the app to play something
   const f = document.querySelector(".spframe");
-  if (f && e.source === f.contentWindow && e.data && e.data.type === "ad:shuffle") surpriseMe();
+  if (f && e.source === f.contentWindow && e.data && (e.data.type === "ad:shuffle" || e.data.type === "wasp:featured-shuffle")) surpriseMe();
 });
 
 // Owned playlists share one cover rendering path for details, cards, and the editor.
@@ -2107,7 +2183,7 @@ audio.addEventListener("timeupdate", () => {
   const t = cur();
   if (t && !counted && audio.currentTime >= 10) {
     counted = true; t.plays++;
-    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||""})}).catch(()=>{});
+    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||"",duration:t.duration||0})}).catch(()=>{});
     else fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
   }
 });

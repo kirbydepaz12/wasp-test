@@ -1,3 +1,4 @@
+import {recordTelemetryListen} from "./telemetry.js";
 import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
 import {readMobilePlaylists} from './mobile-playlists.js';
 import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
@@ -10,7 +11,7 @@ import {recordMobilePlayback} from './mobile-live.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.6';
+const WASP_VERSION = '17.0.0';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -739,6 +740,9 @@ export async function handleMobileRest(req,env,url,options={}){
     if(Number(receipt.meta?.changes ?? receipt.changes ?? 0)===0)return protocolResponse({},null,format);
     await env.DB.prepare(`INSERT INTO recent_listens(id,track_id,origin,remote_id,title,artist,album,played_at)
       VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),track.sourceId,track.origin,track.peerId?track.sourceId:'',track.title,track.artist,track.album,played).run();
+    // Anonymous confirmed Subsonic scrobble; no credential ID is federated.
+    try{await recordTelemetryListen(env,{track_id:track.sourceId,title:track.title,artist:track.artist,album:track.album,duration:track.duration,played_at:played});}
+    catch(e){console.warn('Mobile telemetry recording unavailable:',e.message);}
     if(track.peerId){await env.DB.prepare(`INSERT INTO peer_listens(origin,remote_id,plays) VALUES(?,?,1)
       ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1`).bind(track.origin,track.sourceId).run();}
     else await env.DB.prepare('UPDATE tracks SET plays=plays+1 WHERE id=?').bind(track.sourceId).run();

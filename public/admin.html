@@ -197,16 +197,16 @@
         <div class="form"><button class="btn" id="sidebarSave" type="button">Save sidebar</button><span class="msg" id="sidebarMsg" role="status"></span></div>
       </div>
       <div class="card">
-        <h2>Advertising</h2>
-        <p class="muted" style="margin-top:0">An ad shows at the top of the front page (Recently added &rsaquo; Songs), above the songs. Write it in HTML, CSS and JavaScript, for example a slider with clickable buttons. Only you can change it. It runs in an isolated frame, so it cannot touch the rest of the site or your admin session. Links open in a new tab; add <code>target="_top"</code> to a link to stay in the app. When the ad is off, the page looks as it did before.</p>
+        <h2>Featured Slides</h2>
+        <p class="muted" style="margin-top:0">Optional first-party feature slides appear at the top of Recently added &rsaquo; Songs. Add your own HTML, CSS and JavaScript carousel to highlight WASP features. Only administrators can change it. It runs in an isolated frame, so it cannot touch the rest of the site or your admin session. Links open in a new tab; add <code>target="_top"</code> to a link to stay in the app. When Featured Slides is disabled, the page looks as it did before.</p>
         <div class="form" style="margin-bottom:12px">
-          <label class="check"><input type="checkbox" id="spOn"> Show the ad on the front page</label>
+          <label class="check"><input type="checkbox" id="spOn"> Show featured slides on the front page</label>
           <label for="spH" class="muted">Height (px)</label><input id="spH" type="number" min="60" max="1000" value="340">
         </div>
-        <label for="spCode" class="muted">Ad code (HTML, CSS and JavaScript)</label>
-        <textarea class="code" id="spCode" spellcheck="false" placeholder="Paste or write your ad here"></textarea>
+        <label for="spCode" class="muted">Featured slides code (HTML, CSS and JavaScript)</label>
+        <textarea class="code" id="spCode" spellcheck="false" placeholder="Paste or write your slides here"></textarea>
         <div class="form" style="margin-top:12px">
-          <button class="btn" id="spSave" type="button">Save advertising</button>
+          <button class="btn" id="spSave" type="button">Save featured slides</button>
           <button class="btn ghost" id="spPreviewBtn" type="button">Preview</button>
           <button class="btn ghost" id="spSample" type="button">Insert sample slider</button>
           <span class="msg" id="spMsg" role="status"></span>

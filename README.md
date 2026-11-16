@@ -1,3 +1,11 @@
+## WASP v17.0.0 — HIVE Telemetry & Loading Time Enhancement (staging)
+
+WASP now includes a **website-only, federated HIVE Telemetry** page under **Most listened → Telemetry** (`/#top/telemetry`). It provides cached listening trends, historical week/month/year selection, top music, listening-clock charts, and aggregate activity across participating WASP peers. Approved admin-connected peers and approved user-published peers can synchronize deduplicated, anonymous confirmed plays without copying music or exposing personal account identifiers. Legacy peers continue to work for music, although they cannot yet provide historical telemetry. Historical backfill is partial until v17 collects sufficient new records.
+
+**Playback stays in the original page:** `telemetry.html` is lazy-loaded alongside `index.html`, and the music player is never recreated when visiting the telemetry dashboard or the consolidated Most listened / Hearts / Likes / Dislikes charts. Account Settings stays a popup; My Playlists stays a normal view. The default **Featured Slides** sample now includes a seventh **ONE HIVE. EVERY BEAT.** slide after **Shuffle the pit**; existing custom slides remain unchanged. No Subsonic app update is required.
+
+**Staging only:** Back up persistent D1/SQLite and music storage, apply the upgrade patch **only to v16.0.6**, then test peer federation and uninterrupted audio on your actual deployment before considering production. See the full [v17 telemetry and safety guide](docs/V17-0-0-HIVE-TELEMETRY.md).
+
 <div align="center">
   <img src="public/wasp-mascot.png" width="170" alt="WASP yellow-and-black wasp mascot on transparent background">
   <h1>WASP</h1>
