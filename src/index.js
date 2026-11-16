@@ -1,13 +1,13 @@
 import {RELEASE_DOCS} from "./release-docs.js";
-import {handleMobileRest, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
+import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "16.0.5";
-const BUILD_LABEL = "Mobile Live Activity · OpenSubsonic Staging";
+const BUILD_VERSION = "16.0.6";
+const BUILD_LABEL = "Album Grouping · Mobile Favorites & Artist Info";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -267,6 +267,8 @@ async function knownPeer(DB,origin) {
     (await DB.prepare(`SELECT 1 FROM user_published_peers l LEFT JOIN user_peer_permissions p
       ON p.user_id=l.user_id WHERE ${EFFECTIVE_PUBLISH_SQL}=1 AND l.url=? AND l.last_error IS NULL AND l.last_ok IS NOT NULL LIMIT 1`).bind(origin).first()));
 }
+// Browser and Mobile Bridge use the same stable account vote identity.
+const accountReactionVoter = info => 'account:'+info.user_id;
 async function recordSignedInVoter(DB,info,voter) {
   if(info?.role==='user'&&info.user_id)
     await DB.prepare('INSERT OR IGNORE INTO user_voter_tokens(user_id,voter) VALUES(?,?)').bind(info.user_id,voter).run();
@@ -1888,6 +1890,8 @@ async function api(req, env, url, ctx) {
       if (!known) return json({error:"Song unavailable."},404);
       id=localId;
     }
+    const signedIn=await sessionInfo(req,env);
+    const effectiveVoter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):voter;
     const counts=await DB.prepare(`SELECT
       COALESCE(SUM(kind='heart'),0) AS hearts,
       COALESCE(SUM(kind='like'),0) AS likes,
@@ -1895,7 +1899,12 @@ async function api(req, env, url, ctx) {
       COALESCE(MAX(voter=? AND kind='heart'),0) AS my_heart,
       COALESCE(MAX(voter=? AND kind='like'),0) AS my_like,
       COALESCE(MAX(voter=? AND kind='dislike'),0) AS my_dislike
-      FROM reactions WHERE track_id=?`).bind(voter,voter,voter,id).first();
+      FROM reactions WHERE track_id=?`).bind(effectiveVoter,effectiveVoter,effectiveVoter,id).first();
+    if(signedIn?.role==='user'&&signedIn.user_id){
+      const saved=(await DB.prepare('SELECT kind FROM user_song_reactions WHERE user_id=? AND track_id=?')
+        .bind(signedIn.user_id,id).all()).results;
+      for(const r of saved)if(['heart','like','dislike'].includes(r.kind))counts['my_'+r.kind]=1;
+    }
     return json(counts,200,{"cache-control":"no-store"});
   }
   // Peer-song reactions are kept in THIS server's D1. A peer's original
@@ -1903,6 +1912,8 @@ async function api(req, env, url, ctx) {
   if (path === "/api/peer-reactions" && m === "GET") {
     const visitor = req.headers.get("X-Visitor") || "";
     const voter = /^[\w-]{8,64}$/.test(visitor) ? await sha256(visitor) : "";
+    const signedIn=await sessionInfo(req,env);
+    const effectiveVoter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):voter;
     const { results } = await DB.prepare(`SELECT p.id, p.origin, p.remote_id,
       COALESCE(SUM(r.kind = 'heart'),0) AS hearts,
       COALESCE(SUM(r.kind = 'like'),0) AS likes,
@@ -1912,7 +1923,14 @@ async function api(req, env, url, ctx) {
       COALESCE(MAX(r.voter = ? AND r.kind = 'like'),0) AS my_like,
       COALESCE(MAX(r.voter = ? AND r.kind = 'dislike'),0) AS my_dislike
       FROM peer_reaction_tracks p LEFT JOIN reactions r ON r.track_id = p.id
-      GROUP BY p.id`).bind(voter,voter,voter).all();
+      GROUP BY p.id`).bind(effectiveVoter,effectiveVoter,effectiveVoter).all();
+    if(signedIn?.role==='user'&&signedIn.user_id){
+      const saved=(await DB.prepare('SELECT track_id,kind FROM user_song_reactions WHERE user_id=?')
+        .bind(signedIn.user_id).all()).results;
+      const own=new Set(saved.map(r=>r.track_id+'|'+r.kind));
+      for(const row of results)for(const kind of ['heart','like','dislike'])
+        if(own.has(row.id+'|'+kind))row['my_'+kind]=1;
+    }
     return json(results);
   }
   if (path === "/api/peer-react" && m === "POST") {
@@ -1925,7 +1943,9 @@ async function api(req, env, url, ctx) {
     const peer = await knownPeer(DB,origin);
     if (!peer) return json({error:"Unknown peer."},404);
     const id = "peer-" + await sha256(origin + "\n" + remoteId);
-    const voter = await sha256(vid);
+    const browserVoter=await sha256(vid);
+    const signedIn=await sessionInfo(req,env);
+    const voter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):browserVoter;
     const kind = b.kind;
     const title = clean(b.title, 200), artist = clean(b.artist, 200);
     const album = clean(b.album, 200);
@@ -1945,6 +1965,8 @@ async function api(req, env, url, ctx) {
         duration=CASE WHEN ? > 0 THEN ? ELSE duration END,
         cover_url=CASE WHEN ? != '' THEN ? ELSE cover_url END WHERE id=?`)
         .bind(title,title,artist,artist,album,album,duration,duration,cover,cover,id)];
+    if(signedIn?.role==='user'&&signedIn.user_id&&browserVoter!==voter)
+      statements.push(DB.prepare('DELETE FROM reactions WHERE track_id=? AND voter=? AND kind=?').bind(id,browserVoter,kind));
     if (b.on === true) {
       statements.push(DB.prepare("INSERT OR IGNORE INTO reactions(track_id,voter,kind) VALUES (?,?,?)").bind(id,voter,kind));
       const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null;
@@ -1952,8 +1974,7 @@ async function api(req, env, url, ctx) {
     } else {
       statements.push(DB.prepare("DELETE FROM reactions WHERE track_id = ? AND voter = ? AND kind = ?").bind(id,voter,kind));
     }
-    const signedIn = await sessionInfo(req,env);
-    await recordSignedInVoter(DB,signedIn,voter);
+    await recordSignedInVoter(DB,signedIn,browserVoter);
     if (signedIn?.role === "user" && signedIn.user_id) {
       if (b.on === true) {
         statements.push(DB.prepare("INSERT OR IGNORE INTO user_song_reactions(user_id,track_id,kind) VALUES (?,?,?)").bind(signedIn.user_id,id,kind));
@@ -1979,8 +2000,12 @@ async function api(req, env, url, ctx) {
     const vid = req.headers.get("X-Visitor") || "";
     if (!/^[\w-]{8,64}$/.test(vid) || !["heart", "like", "dislike"].includes(b.kind)) return json({ error: "Bad request." }, 400);
     if (!(await DB.prepare("SELECT 1 FROM tracks WHERE id = ?").bind(x[1]).first())) return json({ error: "Not found." }, 404);
-    const voter = await sha256(vid), id = x[1], kind = b.kind;
+    const browserVoter=await sha256(vid), id=x[1], kind=b.kind;
+    const signedIn=await sessionInfo(req,env);
+    const voter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):browserVoter;
     const stmts = [];
+    if(signedIn?.role==='user'&&signedIn.user_id&&browserVoter!==voter)
+      stmts.push(DB.prepare('DELETE FROM reactions WHERE track_id=? AND voter=? AND kind=?').bind(id,browserVoter,kind));
     if (b.on) {
       stmts.push(DB.prepare("INSERT OR IGNORE INTO reactions (track_id, voter, kind) VALUES (?, ?, ?)").bind(id, voter, kind));
       const other = kind === "like" ? "dislike" : kind === "dislike" ? "like" : null; // like and dislike exclude each other
@@ -1988,8 +2013,7 @@ async function api(req, env, url, ctx) {
     } else {
       stmts.push(DB.prepare("DELETE FROM reactions WHERE track_id = ? AND voter = ? AND kind = ?").bind(id, voter, kind));
     }
-    const signedIn = await sessionInfo(req, env);
-    await recordSignedInVoter(DB,signedIn,voter);
+    await recordSignedInVoter(DB,signedIn,browserVoter);
     if (signedIn?.role === "user" && signedIn.user_id) {
       if (b.on) {
         stmts.push(DB.prepare("INSERT OR IGNORE INTO user_song_reactions (user_id,track_id,kind) VALUES (?,?,?)").bind(signedIn.user_id,id,kind));
@@ -2311,6 +2335,8 @@ async function api(req, env, url, ctx) {
       DB.prepare(`DELETE FROM voted_playlist_cache WHERE id IN (SELECT id FROM user_playlists WHERE user_id=?)`).bind(user.id),
       DB.prepare('DELETE FROM user_playlists WHERE user_id=?').bind(user.id),
       DB.prepare('DELETE FROM user_song_reactions WHERE user_id=?').bind(user.id),
+      // v16.0.6: revoke the shared mobile/browser account voter as well.
+      DB.prepare('DELETE FROM reactions WHERE voter=?').bind(accountReactionVoter({user_id:user.id})),
       // A visitor cookie can be shared by different signed-in accounts on the
       // same browser. Never erase another account's aggregate interactions.
       DB.prepare(`DELETE FROM playlist_hearts WHERE voter IN (SELECT t.voter FROM user_voter_tokens t
@@ -2876,10 +2902,15 @@ export default {
       }
       // Isolated compatibility adapter: never interpret mobile URLs as native
       // WASP routes. Its authentication and storage are independent.
+      if (url.pathname==='/mobile/artist-image')return await handleMobileArtistImage(req,env,url);
       if (url.pathname === '/mobile' || url.pathname === '/mobile/')
         return env.ASSETS.fetch(new Request(new URL('/mobile.html',url),req));
       if (/^\/(?:mobile\/)?rest\/[a-zA-Z][a-zA-Z0-9]*(?:\.view)?$/.test(url.pathname))
-        return await handleMobileRest(req,env,url);
+        return await handleMobileRest(req,env,url,{getBiography:async name=>{
+          const bioUrl=new URL('/api/bio?name='+encodeURIComponent(name),url);
+          const response=await serveBio(env,bioUrl,ctx);
+          return response.ok?await response.json():null;
+        }});
       const share = await isSharing(env.DB);
       // Peer CORS preflight
       if (req.method === "OPTIONS" && share) {

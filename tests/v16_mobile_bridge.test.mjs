@@ -17,7 +17,9 @@ function fixture(){
     'CREATE TABLE playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE user_playlist_tracks(playlist_id TEXT,track_id TEXT,added_at INTEGER)',
     'CREATE TABLE peer_track_refs(ref TEXT,origin TEXT,remote_id TEXT)',
-    'CREATE TABLE user_song_reactions(user_id TEXT,track_id TEXT,kind TEXT)',
+    'CREATE TABLE user_song_reactions(user_id TEXT,track_id TEXT,kind TEXT,PRIMARY KEY(user_id,track_id,kind))',
+    'CREATE TABLE reactions(track_id TEXT,voter TEXT,kind TEXT,PRIMARY KEY(track_id,voter,kind))',
+    'CREATE TABLE peer_reaction_tracks(id TEXT PRIMARY KEY,origin TEXT,remote_id TEXT,created_at INTEGER,title TEXT,artist TEXT,album TEXT,duration REAL,cover_url TEXT)',
     'CREATE TABLE recent_listens(id TEXT,track_id TEXT,origin TEXT,remote_id TEXT,title TEXT,artist TEXT,album TEXT,played_at INTEGER)',
     'CREATE TABLE mobile_scrobble_events(credential_id TEXT,track_id TEXT,reported_at INTEGER,PRIMARY KEY(credential_id,track_id,reported_at))',
     "CREATE TABLE active_streams(session_id TEXT PRIMARY KEY,origin TEXT NOT NULL DEFAULT '',track_id TEXT NOT NULL,expires_at INTEGER NOT NULL,started_at INTEGER NOT NULL DEFAULT 0)",
@@ -572,4 +574,77 @@ test('XML playlist response exposes coverArt as an attribute for older Subsonic 
   const url=endpoint('getPlaylists',{u:'listener',p:secret});
   const xml=await (await handleMobileRest(new Request(url),env,url)).text();
   assert.match(xml,/<playlist[^>]*coverArt="pl:sv:server01"/);
+});
+
+test('Mobile and WASP account hearts share local and peer state in both directions',async()=>{
+  const {env,db}=fixture();const {secret}=await provision(env);
+  const base={apiKey:secret,f:'json'};
+  const call=async(action,args={})=>{
+    const url=endpoint(action,{...base,...args});
+    return (await data(await handleMobileRest(new Request(url),env,url)))['subsonic-response'];
+  };
+  const remote='p:p1:remote01';
+  assert.equal((await call('star',{id:'l:local01'})).status,'ok');
+  assert.equal((await call('star',{id:remote})).status,'ok');
+  assert.deepEqual(db.prepare("SELECT track_id FROM user_song_reactions WHERE user_id='user1' AND kind='heart' ORDER BY track_id").all()
+    .map(r=>r.track_id).some(x=>x.startsWith('peer-')),true);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reactions WHERE voter='account:user1' AND kind='heart'").get().n,2);
+  assert.equal((await call('getSong',{id:'l:local01'})).song.starred,'1970-01-01T00:00:00.000Z');
+  const list=(await call('getStarred2')).starred2.song;
+  assert.deepEqual(list.map(x=>x.id).sort(),['l:local01',remote].sort());
+  // A native browser heart uses the account reaction table. It must be seen
+  // by the mobile client after refresh with no separate mobile star call.
+  db.prepare("DELETE FROM user_song_reactions WHERE user_id='user1' AND track_id='local01'").run();
+  assert.deepEqual((await call('getStarred2')).starred2.song.map(x=>x.id),[remote]);
+  assert.equal((await call('unstar',{id:remote})).status,'ok');
+  assert.equal((await call('getStarred2')).starred2.song.length,0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reactions WHERE voter='account:user1' AND kind='heart'").get().n,1);
+});
+
+test('Artist metadata exposes image IDs and reuses native biography lookup',async()=>{
+  const {env}=fixture();const {secret}=await provision(env);
+  const p={apiKey:secret,f:'json'};
+  const fetchResponse=async(action,params={},options={})=>{
+    const url=endpoint(action,{...p,...params});
+    return (await data(await handleMobileRest(new Request(url),env,url,options)))['subsonic-response'];
+  };
+  const results=(await fetchResponse('search3',{query:'Singers'})).searchResult3.artist;
+  assert.equal(results.length,1);
+  assert.match(results[0].coverArt,/^ar:a:[a-f0-9]{16}$/);
+  assert.match(results[0].artistImageUrl,/\/mobile\/artist-image\?id=a%3A/);
+  const artist=results[0];
+  const artistInfo=(await fetchResponse('getArtistInfo2',{id:artist.id},{getBiography:async name=>({text:'Biography from the native WASP metadata cache for '+name})})).artistInfo2;
+  assert.match(artistInfo.biography,/native WASP metadata cache/);
+  assert.equal(artistInfo.largeImageUrl,artist.artistImageUrl);
+  const coverId=endpoint('getCoverArt',{...p,id:artist.coverArt});
+  const artResponse=await handleMobileRest(new Request(coverId),env,coverId);
+  assert.equal(artResponse.status,302);
+  assert.match(artResponse.headers.get('location'),/\/art\/artist\?name=The%20Singers/);
+});
+
+test('Remote-only artist biography and picture use trusted peers without mobile credentials',async()=>{
+  const {env}=fixture();const {secret}=await provision(env);
+  const p={apiKey:secret,f:'json'};
+  const searchUrl=endpoint('search3',{...p,query:'Remote Artists'});
+  const search=(await data(await handleMobileRest(new Request(searchUrl),env,searchUrl)))['subsonic-response'];
+  const artist=search.searchResult3.artist[0];assert.ok(artist);
+  let requests=[];const previous=globalThis.fetch;
+  globalThis.fetch=async (uri,opts={})=>{
+    requests.push(new Request(uri,opts));
+    if(String(uri).includes('/api/bio'))return Response.json({text:'Peer-hosted WASP artist biography'});
+    if(String(uri).includes('/art/artist'))return new Response(new Uint8Array([137,80,78,71]),{headers:{'content-type':'image/png'}});
+    return new Response('missing',{status:404});
+  };
+  try{
+    const uri=endpoint('getArtistInfo2',{...p,id:artist.id});
+    const details=(await data(await handleMobileRest(new Request(uri),env,uri,{getBiography:async()=>null})))['subsonic-response'].artistInfo2;
+    assert.match(details.biography,/Peer-hosted/);
+    const artUri=endpoint('getCoverArt',{...p,id:artist.coverArt});
+    const picture=await handleMobileRest(new Request(artUri),env,artUri);
+    assert.equal(picture.status,200);
+    assert.equal(picture.headers.get('content-type'),'image/png');
+    assert.equal(requests.length,2);
+    assert.ok(requests.every(x=>x.url.startsWith('https://v15.example.com/')));
+    assert.ok(requests.every(x=>!x.url.includes(secret)&&!x.headers.has('cookie')&&!x.headers.has('authorization')));
+  } finally {globalThis.fetch=previous;}
 });

@@ -5,6 +5,17 @@
 </div>
 
 
+## WASP v16.0.6 — Album grouping and Mobile Bridge compatibility hotfix (staging)
+
+- **Compilation and soundtrack album grouping:** On `/#recent/albums`, tracks with the same distinctive album title are grouped as one release even when credited to different performers. Generic titles such as `Greatest Hits` remain separated by artist; opening a compilation shows every track in the group.
+- **Sidebar:** The sidebar remains vertically scrollable, but the browser's temporary visible scrollbar is hidden when expanding the icon rail. The sidebar divider remains intact.
+- **Mobile hearts:** For signed-in WASP members, Subsonic `star`/`unstar`, `getStarred(2)`, and song `starred` metadata use the same WASP account reaction records as the native browser. Local and trusted peer songs are supported. Visitors who are not signed in retain independent anonymous browser hearts; a mobile key is scoped to its WASP user account. Old reactions are preserved. Newly shared account votes contribute to the local server's heart count, without changing upstream peer reactions.
+- **Artist metadata:** Subsonic search, `getArtists`, and `getArtist` return an artwork identifier and WASP-hosted image URL. Artist info requests reuse the native Wikipedia/cache lookup; where necessary, the adapter asks up to two authorized peers for a public biography. No device credentials are sent to a peer. External biography lookups may still return no results.
+- **Advertising sample:** The existing **Insert sample slider** button now inserts the agreed six-slide HIVE carousel, with **BE PART OF THE SWARM. EXPAND THE HIVE.** at slide 5 and **Shuffle the pit** at slide 6. Existing saved advertising HTML is not overwritten.
+- **Unchanged:** Playlist-list artwork behavior is deliberately not modified in this release, pending inspection of the Android client's own implementation. Native P2P music, playlists, Mobile Bridge keys, audio and storage remain otherwise unchanged.
+
+**Upgrade:** Apply the changes-only v16.0.6 patch strictly to **v16.0.5**, or deploy the full release to an isolated test environment. Back up D1/R2 or Docker persistent state; do not apply a v16.0.5+ patch directly over v15.0.9 production. Real-device validation against your Android app and remote peers remains required before production rollout. See [`docs/V16-0-6-MOBILE-FAVORITES-ALBUMS.md`](docs/V16-0-6-MOBILE-FAVORITES-ALBUMS.md).
+
 ## WASP v16.0.5 — Mobile Live Streaming Activity (staging hotfix)
 
 Mobile playback through supported Subsonic/OpenSubsonic clients now contributes **best-effort anonymous live presence** to the existing WASP `/#listened` streaming section, including approved peer tracks. The Mobile Bridge records successful stream requests and start-scrobble signals in the current `active_streams` table; it does not create extra scrobbles or copy audio. Multiple byte-range requests from one mobile key count as only one session. There is **no database migration**.

@@ -996,43 +996,72 @@ function artistGrid(el, recent) {
     : empty("Nothing matches your search.");
 }
 
-// Songs with the same album name that share an artist form one album.
+// The album name belongs to the release, not always to the track performer.
+// Soundtracks and compilations are frequently credited to different artists;
+// grouping only by shared artist split one record into many duplicate cards.
+// Keep generic, collision-prone titles (e.g. "Greatest Hits") artist-scoped.
+const albumIdentity = name => normalizeRecording(name).replace(/\b([a-z0-9]+) s\b/g,'$1s').replace(/\s+/g, ' ').trim();
+const ambiguousAlbum = name => /^(greatest hits|the greatest hits|best of|the best of|live|singles|unknown album|demo|unplugged|collection|the collection|essentials)$/i.test(albumIdentity(name));
 function buildAlbums(ts) {
-  const byName = dict();
-  ts.forEach((t) => { const al = albumName(t); if (al) (byName[al.toLowerCase()] ??= []).push(t); });
-  const out = [];
-  for (const group of Object.values(byName)) {
-    const parent = group.map((_, i) => i);
-    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-    const owner = dict();
-    group.forEach((t, i) => artistsOf(t).forEach((a) => { const k = a.toLowerCase(); if (k in owner) parent[find(i)] = find(owner[k]); else owner[k] = i; }));
-    const clusters = dict();
-    group.forEach((t, i) => (clusters[find(i)] ??= []).push(t));
-    for (const tr of Object.values(clusters)) {
-      const count = dict();
-      tr.forEach((t) => (count[primaryArtist(t)] = (count[primaryArtist(t)] || 0) + 1));
-      const artist = Object.keys(count).sort((x, y) => count[y] - count[x])[0];
-      out.push({ name: albumName(tr[0]), artist, tracks: tr });
+  const grouped = new Map();
+  for (const t of ts) {
+    const name=albumName(t), key=albumIdentity(name);
+    if (!key) continue;
+    const bucket=grouped.get(key)||[];
+    bucket.push(t); grouped.set(key,bucket);
+  }
+  const out=[];
+  for (const group of grouped.values()) {
+    // Artist overlap matters only for ambiguous titles shared by unrelated
+    // releases. Most album titles, including multi-artist game soundtracks,
+    // identify one record even when each track has different performers.
+    let clusters=[group];
+    if (ambiguousAlbum(albumName(group[0]))) {
+      const parent=group.map((_,i)=>i);
+      const find=i=>parent[i]===i?i:(parent[i]=find(parent[i]));
+      const owner=new Map();
+      group.forEach((t,i)=>artistsOf(t).forEach(artist=>{
+        const k=normalizeRecording(artist),prior=owner.get(k);
+        if(prior!==undefined)parent[find(i)]=find(prior);
+        else owner.set(k,i);
+      }));
+      const found=new Map();group.forEach((t,i)=>{
+        const k=find(i);if(!found.has(k))found.set(k,[]);found.get(k).push(t);
+      });
+      clusters=[...found.values()];
+    }
+    for (const songs of clusters) {
+      const counts=new Map();
+      songs.forEach(t=>{const artist=primaryArtist(t);counts.set(artist,(counts.get(artist)||0)+1);});
+      const [artist,count]=[...counts].sort((a,b)=>b[1]-a[1])[0];
+      // Preserve the credited artist when it owns the majority of the record.
+      const displayArtist=counts.size>1 && count <= songs.length/2?'Various Artists':artist;
+      out.push({name:albumName(songs[0]),artist:displayArtist,tracks:songs});
     }
   }
   return out;
 }
 
 function albumGrid(el) {
-  const l = buildAlbums(tracks.filter(match)).sort((x, y) => latest(y.tracks) - latest(x.tracks) || x.name.localeCompare(y.name));
+  const l=buildAlbums(tracks.filter(match)).sort((x,y)=>latest(y.tracks)-latest(x.tracks)||x.name.localeCompare(y.name));
   noView();
-  el.innerHTML = l.length ? `<div class="grid s">${l.map((al) =>
-    `<a class="tile sq" href="#album/${enc(al.artist)}/${enc(al.name)}">${art(albumArt(al.tracks[0]), al.name)}<b>${esc(al.name)}</b><span class="muted">${esc(al.artist)}</span></a>`).join("")}</div>`
-    : empty("No albums yet. Albums appear when songs have an album tag.");
+  el.innerHTML=l.length?`<div class="grid s">${l.map(al=>
+    `<a class="tile sq" href="#album/${enc(al.artist)}/${enc(al.name)}">${art(albumArt(al.tracks[0]),al.name)}<b>${esc(al.name)}</b><span class="muted">${esc(al.artist)}</span></a>`).join('')}</div>`
+    :empty('No albums yet. Albums appear when songs have an album tag.');
 }
 
 function albumPage(el, artist, album) {
-  const l = tracks.filter((t) => albumName(t) === album && artistsOf(t).includes(artist)).sort(byTrack);
-  if (!l.length) { el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>` + empty("Album not found."); noView(); return; }
-  view = { ids: l.map((t) => t.id), label: album, pl: null };
-  el.innerHTML = `<a class="back" href="#recent/albums">← Albums</a>
-    <div class="hero">${art(albumArt(l[0]), album)}<div><h1>${esc(album)}</h1><span class="muted"><a href="#artist/${enc(artist)}">${esc(artist)}</a> · ${plural(l.length, "song")}</span>${actions()}</div></div>
-    ${l.map((t, i) => row(t, numLabel(t, i, l))).join("")}`;
+  // Resolve using the same grouping as the album grid, so opening a
+  // soundtrack includes its other performers, not just the tile's artist.
+  const wanted=albumIdentity(album);
+  const group=buildAlbums(tracks).find(x=>albumIdentity(x.name)===wanted &&
+    normalizeRecording(x.artist)===normalizeRecording(artist));
+  const l=(group?.tracks||[]).slice().sort(byTrack);
+  if(!l.length){el.innerHTML=`<a class="back" href="#recent/albums">← Albums</a>`+empty('Album not found.');noView();return;}
+  view={ids:l.map(t=>t.id),label:group.name,pl:null};
+  el.innerHTML=`<a class="back" href="#recent/albums">← Albums</a>
+    <div class="hero">${art(albumArt(l[0]),group.name)}<div><h1>${esc(group.name)}</h1><span class="muted">${esc(group.artist)} · ${plural(l.length,'song')}</span>${actions()}</div></div>
+    ${l.map((t,i)=>row(t,numLabel(t,i,l))).join('')}`;
 }
 
 function artistPage(el, name) {

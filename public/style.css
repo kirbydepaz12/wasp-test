@@ -498,6 +498,14 @@ body.up-open #lyrics.full{right:340px}
 /* WASP v15.0.2: natural-height BBCode credits anchored to the sidebar bottom. */
 .brand .brand-image{display:block;max-height:52px;max-width:180px;width:auto;height:auto;object-fit:contain}
 .app>.side{display:flex;flex-direction:column}
+/* v16.0.6: Keep the sidebar scrollable while hiding the transient native
+   scrollbar that appears after expanding the icon-only sidebar. The existing
+   border-right stays visible as the single clean divider. */
+@media (min-width:761px){
+  .app>.side{scrollbar-width:none;-ms-overflow-style:none}
+  .app>.side::-webkit-scrollbar{display:none;width:0;height:0}
+}
+
 .app>.side #nav{flex:0 0 auto}
 .sidebar-credits{margin-top:auto;flex:0 0 auto;padding:12px 14px 0;border-top:1px solid var(--line);max-width:100%}
 .sidebar-credits-content{font-size:11px;line-height:1.55;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}

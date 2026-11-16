@@ -715,7 +715,12 @@ const SAMPLE_AD = `<style>
   .s2{background:linear-gradient(135deg,#12303a,#08131a 65%)}
   .s3{background:linear-gradient(135deg,#4a1226,#16070d 65%)}   /* most hearted */
   .s4{background:linear-gradient(135deg,#4a3410,#150f05 65%)}   /* most liked */
-  .s5{background:linear-gradient(135deg,#2b1b4d,#0d0819 65%)}   /* random play */
+  .s5{background:linear-gradient(135deg,#44310d,#171107 65%)}   /* join the HIVE */
+  .s6{background:linear-gradient(135deg,#2b1b4d,#0d0819 65%)}   /* random play */
+
+  .slide .cta-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:4px}
+  .slide .cta-row a{margin-top:0}
+  .slide .cta-row .secondary{background:transparent;color:#C8F169;border:1px solid #C8F169}
 
   .dots{position:absolute;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:8px;z-index:2}
   .dots button{width:12px;height:12px;border-radius:50%;border:0;background:rgba(255,255,255,.35);cursor:pointer;padding:0}
@@ -725,7 +730,12 @@ const SAMPLE_AD = `<style>
   .prev{left:12px}.next{right:12px}
   .pause{top:12px;right:12px;width:30px;height:30px;border-radius:50%;font-size:11px}
   .pause[hidden]{display:none}
-  @media (max-width:560px){.slide{padding:24px 50px}.slide h2{font-size:22px}.slide p{font-size:14px}}
+  @media (max-width:560px){
+    .slide{padding:24px 50px}
+    .slide h2{font-size:22px}
+    .slide p{font-size:14px}
+    .slide .cta-row a{padding:10px 14px;font-size:13px}
+  }
   @media (prefers-reduced-motion:reduce){.slide,.slide a{transition:none}}
 </style>
 
@@ -762,8 +772,19 @@ const SAMPLE_AD = `<style>
     <a href="#likes" target="_top" data-cta="likes">See most liked</a>
   </div>
 
-  <!-- 5 — random play -->
+  <!-- 5 — become part of the WASP HIVE -->
   <div class="slide s5">
+    <p class="kicker">Join the WASP network</p>
+    <h2>BE PART OF THE SWARM. EXPAND THE HIVE.</h2>
+    <p>Host your own WASP server with Docker or Cloudflare. Already have a public WASP link? Register, request publishing permission, and share your server to grow the HIVE.</p>
+    <div class="cta-row">
+      <a href="https://github.com/KNDPZ/WASP" target="_blank" rel="noopener noreferrer" data-cta="host">Host a WASP server</a>
+      <a class="secondary" href="#settings" target="_top" data-cta="publish">Register &amp; publish</a>
+    </div>
+  </div>
+
+  <!-- 6 — random play (previously slide 5) -->
+  <div class="slide s6">
     <p class="kicker">Can't decide?</p>
     <h2>Shuffle the pit</h2>
     <p>One tap drops a random track from the whole library into your player. No browsing, no picking.</p>
@@ -864,7 +885,7 @@ const SAMPLE_AD = `<style>
     var t = e.target;
     if (!t || !t.closest) return;
 
-    /* --- random play: ask the app to shuffle (the frame is sandboxed, so postMessage is the only way out) --- */
+    /* Random play: ask the app to shuffle via postMessage from this sandboxed frame. */
     var r = t.closest('[data-random]');
     if (r) {
       e.preventDefault();
@@ -873,7 +894,7 @@ const SAMPLE_AD = `<style>
       return;
     }
 
-    /* --- normal links --- */
+    /* Normal links */
     var a = t.closest('a[data-cta]');
     if (!a) return;
     if (typeof window.trackAd === 'function') {
@@ -884,8 +905,7 @@ const SAMPLE_AD = `<style>
   go(0);
   start();
 })();
-</script>
-`;
+</script>`;
 $("#spSample").addEventListener("click", () => { if (!$("#spCode").value.trim() || confirm("Replace the code in the box with the sample slider?")) $("#spCode").value = SAMPLE_AD; });
 $("#spPreviewBtn").addEventListener("click", () => {
   const f = document.createElement("iframe");

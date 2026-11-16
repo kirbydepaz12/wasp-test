@@ -10,7 +10,7 @@ import {recordMobilePlayback} from './mobile-live.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '16.0.5';
+const WASP_VERSION = '16.0.6';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -374,13 +374,29 @@ async function libraryForRequest(DB){
   virtualCache.set(DB,{time:now,promise});
   try{return await promise;}catch(e){virtualCache.delete(DB);throw e;}
 }
-function songOut(t){return {id:t.id,parent:t.albumId,isDir:false,title:t.title,album:t.album,artist:t.artist,
+function songBase(t){return {id:t.id,parent:t.albumId,isDir:false,title:t.title,album:t.album,artist:t.artist,
   artistId:t.artistId,albumId:t.albumId,track:t.track||1,discNumber:1,duration:Math.round(t.duration),size:Math.round(t.size),
   suffix:'mp3',contentType:'audio/mpeg',type:'music',isVideo:false,coverArt:t.id,...(t.genre?{genre:t.genre}:{}),
   ...(t.created_at?{created:new Date(t.created_at).toISOString()}:{}),playCount:t.plays};}
 function albumOut(a){return {id:a.id,name:a.name,artist:a.artist,artistId:a.artistId,songCount:a.songs.length,duration:Math.round(a.songs.reduce((s,t)=>s+t.duration,0)),
   ...(a.created_at?{created:new Date(a.created_at).toISOString()}:{}),coverArt:a.songs[0]?.id};}
-const artistOut=a=>({id:a.id,name:a.name,albumCount:a.albums.size});
+const artistOut=a=>({id:a.id,name:a.name,albumCount:a.albums.size,coverArt:'ar:'+a.id});
+const accountVoteId=userId=>'account:'+userId;
+const peerReactionId=async t=>'peer-'+await digest(t.origin+'\n'+t.sourceId);
+// The same physical record can have more than one peer source. Account stars
+// are scoped to this server and never sent as mutations to an upstream peer.
+async function readAccountStars(DB,userId,catalogue){
+  const rows=(await DB.prepare(`SELECT r.track_id,p.origin,p.remote_id FROM user_song_reactions r
+    LEFT JOIN peer_reaction_tracks p ON p.id=r.track_id
+    WHERE r.user_id=? AND r.kind='heart' LIMIT 5000`).bind(userId).all()).results||[];
+  const ids=new Set();
+  for(const r of rows){
+    const song=r.origin?catalogue.byOrigin.get(r.origin+'\0'+r.remote_id):catalogue.byId.get('l:'+r.track_id);
+    if(song)ids.add(song.id);
+  }
+  return ids;
+}
+
 const listSlice=(xs,params,prefix='',limit=300)=>{
   const offset=n(params.get(prefix?prefix+'Offset':'offset'),0,100000);
   const count=n(params.get(prefix?prefix+'Count':'size'),prefix?20:10,limit);
@@ -481,7 +497,35 @@ async function playlistArt(req,env,playlist){
   return new Response(null,{status:404,headers:NO_STORE});
 }
 
-export async function handleMobileRest(req,env,url){
+// Artist cover endpoint: only names present in the shared virtual catalogue
+// are eligible. It accepts no remote URLs and never forwards authentication.
+async function mobileArtistCover(req,env,catalogue,artistId){
+  const a=catalogue.artists.get(artistId);
+  if(!a)return new Response(null,{status:404,headers:NO_STORE});
+  const songs=catalogue.tracks.filter(t=>t.artistId===artistId);
+  const local=songs.find(t=>!t.peerId);
+  if(local){
+    return Response.redirect(new URL('/art/artist?name='+encodeURIComponent(a.name),req.url),302);
+  }
+  for(const t of songs.filter(t=>t.peerId && catalogue.authorizedOrigins.has(t.origin)).slice(0,3)){
+    try{
+      const upstream=t.origin.replace(/\/$/,'')+'/art/artist?name='+encodeURIComponent(a.name);
+      const result=await fetch(upstream,{redirect:'manual',signal:AbortSignal.timeout(7000)});
+      const mime=(result.headers.get('content-type')||'').split(';')[0].trim();
+      if(result.ok && ART_TYPES.test(mime))return new Response(req.method==='HEAD'?null:result.body,{headers:{...NO_STORE,'content-type':mime}});
+    }catch{}
+  }
+  return songs.length?art(req,env,songs[0]):new Response(null,{status:404,headers:NO_STORE});
+}
+export async function handleMobileArtistImage(req,env,url){
+  if(!['GET','HEAD'].includes(req.method))return new Response(null,{status:405});
+  if(!(await enabled(env.DB)))return new Response(null,{status:404});
+  const id=clean(url.searchParams.get('id'),100);
+  if(!/^a:[a-f0-9]{16}$/.test(id))return new Response(null,{status:404});
+  const catalogue=await libraryForRequest(env.DB);
+  return mobileArtistCover(req,env,catalogue,id);
+}
+export async function handleMobileRest(req,env,url,options={}){
   if(!['GET','HEAD','POST'].includes(req.method))return new Response('Method not allowed',{status:405,headers:NO_STORE});
   if(!(await enabled(env.DB)))return new Response('WASP Mobile Bridge is disabled',{status:503,headers:NO_STORE});
   let p;try{p=await readParams(req,url);}catch(e){return protoError(0,e.message,'xml');}
@@ -499,6 +543,14 @@ export async function handleMobileRest(req,env,url){
   let catalogue;
   try{catalogue=await libraryForRequest(env.DB);}catch{return protoError(0,'Unable to read music catalogue',format);}
   const {tracks,albums,artists}=catalogue;
+  // Fetch account hearts only for browse endpoints. Audio byte-range requests
+  // must not incur an extra D1 read for every seek/buffer operation.
+  const browseWithStars=/^(?:getSong|getAlbum|getMusicDirectory|getStarred2?|search[23]?|getAlbumList2?|getRandomSongs|getTopSongs|getSongsByGenre|getPlaylist)$/.test(action);
+  let starIds=new Set();
+  if(browseWithStars)try{starIds=await readAccountStars(env.DB,auth.userId,catalogue);}catch(e){console.warn('Mobile stars unavailable',e?.message);}
+  const songOut=t=>({...songBase(t),...(starIds.has(t.id)?{starred:new Date(0).toISOString()}:{})});
+  const publicImage=a=>new URL('/mobile/artist-image?id='+encodeURIComponent(a.id),url).href;
+  const fullArtist=a=>({...artistOut(a),artistImageUrl:publicImage(a)});
   const folderView=makeMobileFolders(catalogue);
   if(action==='getMusicFolders')return protocolResponse({musicFolders:{musicFolder:folderView.folders}},null,format);
   const scoped=folderView.roots.get(clean(p.get('musicFolderId'))) || folderView.roots.get('1');
@@ -510,13 +562,13 @@ export async function handleMobileRest(req,env,url){
   const id=clean(p.get('id'),240);
   if(action==='getArtists'||action==='getIndexes'){
     const grouped=new Map();for(const a of sortedArtists.filter(x=>visibleArtists.has(x.id))){const letter=/^[a-z]/i.test(a.name)?a.name[0].toUpperCase():'#';
-      if(!grouped.has(letter))grouped.set(letter,[]);grouped.get(letter).push(artistOut(a));}
+      if(!grouped.has(letter))grouped.set(letter,[]);grouped.get(letter).push(fullArtist(a));}
     const index=[...grouped].map(([name,artist])=>({name,artist}));
     return protocolResponse(action==='getArtists'?{artists:{index,ignoredArticles:'The El La Los Las'}}:{indexes:{index,ignoredArticles:'The El La Los Las'}},null,format);
   }
   if(action==='getArtist'){
     const a=artists.get(id);if(!a)return protoError(70,'Artist not found',format);
-    return protocolResponse({artist:{...artistOut(a),album:[...a.albums].map(aid=>albumOut(albums.get(aid))).sort((x,y)=>x.name.localeCompare(y.name))}},null,format);
+    return protocolResponse({artist:{...fullArtist(a),album:[...a.albums].map(aid=>albumOut(albums.get(aid))).sort((x,y)=>x.name.localeCompare(y.name))}},null,format);
   }
   if(action==='getAlbum'){
     const a=albums.get(id);if(!a)return protoError(70,'Album not found',format);
@@ -568,7 +620,7 @@ export async function handleMobileRest(req,env,url){
     const songHits=visibleTracks.filter(t=>!query||[t.title,t.artist,t.album].some(s=>normalize(s).includes(query)));
     const artistHits=sortedArtists.filter(a=>visibleArtists.has(a.id)&&!query||normalize(a.name).includes(query));
     const albumHits=sortedAlbums.filter(a=>visibleAlbums.has(a.id)&&!query||[a.name,a.artist].some(s=>normalize(s).includes(query)));
-    const result={artist:listSlice(artistHits,p,'artist',250).map(artistOut),album:listSlice(albumHits,p,'album',250).map(albumOut),song:listSlice(songHits,p,'song',500).map(songOut)};
+    const result={artist:listSlice(artistHits,p,'artist',250).map(fullArtist),album:listSlice(albumHits,p,'album',250).map(albumOut),song:listSlice(songHits,p,'song',500).map(songOut)};
     const key=action==='search3'?'searchResult3':action==='search2'?'searchResult2':'searchResult';
     return protocolResponse({[key]:result},null,format);
   }
@@ -593,8 +645,7 @@ export async function handleMobileRest(req,env,url){
     return protocolResponse({playlist:{...metadata,entry:raw.map(songOut)}},null,format);
   }
   if(action==='getStarred2'||action==='getStarred'){
-    const stars=(await env.DB.prepare("SELECT track_id FROM user_song_reactions WHERE user_id=? AND kind='heart' LIMIT 1000").bind(auth.userId).all()).results;
-    const list=stars.map(r=>catalogue.byId.get('l:'+r.track_id)).filter(Boolean).map(songOut);
+    const list=tracks.filter(t=>starIds.has(t.id)).map(songOut);
     return protocolResponse({[action==='getStarred'?'starred':'starred2']:{artist:[],album:[],song:list}},null,format);
   }
   if(action==='getNowPlaying')return protocolResponse({nowPlaying:{entry:[]}},null,format);
@@ -602,7 +653,35 @@ export async function handleMobileRest(req,env,url){
     const wanted=clean(p.get('username'),32);if(wanted && wanted.toLowerCase()!==auth.username.toLowerCase())return protoError(50,'Not authorized',format);
     return protocolResponse({user:{username:auth.username,email:'',scrobblingEnabled:true,adminRole:false,settingsRole:false,downloadRole:true,uploadRole:false,playlistRole:true,coverArtRole:true,commentRole:false,podcastRole:false,streamRole:true,jukeboxRole:false,shareRole:false,folder:folderView.folders.map(x=>x.id)}},null,format);
   }
-  if(action==='getArtistInfo'||action==='getArtistInfo2')return protocolResponse({[action==='getArtistInfo'?'artistInfo':'artistInfo2']:{biography:'',musicBrainzId:''}},null,format);
+  if(action==='getArtistInfo'||action==='getArtistInfo2'){
+    const artist=artists.get(id);
+    if(!artist)return protoError(70,'Artist not found',format);
+    const publicImageUrl=publicImage(artist);
+    let bio=null;
+    // Use the same native WASP Wikipedia/cache implementation as the web
+    // player. The callback can start a lookup when a local biography is empty.
+    if(typeof options.getBiography==='function'){
+      try{bio=await options.getBiography(artist.name);}catch{}
+    }
+    // If this server has no biography, ask at most two trusted music peers.
+    // Never send mobile passwords, cookies or other request headers.
+    if(!bio?.text){
+      const origins=[...new Set(tracks.filter(t=>t.artistId===id&&t.origin&&
+        catalogue.authorizedOrigins.has(t.origin)).map(t=>t.origin))].slice(0,2);
+      for(const origin of origins){
+        try{
+          const endpoint=origin.replace(/\/$/,'')+'/api/bio?name='+encodeURIComponent(artist.name);
+          const r=await fetch(endpoint,{headers:{accept:'application/json'},redirect:'error',signal:AbortSignal.timeout(6000)});
+          if(!r.ok)continue;
+          const d=await r.json();if(typeof d?.text==='string'&&d.text.trim()){bio=d;break;}
+        }catch{};
+      }
+    }
+    return protocolResponse({[action==='getArtistInfo'?'artistInfo':'artistInfo2']:{
+      biography:clean(bio?.text,12000),musicBrainzId:'',
+      smallImageUrl:publicImageUrl,mediumImageUrl:publicImageUrl,largeImageUrl:publicImageUrl
+    }},null,format);
+  }
   if(action==='getAlbumInfo'||action==='getAlbumInfo2')return protocolResponse({[action==='getAlbumInfo'?'albumInfo':'albumInfo2']:{notes:'',musicBrainzId:''}},null,format);
   if(action==='getSongsByGenre'){
     const genre=normalize(p.get('genre'));
@@ -628,6 +707,7 @@ export async function handleMobileRest(req,env,url){
     return response;
   }
   if(action==='getCoverArt'){
+    if(id.startsWith('ar:'))return mobileArtistCover(req,env,catalogue,id.slice(3));
     if(id.startsWith('pl:')){
       const playlists=await readMobilePlaylists(env.DB,catalogue,auth);
       const playlist=playlists.find(id.slice(3));
@@ -665,11 +745,28 @@ export async function handleMobileRest(req,env,url){
     return protocolResponse({},null,format);
   }
   if(action==='star'||action==='unstar'){
-    const track=respondForSong(catalogue,id);
-    if(!track)return protoError(70,'Song not found',format);
-    if(track.peerId)return protoError(70,'Peer stars not yet supported by Mobile Bridge',format);
-    if(action==='star')await env.DB.prepare("INSERT OR IGNORE INTO user_song_reactions(user_id,track_id,kind) VALUES(?,?,'heart')").bind(auth.userId,track.sourceId).run();
-    else await env.DB.prepare("DELETE FROM user_song_reactions WHERE user_id=? AND track_id=? AND kind='heart'").bind(auth.userId,track.sourceId).run();
+    const rawIds=p.getAll('id');
+    if(!rawIds.length)return protoError(10,'Song ID required',format);
+    const songs=rawIds.slice(0,40).map(x=>respondForSong(catalogue,x));
+    if(songs.some(t=>!t))return protoError(70,'Song not found',format);
+    const on=action==='star';
+    for(const t of songs){
+      const voteId=t.peerId?await peerReactionId(t):t.sourceId;
+      // Include an origin-specific peer identity, but never contact the peer
+      // to write a heart. The shared WASP account owns the reaction locally.
+      const batch=[];
+      if(t.peerId)batch.push(env.DB.prepare(`INSERT OR IGNORE INTO peer_reaction_tracks
+        (id,origin,remote_id,created_at,title,artist,album,duration,cover_url)
+        VALUES(?,?,?,?,?,?,?,?,?)`).bind(voteId,t.origin,t.sourceId,Date.now(),t.title,t.artist,t.album,t.duration,''));
+      if(on){
+        batch.push(env.DB.prepare("INSERT OR IGNORE INTO user_song_reactions(user_id,track_id,kind) VALUES(?,?,'heart')").bind(auth.userId,voteId));
+        batch.push(env.DB.prepare("INSERT OR IGNORE INTO reactions(track_id,voter,kind) VALUES(?,?,'heart')").bind(voteId,accountVoteId(auth.userId)));
+      }else{
+        batch.push(env.DB.prepare("DELETE FROM user_song_reactions WHERE user_id=? AND track_id=? AND kind='heart'").bind(auth.userId,voteId));
+        batch.push(env.DB.prepare("DELETE FROM reactions WHERE track_id=? AND voter=? AND kind='heart'").bind(voteId,accountVoteId(auth.userId)));
+      }
+      await env.DB.batch(batch);
+    }
     return protocolResponse({},null,format);
   }
   return protoError(0,'Endpoint not supported by WASP Mobile Bridge v16 staging',format);
