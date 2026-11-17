@@ -257,7 +257,8 @@ export async function telemetrySummary(env,url) {
 export async function telemetryFeed(env,url) {
   await ensureTelemetrySchema(env);
   const share=(await env.DB.prepare("SELECT value FROM settings WHERE key='network_share'").first())?.value==='1';
-  if(!share)return result({error:'Telemetry not shared by this server'},403);
+  const pref=await env.DB.prepare("SELECT value FROM settings WHERE key='telemetry_share_enabled'").first();
+  if(!share || pref?.value==='0')return result({error:'Telemetry sharing disabled by this server'},403);
   const cursor=Number(url.searchParams.get('cursor')||0);
   if(!Number.isSafeInteger(cursor)||cursor<0)return result({error:'Invalid cursor'},400);
   const max=Math.max(1,Math.min(MAX_BATCH,Number(url.searchParams.get('limit'))||MAX_BATCH));

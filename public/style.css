@@ -696,3 +696,12 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 
 /* v17: lazy telemetry content never gets an inner scrollbar and never overlaps the fixed audio player. */
 .wasp-telemetry-frame{display:block;width:100%;border:0;overflow:hidden;background:transparent;min-height:250px}
+
+/* v17.0.2: scheduled maintenance manual status */
+.cron-progress{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}.cron-progress[hidden]{display:none}.cron-progress progress{accent-color:var(--accent,#c8f169);height:12px;min-width:180px;flex:1;max-width:420px}.cron-manual:disabled{opacity:.5;cursor:wait}
+
+/* v17.0.2: first-party source provenance, never an exposed peer address */
+.source-icons{display:inline-flex;gap:2px;align-items:center;vertical-align:middle;margin-right:5px;white-space:nowrap}.source-location{display:inline-flex;width:14px;height:14px;align-items:center;justify-content:center;color:var(--accent,#C8F169)}.source-location.peer{color:#79c6e8}.source-location svg{width:100%;height:100%}.tile b .source-location,.hero h1 .source-location{width:16px;height:16px}
+
+/* v17.0.2: account-owned Spotify recreation controls */
+.spotify-import-form,.spotify-import-status{background:var(--panel,#211f1e);border:1px solid var(--line2,#383535);border-radius:14px;padding:18px;margin:12px 0 24px;max-width:1000px}.spotify-import-form h3{margin:0 0 8px}.spotify-import-form p{line-height:1.5}.spotify-import-controls{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0}.spotify-import-controls input{min-width:230px;flex:1;border-radius:22px;padding:12px;background:var(--bg,#121111);border:1px solid var(--line2,#383535);color:inherit}.spotify-import-pending{display:block;color:var(--accent,#c8f169);font-size:12px;margin-top:4px}.spotify-import-status progress{width:100%;height:12px;accent-color:var(--accent,#c8f169)}.spotify-import-actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.spotify-peer{color:#79c6e8}.spotify-local{color:var(--accent,#c8f169)}

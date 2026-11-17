@@ -402,14 +402,14 @@ async function loadRequests() {
   if (!Array.isArray(list)) list = [];
   window.__reqs = list;
   $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => {
-    const pl = r.kind === "playlist", has = pl && r.total != null;
+    const pl = r.kind === "playlist", has = pl && r.total != null && Array.isArray(r.missing);
     const miss = has ? r.missing.length : 0;
-    const progress = has ? `${r.matched}/${r.total}${r.partial ? "+" : ""} · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? "Song list not available" : "";
+    const progress = has ? `${r.matched}/${r.total}${r.partial ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? "Song list not available" : "";
     const open = openReq.has(r.id);
     return `<tr data-r="${r.id}">
     <td style="width:56px">${mini(r.image, r.title)}</td>
-    <td>${esc(r.title)}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${progress ? `<br><span class="muted">${esc(progress)}</span>` : ""}</td>
-    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}<button class="btn ghost" data-a="remove" ${small}>Remove</button></td></tr>
+    <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${progress ? `<br><span class="muted">${esc(progress)}</span>` : ""}</td>
+    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl && !r.remote ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}${r.remote?'<span class="muted">Managed by originating WASP</span>':`<button class="btn ghost" data-a="remove" ${small}>Remove</button>`}</td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
       ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
       ${r.partial ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify only shows the first ${r.total} songs of this playlist, so the rest can't be checked.</p>` : ""}
@@ -966,7 +966,7 @@ $("#cleanForm").addEventListener("submit", async (e) => {
 });
 
 // ---------- Network → Crons ----------
-const CRON_LABELS={peers:"Check connected peers for new tracks",artwork:"Fetch missing artist/album artwork",biography:"Check artist biographies and lineups",hash:"SHA-256 hash local /music folder (Docker only)"};
+const CRON_LABELS={peers:"Check connected peers for new tracks",artwork:"Fetch missing artist/album artwork",biography:"Check artist biographies and lineups",hash:"SHA-256 hash local /music folder (Docker only)",telemetry:"Share my HIVE telemetry with connected peers"};
 const CRON_KEYS=Object.keys(CRON_LABELS);
 const cronWeekdays=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 const availableZones=()=>{
@@ -990,6 +990,15 @@ $('#netTabMobile').onclick=()=>{location.hash='network/mobile';showNetworkTab('m
 $('#netTabCrons').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');};
 function cronJobTemplate(key){
   const id="cron-"+key;
+  if(key==='telemetry')return `<fieldset class="cron-job" id="${id}" style="border:1px solid var(--line2);border-radius:12px;padding:14px;margin:14px 0 20px">
+    <legend><label><input type="checkbox" data-cron="telemetry" data-field="enabled" checked> Share my telemetry with the HIVE</label></legend>
+    <p class="muted">Enabled by default: exchange telemetry every five minutes. When unchecked, this server can still <b>pull</b> peer telemetry, but its own feed is unavailable.</p>
+    <div class="form" style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
+      <label>Automatic sync interval <select data-cron="telemetry" data-field="minutes">${[5,10,15,30,60,120].map(n=>`<option value="${n}">${n<60?n+' minutes':n/60+' hour'+(n>60?'s':'')}</option>`).join('')}</select></label>
+      <button class="btn ghost cron-manual" type="button" data-run-cron="telemetry">Grab telemetry now</button>
+    </div>
+    <div class="cron-progress" data-progress="telemetry" hidden><progress max="100" value="0"></progress><span class="muted" role="status"></span></div>
+  </fieldset>`;
   return `<fieldset class="cron-job" id="${id}" style="border:1px solid var(--line2);border-radius:12px;margin:16px 0;padding:14px">
     <legend><label><input type="checkbox" data-cron="${key}" data-field="enabled"> ${CRON_LABELS[key]}</label></legend>
     ${key==="peers"?`<label class="check" style="margin:8px 0 12px 12px"><input type="checkbox" data-cron="peers" data-field="sync_catalogue"> Sync peer catalogues and playlists (metadata only)</label>`:""}
@@ -1007,11 +1016,14 @@ function cronJobTemplate(key){
         <select data-cron="${key}" data-field="monthday">${Array.from({length:30},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join("")}</select>
       </label>
     </div>
+    <div style="margin-top:12px"><button class="btn ghost cron-manual" type="button" data-run-cron="${key}">Run now</button></div>
+    <div class="cron-progress" data-progress="${key}" hidden><progress max="100" value="0"></progress><span class="muted" role="status"></span></div>
   </fieldset>`;
 }
 $("#cronJobs").innerHTML=CRON_KEYS.map(cronJobTemplate).join("");
 const cronField=(key,field)=>document.querySelector(`[data-cron="${key}"][data-field="${field}"]`);
 function syncCronFields(key){
+  if(key==='telemetry')return;
   const group=$("#cron-"+key),enabled=cronField(key,"enabled").checked,frequency=cronField(key,"frequency").value;
   group.querySelectorAll("[data-schedule]").forEach(el=>el.classList.toggle("hidden",el.dataset.schedule!==frequency));
   group.querySelector(".cron-fields").classList.toggle("cron-disabled",!enabled);
@@ -1036,6 +1048,10 @@ async function loadCrons(){
         }
       }
       if(key==="peers")cronField(key,"sync_catalogue").checked=!!job.sync_catalogue;
+      if(key==="telemetry"){
+        cronField(key,'enabled').checked=job.enabled!==false;
+        cronField(key,'minutes').value=String(job.minutes||5);
+      }
       syncCronFields(key);
     }
     cronsLoaded=true;
@@ -1045,6 +1061,10 @@ $("#cronForm").addEventListener("submit",async e=>{
   e.preventDefault();const btn=$("#cronSave");btn.disabled=true;
   const config={timezone:$("#cronTimezone").value,jobs:{}};
   for(const key of CRON_KEYS){
+    if(key==='telemetry'){
+      config.jobs.telemetry={enabled:cronField(key,'enabled').checked,minutes:Number(cronField(key,'minutes').value)};
+      continue;
+    }
     config.jobs[key]={enabled:cronField(key,"enabled").checked,
       ...(key==="peers"?{sync_catalogue:cronField(key,"sync_catalogue").checked}:{}),
       frequency:cronField(key,"frequency").value,time:cronField(key,"time").value,
@@ -1054,6 +1074,28 @@ $("#cronForm").addEventListener("submit",async e=>{
     if(!res.ok)throw Error(result.error||"Unable to save schedules");
     flashMsg("#cronMsg","Schedules saved successfully.");
   }catch(e){flashMsg("#cronMsg",e.message,true);}finally{btn.disabled=false;}
+});
+
+// Manual jobs are async on the Worker; the progress bar polls actual persisted status.
+$('#cronJobs').addEventListener('click',async e=>{
+  const button=e.target.closest('button[data-run-cron]');if(!button)return;
+  const kind=button.dataset.runCron,panel=$(`[data-progress="${kind}"]`);
+  if(!panel)return;
+  const progress=panel.querySelector('progress'),status=panel.querySelector('span');
+  panel.hidden=false;progress.value=0;status.textContent='Starting…';button.disabled=true;
+  try{
+    const r=await post('/api/admin/crons/run',{kind});const data=await r.json();
+    if(!r.ok)throw Error(data.error||'Unable to start job');
+    for(let attempt=0;attempt<75;attempt++){
+      await new Promise(resolve=>setTimeout(resolve,1200));
+      const v=await fetch('/api/admin/crons/run-status?id='+encodeURIComponent(data.runId),{cache:'no-store'});
+      if(!v.ok)throw Error('Unable to get job status');
+      const state=await v.json();progress.value=Math.max(0,Math.min(100,Number(state.progress)||0));
+      status.textContent=state.message||state.state;
+      if(['complete','error'].includes(state.state))break;
+    }
+  }catch(error){status.textContent=error.message;}
+  finally{button.disabled=false;}
 });
 
 // ---------- network (peer-to-peer) ----------

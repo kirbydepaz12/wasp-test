@@ -463,7 +463,7 @@ async function load() {
   for(const [key,t] of peerTrackLookup) if(!byId[key]) byId[key]=t;
   // A public playlist can contain a song borrowed from a third RiffVault instance.
   // The publishing server includes its real origin and track ID in track_sources.
-  for (const pl of [...userPublicPlaylists,...peerPlaylists]) {
+  for (const pl of [...playlists,...userPublicPlaylists,...peerPlaylists]) {
     for (const [ref, src] of Object.entries(pl.track_sources || {})) {
       if (!src || !src.origin || !src.remote_id) continue;
       let source;
@@ -586,13 +586,41 @@ const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
 const numLabel = (t, i, l) => t.track_no || (l.some((x) => x.track_no) ? "–" : i + 1);
 const byTrack = (x, y) => (x.track_no || 999) - (y.track_no || 999) || x.title.localeCompare(y.title);
 
+// v17.0.2: exact location indicators, including hidden duplicate sources.
+// A primary peer remains remote storage even if its copy is preferred for playback.
+const sourceGlyphs={
+  server:'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><circle cx="7" cy="6.5" r=".8" fill="currentColor"/><circle cx="7" cy="17.5" r=".8" fill="currentColor"/></svg>',
+  cloud:'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 17H7a4.5 4.5 0 0 1-.7-8.95 6.2 6.2 0 0 1 11.7 1.1A4 4 0 0 1 20 17Z"/></svg>'
+};
+function sourcesForTrack(t){
+  const alternatives=Array.isArray(t?.alternates)?t.alternates:[];
+  const origins=[t?.origin||'',...alternatives.map(a=>a.origin||'')];
+  return {local:origins.includes(''),peer:origins.some(Boolean)};
+}
+function sourceIcons(source){
+  const parts=[];
+  if(source.local)parts.push(`<span class="source-location local" title="Stored on this WASP server" aria-label="Local server">${sourceGlyphs.server}</span>`);
+  if(source.peer)parts.push(`<span class="source-location peer" title="Available from another WASP peer" aria-label="Peer server">${sourceGlyphs.cloud}</span>`);
+  return parts.length?`<span class="source-icons" role="group" aria-label="${source.local&&source.peer?'Local and peer sources':source.local?'Local source':'Peer source'}">${parts.join('')}</span>`:'';
+}
+function artistSources(name){
+  const matchKey=normalizeRecording(name);let local=false,peer=false;
+  for(const t of [...tracks,...peerTrackLookup.values()]){
+    if(!artistsOf(t).some(a=>normalizeRecording(a)===matchKey))continue;
+    const found=sourcesForTrack(t);local ||= found.local;peer ||= found.peer;
+    if(local&&peer)break;
+  }
+  return {local,peer};
+}
+const sourceTitle=(text,src)=>`${sourceIcons(src)}${esc(text)}`;
+
 function row(t, num, extra = "", cover = false) {
   return `<button class="row" data-id="${esc(t.id)}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
-    <span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span>
+    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small>${esc(artistLine(t))}</small></span>
     <span class="al muted">${esc(extra || albumName(t) || "Single")}</span><span class="muted">${fmt(t.duration)}</span></button>`;
 }
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
-  `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${esc(t.title)}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
+  `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${sourceTitle(t.title,sourcesForTrack(t))}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
 let entity = { artist: {}, playlist: {} };
 let ratedPlaylistCache = []; // Locally voted peer playlists remain listed when a peer is offline.
@@ -632,6 +660,35 @@ async function reactEntity(type, key, kind) {
 const actions = (radio, ent) => `<div class="form" style="margin:12px 0"><button class="btn" data-act="play">Play</button><button class="btn ghost" data-act="shuf">Shuffle</button>${radio ? `<button class="btn ghost" data-act="radio" title="Songs from the same genre, to discover more music"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-radio"/></svg>Radio</button>` : ""}${ent ? reactCircles(ent.type, ent.key) : ""}</div>`;
 const noView = () => { view = { ids: [], label: "", pl: null }; };
 
+async function paintSpotifyImportStatus(playlistId){
+  const place=$('#spotifyImportStatus');if(!place)return;
+  try{
+    const r=await fetch('/api/user/spotify-imports',{cache:'no-store'});
+    if(!r.ok)return;
+    const imp=arr(await r.json()).find(x=>x.playlist_id===playlistId);
+    if(!imp||imp.state==='complete'){place.textContent='';return;}
+    place.innerHTML=`<section class="spotify-import-status" aria-label="Spotify recreation progress">
+      <b>Recreating your Spotify playlist</b>
+      <p class="muted">${imp.matched} of ${imp.total}${imp.partial?'+':''} songs found · <span class="spotify-local">${imp.local} local</span> · <span class="spotify-peer">${imp.peer} on peers</span> · ${imp.missing} missing.</p>
+      ${imp.partial?'<p class="muted">Spotify returned only part of this playlist. Full completion requires a complete list from Spotify.</p>':''}
+      <div class="spotify-import-progress"><progress max="${Math.max(1,imp.total)}" value="${imp.matched}"></progress></div>
+      <div class="spotify-import-actions"><button class="btn ghost" type="button" data-spotify-import="refresh">Refresh matches</button>
+        <button class="btn" type="button" data-spotify-import="complete" ${imp.missing||imp.partial?'disabled':''}>Mark as done</button></div>
+      <p class="muted" id="spotifyImportStatusMsg" role="status"></p>
+    </section>`;
+    place.querySelectorAll('button[data-spotify-import]').forEach(button=>button.onclick=async()=>{
+      const action=button.dataset.spotifyImport;place.querySelectorAll('button').forEach(b=>b.disabled=true);
+      const message=$('#spotifyImportStatusMsg');message.textContent=action==='refresh'?'Checking peer catalogues…':'Finishing…';
+      try{
+        const response=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/${action}`,{method:'POST'});
+        const j=await response.json();if(!response.ok)throw Error(j.error||'Unable to update playlist');
+        if(action==='complete'){message.textContent='Playlist completed. It remains private unless you publish it.';await load();render();}
+        else {await load();render();}
+      }catch(error){message.textContent=error.message;place.querySelectorAll('button').forEach(b=>b.disabled=false);}
+    });
+  }catch{}
+}
+
 let lastBrowseHash = location.hash && !/^#settings(?:\/|$)/.test(location.hash) ? location.hash : "#home";
 function render() {
   // Old #settings and #settings/publish links still work, but no longer replace
@@ -656,7 +713,26 @@ function renderPage() {
     const section=arg||"private";
     $("#subbar").hidden=false;
     $("#subbar").innerHTML=`<a href="#user/private" ${section==="private"?'aria-current="page"':""}>Private playlists</a><a href="#user/public" ${section==="public"?'aria-current="page"':""}>Public playlists</a>`;
-    $("#list").innerHTML='<h1>My playlists</h1><div id="myLists">Loading…</div>';
+    $("#list").innerHTML='<h1>My playlists</h1>'+
+      (section==='private'?`<form id="spotifyImportForm" class="spotify-import-form" autocomplete="off">
+        <h3>Recreate a Spotify playlist</h3>
+        <p class="muted">Paste a public Spotify playlist link. WASP creates your private copy from songs held locally or on your connected peers. Missing songs are requested individually across the HIVE.</p>
+        <label for="spotifyImportUrl">Spotify playlist URL</label>
+        <div class="spotify-import-controls"><input id="spotifyImportUrl" type="url" placeholder="https://open.spotify.com/playlist/..." required maxlength="300"><button class="btn" type="submit">Import to My Playlists</button></div>
+        <p id="spotifyImportMsg" class="muted" role="status" aria-live="polite"></p>
+      </form>`:'')+'<div id="myLists">Loading…</div>';
+    const importForm=$('#spotifyImportForm');
+    if(importForm)importForm.onsubmit=async event=>{
+      event.preventDefault();const btn=importForm.querySelector('button'),msg=$('#spotifyImportMsg');
+      btn.disabled=true;msg.textContent='Reading Spotify songs and checking your WASP peers…';
+      try{
+        const r=await fetch('/api/user/spotify-import',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({url:$('#spotifyImportUrl').value.trim()})});
+        const j=await r.json();if(!r.ok)throw Error(j.error||'Import failed');
+        msg.textContent=`${j.local} local, ${j.peer} from peers, ${j.missing} missing song requests.`;
+        await load();location.hash='#userplaylist/'+enc(j.playlist_id);render();
+      }catch(error){msg.textContent=error.message;}finally{btn.disabled=false;}
+    };
     (async()=>{
       const place=$("#myLists");
       try {
@@ -664,7 +740,11 @@ function renderPage() {
         if(!me.authenticated){place.textContent="Sign in to view your playlists.";return;}
         const r=await fetch("/api/user/playlists");if(!r.ok){place.textContent="Unable to load playlists.";return;}
         const pls=(await r.json()).filter(p=>!!p.is_public===(section==="public"));
-        const grid=pls.map(p=>`<div class="tile sq pltile"><div class="covwrap"><a class="covlink" href="#userplaylist/${enc(p.id)}" aria-label="Open ${esc(p.name)}">${ownedPlaylistCover(p)}</a></div><a class="ttl" href="#userplaylist/${enc(p.id)}"><b>${esc(p.name)}</b><span class="muted">${plural((p.tracks||[]).length,"song")}</span></a></div>`).join("");
+        let imports=[];try{const ir=await fetch('/api/user/spotify-imports');if(ir.ok)imports=arr(await ir.json());}catch{}
+        const status=new Map(imports.map(item=>[item.playlist_id,item]));
+        const grid=pls.map(p=>{const current=status.get(p.id),extra=current?.state==='draft'?`<span class="spotify-import-pending">Recreating · ${current.matched}/${current.total}${current.partial?'+':''} · ${current.missing} missing</span>`:'';
+          return `<div class="tile sq pltile"><div class="covwrap"><a class="covlink" href="#userplaylist/${enc(p.id)}" aria-label="Open ${esc(p.name)}">${ownedPlaylistCover(p)}</a></div><a class="ttl" href="#userplaylist/${enc(p.id)}"><b>${esc(p.name)}</b><span class="muted">${plural((p.tracks||[]).length,"song")}</span>${extra}</a></div>`;
+        }).join("");
         if(place.isConnected)place.innerHTML=grid?`<div class="grid s">${grid}</div>`:empty("No playlists yet. Use + in the player to create one.");
       } catch {if(place.isConnected)place.textContent='Unable to load playlists.';}
     })();return;
@@ -674,8 +754,9 @@ function renderPage() {
     (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();for(const candidate of ps)ownedPlaylistIndex.set(candidate.id,candidate);const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
       const ids=(p.tracks||[]).map(ref=>typeof ref==='object'?(ref.ref||ref.track_id||ref.id):ref);
       view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p};
-      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div class="playlist-track-list" id="ownedTrackList"></div>`;
+      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div id="spotifyImportStatus"></div><div class="playlist-track-list" id="ownedTrackList"></div>`;
       el.querySelector('#playlistCog').onclick=()=>openEditPlaylist(p);
+      void paintSpotifyImportStatus(p.id);
       initOwnedTrackEditor(el,p,ids);
     })();return;
   }
@@ -776,8 +857,8 @@ function landing(el) {
   const row = (title, inner) => `<section class="hsec"><h2>${title}</h2><div class="hscroll"><button class="hnav hnav-left" data-scroll="-1" aria-label="Scroll ${title} left">‹</button><div class="hrow">${inner}</div><button class="hnav hnav-right" data-scroll="1" aria-label="Scroll ${title} right">›</button></div></section>`;
   el.innerHTML =
     (ad ? `<div class="home-ad">${ad}</div>` : "")
-    + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${esc(a.name)}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
-    + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${esc(s.t.title)}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
+    + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${sourceTitle(a.name,artistSources(a.name))}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
+    + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${sourceTitle(s.t.title,sourcesForTrack(s.t))}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
     + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"));
   view = { ids: songs.map((s) => s.t.id), label: "Home", pl: null };
 }
@@ -1068,7 +1149,7 @@ function artistGrid(el, recent) {
   const names = Object.keys(by).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
   noView();
   el.innerHTML = names.length ? `<div class="grid">${names.map((n) =>
-    `<a class="tile" href="#artist/${enc(n)}">${art(artistArt(n), n)}<b>${esc(n)}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
+    `<a class="tile" href="#artist/${enc(n)}">${art(artistArt(n), n)}<b>${sourceTitle(n,artistSources(n))}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
     : empty("Nothing matches your search.");
 }
 
@@ -1158,7 +1239,7 @@ function artistPage(el, name) {
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
   el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${esc(name)}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true, { type: "artist", key: name })}</div></div>
+    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${sourceTitle(name,artistSources(name))}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true, { type: "artist", key: name })}</div></div>
     <div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div>${body}`;
   artistView = { name, tab: "bio", bio: undefined, similar: undefined };
   paintArtist();
@@ -1239,7 +1320,7 @@ function simTile(s, big) {
   const available=artistAvailability(s.name);
   const image = available.kind!=="absent" ? artistArt(available.name,available.origin) : s.image || "";
   const label=available.kind==="local" ? "In your library" : available.kind==="peer" ? "Peer Library" : "Not in the library";
-  const inner=`${art(image,s.name,"round")}<b>${esc(s.name)}</b><span class="muted">${label}</span>`;
+  const inner=`${art(image,s.name,"round")}<b>${sourceTitle(s.name,artistSources(s.name))}</b><span class="muted">${label}</span>`;
   return available.kind!=="absent"
     ? `<a class="${big ? "tile" : "simtile"}" href="#artist/${enc(available.name)}" title="Open ${esc(available.name)}">${inner}</a>`
     : `<button type="button" class="${big ? "tile" : "simtile"}" data-req="${esc(s.name)}" title="Request this artist">${inner}</button>`;
@@ -1557,9 +1638,9 @@ async function requestQueue(el) {
   if (cur.a !== "request" || cur.arg.split("/")[0] !== "") return;
   const note = flash ? `<p class="msg" role="status">${esc(flash)}</p>` : ""; flash = "";
   const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist
-    : r.kind === "playlist" ? (r.total ? `Spotify playlist · ${r.total}${r.partial ? "+" : ""} songs${r.matched != null ? ` · ${r.matched} already here` : ""}` : "Spotify playlist") : "";
+    : r.kind === "playlist" ? (r.total ? `Spotify playlist · ${r.total}${r.partial ? "+" : ""} songs${r.matched != null ? ` · ${r.matched_local??r.matched} already here${r.matched_peer?` · ${r.matched_peer} found in peer servers`:''}` : ""}` : "Spotify playlist") : "";
   el.innerHTML = note + (list.length ? list.map((r, i) =>
-    `<div class="qline"><span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">${KIND[r.kind]}</span></div>`).join("")
+    `<div class="qline"><span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}${r.remote?' · <span title="Requested on a connected WASP server">HIVE peer</span>':''}</small></span><span class="chip">${KIND[r.kind]}</span></div>`).join("")
     : empty(`The queue is empty. <a href="#request/new">Request something</a>.`));
 }
 

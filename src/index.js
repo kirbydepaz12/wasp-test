@@ -1,4 +1,6 @@
 import {RELEASE_DOCS} from "./release-docs.js";
+import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
+  hiveRequestFeed,hiveRequestsForDisplay} from "./hive-requests.js";
 import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
@@ -7,8 +9,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.1";
-const BUILD_LABEL = "HIVE Telemetry · Interactive Charts";
+const BUILD_VERSION = "17.0.2";
+const BUILD_LABEL = "HIVE Cron & Source Awareness";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -822,6 +824,164 @@ async function spotifyPlaylist(raw) {
   const image = safeImage(ov.thumbnail_url) || (ev && ev.image) || null;
   return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}`, meta: ev && ev.tracks.length ? playlistMeta(ev.tracks) : null };
 }
+// v17.0.2: Spotify playlist recreation is an authenticated PRIVATE user
+// workflow. Missing songs enter the ordinary federated request queue one by
+// one, not as a public request for the whole playlist. Imported audio is never
+// downloaded or duplicated; remote tracks retain their trusted peer origin.
+const SPOTIFY_IMPORT_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS spotify_user_imports (
+    id TEXT PRIMARY KEY,user_id TEXT NOT NULL,playlist_id TEXT NOT NULL,
+    spotify_url TEXT NOT NULL,cover_url TEXT NOT NULL DEFAULT '',
+    tracks_json TEXT NOT NULL,total INTEGER NOT NULL DEFAULT 0,
+    partial INTEGER NOT NULL DEFAULT 0,matched INTEGER NOT NULL DEFAULT 0,
+    local_count INTEGER NOT NULL DEFAULT 0,peer_count INTEGER NOT NULL DEFAULT 0,
+    missing INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'draft',
+    updated_at INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(user_id,spotify_url))`,
+  'CREATE INDEX IF NOT EXISTS idx_spotify_user_imports_owner ON spotify_user_imports(user_id,state)'
+];
+const spotifyImportReady=new WeakMap();
+async function ensureSpotifyImportSchema(DB){
+  if(spotifyImportReady.has(DB))return spotifyImportReady.get(DB);
+  const pending=(async()=>{for(const sql of SPOTIFY_IMPORT_SCHEMA)await DB.prepare(sql).run();})()
+    .catch(e=>{spotifyImportReady.delete(DB);throw e;});
+  spotifyImportReady.set(DB,pending);return pending;
+}
+// Include both admin peers and approved user-submitted peers; only saved
+// catalogue snapshots are trusted for adding peer-backed entries.
+async function spotifyImportCatalogue(DB){
+  const local=(await DB.prepare('SELECT id,title,artist,artists FROM tracks').all()).results
+    .map(t=>({...t,origin:''}));
+  let shards=[];
+  try{shards=(await DB.prepare(`SELECT p.url AS origin,c.body FROM peer_catalogue_chunks c
+    JOIN peers p ON p.id=c.peer_id WHERE c.kind='tracks'
+    UNION ALL SELECT u.url AS origin,c.body FROM peer_catalogue_chunks c
+    JOIN user_published_peers u ON u.id=c.peer_id
+    LEFT JOIN user_peer_permissions a ON a.user_id=u.user_id
+    WHERE c.kind='tracks' AND COALESCE(a.enabled,
+      (SELECT CAST(value AS INTEGER) FROM settings WHERE key='user_publish_default'),0)=1
+      AND u.last_ok IS NOT NULL AND u.last_error IS NULL`).all()).results;}catch{}
+  const remote=[];
+  for(const shard of shards){
+    try{const entries=JSON.parse(shard.body);if(!Array.isArray(entries))continue;
+      for(const row of entries.slice(0,6000))if(row?.id&&row.title){
+        remote.push({...row,origin:shard.origin,remote_id:String(row.id).slice(0,100)});
+      }
+    }catch{}
+  }
+  return {local,remote};
+}
+async function refreshSpotifyPeerCatalogue(env,{max=4}={}){
+  const DB=env.DB;
+  let approved=[];
+  try{approved=(await DB.prepare(`SELECT l.id,l.url FROM user_published_peers l
+    LEFT JOIN user_peer_permissions p ON p.user_id=l.user_id
+    WHERE COALESCE(p.enabled,(SELECT CAST(value AS INTEGER) FROM settings WHERE key='user_publish_default'),0)=1
+      AND l.last_ok IS NOT NULL AND l.last_error IS NULL ORDER BY l.created_at LIMIT 50`).all()).results;}catch{}
+  const admin=(await DB.prepare('SELECT id,url FROM peers ORDER BY added_at LIMIT 50').all()).results;
+  const candidates=[...admin,...approved].filter(row=>row.url);
+  const pos=Number((await DB.prepare("SELECT value FROM settings WHERE key='spotify_peer_cursor'").first())?.value)||0;
+  let checked=0,updated=0;
+  for(let i=0;i<Math.min(max,candidates.length);i++){
+    const peer=candidates[(pos+i)%candidates.length];checked++;
+    try{
+      if(approved.some(p=>p.id===peer.id) && !(await publicPeerDNS(new URL(peer.url).hostname)))continue;
+      const version=await fetch(peer.url+'/api/catalog-version',{signal:AbortSignal.timeout(6000),redirect:'error'});
+      if(!version.ok)continue;
+      const rev=clean((await version.json()).revision,80);
+      const cached=await DB.prepare('SELECT revision,synced_at FROM peer_catalogue_cache WHERE peer_id=?').bind(peer.id).first();
+      if(cached?.synced_at && cached.revision===rev)continue;
+      await syncPeerPhase(env,peer,'tracks');
+      if(rev)await DB.prepare('UPDATE peer_catalogue_cache SET revision=? WHERE peer_id=?').bind(rev,peer.id).run();
+      updated++;
+    }catch{/* Disconnected peer is retried next run without deleting data. */}
+  }
+  if(candidates.length)await DB.prepare("INSERT INTO settings(key,value) VALUES('spotify_peer_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .bind(String((pos+checked)%candidates.length)).run();
+  return {checked,updated};
+}
+function sourceMatch(song,want){
+  const sought=splitArtists(want.a);
+  return core(song.title)===core(want.t) && artistsOfRow(song).some(a=>sought.some(b=>sameName(a,b)));
+}
+async function createMissingSongRequests(env,requests,ownerId){
+  const DB=env.DB;let requested=0;
+  const voter=await sha256('spotify-import:'+ownerId);
+  for(const item of requests.slice(0,100)){
+    const title=clean(item.t,200),artist=clean(item.a,160);
+    if(!title||!artist)continue;
+    const key='song|'+core(title)+'|'+norm(artist);
+    const prior=await DB.prepare("SELECT id FROM requests WHERE dedupe=? AND status='active'").bind(key).first();
+    if(prior)continue;
+    const id=crypto.randomUUID(),now=Date.now();
+    try{
+      await DB.prepare(`INSERT INTO requests
+        (id,kind,title,artist,album,image,url,dedupe,voter,ip,created_at)
+        VALUES(?,'song',? ,? ,'',NULL,NULL,?,?,?,?)`)
+        .bind(id,title,artist,key,voter,'spotify-import',now).run();
+      await publishHiveRequest(env,{id,kind:'song',title,artist,created_at:now}).catch(()=>{});
+      requested++;
+    }catch{/* Another request already exists; do not duplicate it. */}
+  }
+  return requested;
+}
+async function refreshSpotifyUserImport(env,imp,{fetchPeers=false,requestMissing=true}={}){
+  const DB=env.DB;
+  if(fetchPeers)await refreshSpotifyPeerCatalogue(env,{max:8});
+  const songs=JSON.parse(imp.tracks_json||'[]');
+  const {local,remote}=await spotifyImportCatalogue(DB);
+  const add=[],missing=[];let own=0,others=0;
+  for(const target of songs){
+    let hit=local.find(row=>sourceMatch(row,target)),source='local';
+    if(!hit){hit=remote.find(row=>sourceMatch(row,target));source='peer';}
+    if(!hit){missing.push(target);continue;}
+    const reference=source==='local'?hit.id:'peer:'+await sha256(hit.origin+'\n'+hit.remote_id);
+    if(source==='local')own++;else others++;
+    add.push({ref:reference,hit,source});
+  }
+  // Preserve Spotify ordering through monotonically increasing added_at values,
+  // and never overwrite the user's own manual playlist modifications.
+  const now=Date.now(),sql=[];
+  for(const [index,item] of add.entries()){
+    if(item.source==='peer'){
+      const t=item.hit;
+      sql.push(DB.prepare(`INSERT OR IGNORE INTO peer_track_refs
+        (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES (?,?,?,?,?,?,?,?)`)
+        .bind(item.ref,t.origin,t.remote_id,clean(t.title,200),clean(t.artist,200),clean(t.album,200),
+          Number(t.duration)||0,clean(t.cover_url,500)));
+    }
+    sql.push(DB.prepare('INSERT OR IGNORE INTO user_playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)')
+      .bind(imp.playlist_id,item.ref,Number(imp.created_at)+index));
+  }
+  if(sql.length)for(let i=0;i<sql.length;i+=40)await DB.batch(sql.slice(i,i+40));
+  if(requestMissing)await createMissingSongRequests(env,missing,imp.user_id);
+  await DB.prepare(`UPDATE spotify_user_imports
+    SET matched=?,local_count=?,peer_count=?,missing=?,updated_at=? WHERE id=?`)
+    .bind(add.length,own,others,missing.length,now,imp.id).run();
+  // Exact local/peer catalogue matches satisfy per-song requests, but do not
+  // mark the imported playlist itself completed; only the owner can do that.
+  return {id:imp.id,playlist_id:imp.playlist_id,matched:add.length,local:own,peer:others,
+    missing:missing.length,total:imp.total,partial:!!imp.partial,state:imp.state};
+}
+async function refreshActiveSpotifyImports(env,{max=6,fetchPeers=false}={}){
+  await ensureSpotifyImportSchema(env.DB);
+  const imports=(await env.DB.prepare(`SELECT * FROM spotify_user_imports WHERE state='draft'
+    ORDER BY updated_at ASC LIMIT ?`).bind(max).all()).results;
+  if(!imports.length)return {checked:0};
+  if(fetchPeers)await refreshSpotifyPeerCatalogue(env,{max:2});
+  let checked=0;
+  for(const imp of imports){try{await refreshSpotifyUserImport(env,imp,{requestMissing:false});checked++;}catch{}}
+  return {checked};
+}
+async function saveSpotifyImportedCover(env,playlistId,source){
+  if(!source||!safeImage(source))return;
+  const r=await fetch(source,{signal:AbortSignal.timeout(9000),redirect:'error'});
+  if(!r.ok||!/^image\/(jpeg|png|webp)/i.test(r.headers.get('content-type')||''))return;
+  const bytes=await r.arrayBuffer();if(!bytes.byteLength||bytes.byteLength>3*1024*1024)return;
+  const type=(r.headers.get('content-type')||'image/jpeg').split(';')[0];
+  await env.MUSIC.put('art/user-playlist/'+playlistId,bytes,{httpMetadata:{contentType:type}});
+  await env.DB.prepare("UPDATE user_playlists SET cover_v=?,cover_mode='copied' WHERE id=?").bind(Date.now(),playlistId).run();
+}
+
 // Private Spotify credentials saved by an administrator. The client secret is
 // AES-GCM encrypted with an installation key that lives outside D1:
 // SPOTIFY_SETTINGS_KEY, or the existing persistent Docker SCANNER_SECRET.
@@ -913,6 +1073,53 @@ function matchPlaylist(lib, tracks) {
   return { matched, missing };
 }
 const libraryRows = async (DB) => (await DB.prepare("SELECT id, title, artist, artists FROM tracks").all()).results;
+// Count both local tracks and trusted peer-catalogue matches without
+// duplicating content. An exact match is required; a matching playlist name
+// by itself never proves all its songs are available.
+async function matchPlaylistHIVE(env,requested,{register=false}={}){
+  const {local,remote}=await spotifyImportCatalogue(env.DB);
+  const matched=[],missing=[];let localCount=0,peerCount=0;
+  for(const song of requested){
+    let hit=local.find(r=>sourceMatch(r,song)),isRemote=false;
+    if(!hit){hit=remote.find(r=>sourceMatch(r,song));isRemote=true;}
+    if(!hit){missing.push(song);continue;}
+    if(isRemote){
+      peerCount++;
+      const ref='peer:'+await sha256(hit.origin+'\n'+hit.remote_id);
+      if(register)await env.DB.prepare(`INSERT OR IGNORE INTO peer_track_refs
+        (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)`)
+        .bind(ref,hit.origin,hit.remote_id,clean(hit.title),clean(hit.artist),clean(hit.album),Number(hit.duration)||0,clean(hit.cover_url,500)).run();
+      matched.push(ref);
+    }else {localCount++;matched.push(hit.id);}
+  }
+  return {matched,missing,local_count:localCount,peer_count:peerCount};
+}
+async function reconcileHIVERequests(env){
+  const rows=(await env.DB.prepare("SELECT * FROM requests WHERE status='active' LIMIT 250").all()).results;
+  const candidates=rows.filter(r=>r.kind==='song'||r.kind==='playlist');
+  if(!candidates.length)return {checked:0,completed:0};
+  const {local,remote}=await spotifyImportCatalogue(env.DB);
+  let completed=0;
+  for(const req of candidates){
+    if(req.kind==='song'){
+      const q={t:req.title,a:req.artist};
+      if(![...local,...remote].some(t=>sourceMatch(t,q)))continue;
+      await markDone(env.DB,req.id);
+      await publishHiveRequest(env,req,'done').catch(()=>{});completed++;
+    }else if(req.meta){
+      let meta;try{meta=JSON.parse(req.meta);}catch{continue;}
+      if(!Array.isArray(meta.tracks)||!meta.tracks.length)continue;
+      const result=await matchPlaylistHIVE(env,meta.tracks);
+      const next={...meta,matched:result.matched.length,matched_local:result.local_count,matched_peer:result.peer_count};
+      if(meta.matched!==next.matched||meta.matched_local!==next.matched_local||meta.matched_peer!==next.matched_peer)
+        await env.DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(next),req.id).run();
+      // Do not auto-close a request just because one peer reports a partial
+      // Spotify catalogue. Ownership & explicit admin completion are preserved.
+    }
+  }
+  return {checked:candidates.length,completed};
+}
+
 async function markDone(DB, id, playlistId = null) {
   await DB.prepare("UPDATE requests SET status = 'done', done_at = ?, playlist_id = COALESCE(?, playlist_id), dedupe = dedupe || '|done|' || id WHERE id = ?").bind(Date.now(), playlistId, id).run();
 }
@@ -937,6 +1144,7 @@ async function completePlaylistRequest(env, r, ids) {
     await DB.batch(ids.slice(i, i + 40).map((tid, k) => DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pl.id, tid, now + i + k)));
   await coverFromRequest(env, pl.id, r.image).catch(() => {});
   await markDone(DB, r.id, pl.id);
+  await publishHiveRequest(env,r,'done').catch(()=>{});
   return pl.id;
 }
 // After songs are added: refresh how many songs of each requested playlist we have, and finish the ones that are complete.
@@ -949,7 +1157,8 @@ async function rematchPlaylists(env) {
     let meta; try { meta = JSON.parse(r.meta); } catch { continue; }
     if (!meta.tracks || !meta.tracks.length) continue;
     const { matched } = matchPlaylist(lib, meta.tracks);
-    if (matched.length === meta.tracks.length && !meta.partial) { await completePlaylistRequest(env, r, matched); continue; }
+    // Leave final completion to the originating administrator after verifying
+    // all local + peer sources, even if all names currently match.
     if (matched.length !== meta.matched) await DB.prepare("UPDATE requests SET meta = ? WHERE id = ?").bind(JSON.stringify({ ...meta, matched: matched.length }), r.id).run();
   }
 }
@@ -966,8 +1175,9 @@ async function fulfil(env, t) {
   const by = (name) => t.artists.some((a) => sameName(a, name));
   const done = results.filter((r) => r.kind === "song" ? same(r.title, t.title) && by(r.artist)
     : r.kind === "album" ? t.album && same(r.title, t.album) && by(r.artist) : by(r.title));
-  for (const r of done) await markDone(env.DB, r.id);
+  for (const r of done){ await markDone(env.DB, r.id);await publishHiveRequest(env,r,'done').catch(()=>{}); }
   await rematchPlaylists(env); // a requested playlist may now be complete
+  await refreshActiveSpotifyImports(env,{max:5}).catch(()=>{});
 }
 
 const MUSICY = /\b(band|musician|singer|rapper|songwriter|group|duo|trio|quartet|dj|composer|vocalist|guitarist|producer|artist|metal|rock|pop|hip hop)\b/i;
@@ -1284,10 +1494,11 @@ async function catalogueVersion(DB) {
   return row?.value || "0";
 }
 
-const CRON_TYPES = ["peers","artwork","biography","hash"];
+const CRON_TYPES = ["peers","artwork","biography","hash","telemetry"];
+const TELEMETRY_INTERVALS = [5,10,15,30,60,120];
 const CRON_DEFAULT_JOB = {enabled:false,frequency:"daily",time:"02:00",weekday:0,monthday:1,sync_catalogue:false};
 function cronConfigDefault() {
-  return {timezone:"Asia/Manila",jobs:Object.fromEntries(CRON_TYPES.map(x=>[x,{...CRON_DEFAULT_JOB}]))};
+  return {timezone:"Asia/Manila",jobs:Object.fromEntries(CRON_TYPES.map(x=>[x,x==="telemetry"?{enabled:true,minutes:5}:{...CRON_DEFAULT_JOB}]))};
 }
 function validateCronConfig(value) {
   if(!value || typeof value!=="object" || typeof value.timezone!=="string" || value.timezone.length>80)throw Error("Invalid timezone");
@@ -1295,6 +1506,12 @@ function validateCronConfig(value) {
   const cfg={timezone:value.timezone,jobs:{}};
   for(const kind of CRON_TYPES){
     const source=value.jobs?.[kind]||{},frequency=source.frequency||"daily";
+    if(kind==="telemetry"){
+      const minutes=Number(source.minutes??5);
+      if(!TELEMETRY_INTERVALS.includes(minutes))throw Error("Invalid telemetry sync interval");
+      cfg.jobs.telemetry={enabled:source.enabled!==false,minutes};
+      continue;
+    }
     if(!["daily","weekly","monthly"].includes(frequency))throw Error("Invalid frequency for "+kind);
     const time=String(source.time||"00:00"),weekday=Number(source.weekday??0),monthday=Number(source.monthday??1);
     if(!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)||!Number.isInteger(weekday)||weekday<0||weekday>6||!Number.isInteger(monthday)||monthday<1||monthday>30)throw Error("Invalid schedule for "+kind);
@@ -1385,6 +1602,8 @@ async function syncPeerAll(env,peer){
     try{counts.federation=await syncFederatedFromGateway(env,peer);}catch(e){counts.federation={sources:0,errors:[e.message]};}
   }
   await touchCatalogue(env.DB);
+  await refreshActiveSpotifyImports(env,{max:5}).catch(()=>{});
+  await reconcileHIVERequests(env).catch(()=>{});
   return counts;
 }
 async function recordListen(env,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url='',duration=0},{relayed=false}={}){
@@ -1398,14 +1617,29 @@ async function recordListen(env,{track_id,origin='',remote_id='',title='',artist
   // Bound storage without a full-table cleanup on every play.
   if(Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run();
 }
-async function runCronJob(env,kind){
-  if(kind==="hash")return {queued:!!env.SCANNER_SECRET,local_only:true};
+async function runCronJob(env,kind,progress=async()=>{}){
+  if(kind==="telemetry"){
+    await progress(10,"Checking permitted HIVE peers");
+    const result=await syncTelemetryPeers(env,{force:true});
+    await progress(55,"Syncing HIVE requests");
+    const requests=await syncHiveRequests(env,{force:true});
+    await progress(100,"HIVE telemetry and requests synchronized");return {...result,requests};
+  }
+  if(kind==="hash"){
+    if(!env.SCANNER_SECRET)return {error:"Only supported on Docker with scanner enabled"};
+    const request=crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO settings(key,value) VALUES('hash_scan_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(request).run();
+    await env.DB.prepare("INSERT INTO settings(key,value) VALUES('fingerprint_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify({state:'queued',total:0,scanned:0,updated_at:Date.now()})).run();
+    await progress(10,"SHA-256 scan queued on Docker; status comes from scanner");
+    return {queued:true,local_only:true};
+  }
   if(kind==="peers"){
     await refreshCommunityHealth(env.DB,8);
     const rows=(await env.DB.prepare("SELECT id,url,track_count FROM peers ORDER BY added_at LIMIT 60").all()).results;
     let updated=0;
     const config=await getCronConfig(env.DB);
-    for(const row of rows){
+    for(const [index,row] of rows.entries()){
+      await progress(10+Math.round(index/Math.max(1,rows.length)*85),`Checking peer ${index+1} of ${rows.length}`);
       try{
         const res=await fetch(row.url+"/api/peer",{signal:AbortSignal.timeout(6000),headers:{accept:"application/json"}});
         if(!res.ok)continue;
@@ -1417,7 +1651,8 @@ async function runCronJob(env,kind){
         if(config.jobs.peers?.sync_catalogue)await syncPeerAll(env,row);
       }catch{/* Peer remains in registry; transient network errors never delete it. */}
     }
-    return {checked:rows.length,updated};
+    const requests=await syncHiveRequests(env,{force:true});
+    return {checked:rows.length,updated,requests};
   }
   const cursorKey="cron_cursor_"+kind;
   const marker=await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(cursorKey).first();
@@ -1425,7 +1660,10 @@ async function runCronJob(env,kind){
   // Bounded indexed scan, never full catalogue scan per scheduled event.
   let rows=(await env.DB.prepare("SELECT id,artist,artists,album,created_at FROM tracks WHERE created_at < ? ORDER BY created_at DESC LIMIT 8").bind(cursor).all()).results;
   if(!rows.length)rows=(await env.DB.prepare("SELECT id,artist,artists,album,created_at FROM tracks ORDER BY created_at DESC LIMIT 8").all()).results;
-  for(const row of rows)await warmArtistMetadata(env,row,kind);
+  for(const [i,row] of rows.entries()){
+    await progress(10+Math.round(i/Math.max(1,rows.length)*85),`Checking ${kind} ${i+1} of ${rows.length}`);
+    await warmArtistMetadata(env,row,kind);
+  }
   const next=rows.length?Math.min(...rows.map(x=>Number(x.created_at)||0)):Number.MAX_SAFE_INTEGER;
   await env.DB.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(cursorKey,String(next)).run();
   return {checked:rows.length};
@@ -1435,6 +1673,7 @@ async function runDueCronJobs(env,when=Date.now()) {
   if(!CRON_TYPES.some(k=>config.jobs[k]?.enabled))return [];
   const local=cronLocalDate(new Date(when),config.timezone),results=[];
   for(const kind of CRON_TYPES){
+    if(kind==="telemetry")continue;
     if(!shouldRunCron(config.jobs[kind],local))continue;
     const runKey=local.year+"-"+local.month+"-"+String(local.day).padStart(2,"0")+"-"+local.hm;
     const key="cron_last_"+kind;
@@ -1445,6 +1684,49 @@ async function runDueCronJobs(env,when=Date.now()) {
     catch(e){console.warn("WASP cron job error:",kind,e.message);results.push({kind,error:"Job failed; see logs"});}
   }
   return results;
+}
+
+// Real manual-job status, persisted for the progress bar. No fake timed progress.
+async function cronRunStatus(DB,runId){
+  const row=await DB.prepare("SELECT value FROM settings WHERE key=?").bind("manual_cron_"+runId).first();
+  if(!row)return null;
+  try{const status=JSON.parse(row.value);
+    if(['queued','running'].includes(status.state) && Date.now()-Number(status.updated_at||status.started)>120000)
+      return {...status,state:'error',message:'Execution was interrupted. Review logs and run again.'};
+    return status;
+  }catch{return null;}
+}
+async function setCronRunStatus(DB,runId,state){
+  await DB.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .bind("manual_cron_"+runId,JSON.stringify({...state,updated_at:Date.now()})).run();
+}
+async function executeManualCron(env,kind,runId){
+  const started=Date.now();
+  const progress=async(percent,message)=>setCronRunStatus(env.DB,runId,{kind,state:'running',progress:Math.min(99,Math.round(percent)),message,started});
+  try {
+    await progress(1,'Preparing '+kind);
+    const result=await runCronJob(env,kind,progress);
+    await setCronRunStatus(env.DB,runId,{kind,state:result?.queued?'queued':result?.error?'error':'complete',progress:result?.queued?10:100,
+      message:result?.error|| (result?.queued?'Waiting for Docker scanner':'Complete'),result,started});
+  }catch(error){await setCronRunStatus(env.DB,runId,{kind,state:'error',progress:0,message:String(error.message).slice(0,160),started});}
+}
+async function telemetryScheduleTick(env,when=Date.now(),{skipTelemetry=false}={}){
+  const config=await getCronConfig(env.DB),job=config.jobs.telemetry;
+  const minutes=Number(job.minutes)||5;
+  // Request federation is a core peer service, not a separate enabled maintenance cron.
+  if(Math.floor(when/60000)%5!==0 && (!job?.enabled||Math.floor(when/60000)%minutes!==0))return {notDue:true};
+  const telemetry=!skipTelemetry && job?.enabled && Math.floor(when/60000)%minutes===0
+    ? await syncTelemetryPeers(env).catch(e=>({error:String(e.message)})) : {disabled:true};
+  const requests=await syncHiveRequests(env).catch(e=>({error:String(e.message)}));
+  const imports=await refreshActiveSpotifyImports(env,{max:5,fetchPeers:false}).catch(e=>({error:String(e.message)}));
+  let catalogues={checked:0};
+  const queued=(await env.DB.prepare("SELECT 1 FROM requests WHERE status='active' LIMIT 1").first());
+  const drafts=await env.DB.prepare("SELECT 1 FROM spotify_user_imports WHERE state='draft' LIMIT 1").first().catch(()=>null);
+  if(queued||drafts)catalogues=await refreshSpotifyPeerCatalogue(env,{max:2}).catch(e=>({error:String(e.message)}));
+  const matching=queued||drafts?await Promise.all([
+    refreshActiveSpotifyImports(env,{max:5}).catch(()=>({checked:0})),
+    reconcileHIVERequests(env).catch(()=>({checked:0}))]):[];
+  return {telemetry,requests,imports,catalogues,matching};
 }
 
 async function api(req, env, url, ctx) {
@@ -1458,6 +1740,44 @@ async function api(req, env, url, ctx) {
     return telemetryApi(req,env,url,{admin:info?.role==='admin'});
   }
 
+  // Admin-only manual Cron controls. An isolated run records authentic stage progress.
+  if(path==="/api/admin/crons/run" && m==="POST"){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=="admin")return json({error:"Administrator required"},403);
+    const body=await req.json().catch(()=>({})),kind=String(body.kind||"");
+    if(!CRON_TYPES.includes(kind))return json({error:"Invalid job"},400);
+    const runId=crypto.randomUUID();
+    await setCronRunStatus(DB,runId,{kind,state:'queued',progress:0,message:'Queued',started:Date.now()});
+    const work=executeManualCron(env,kind,runId);
+    if(ctx?.waitUntil)ctx.waitUntil(work);
+    else await work;
+    return json({ok:true,runId},202);
+  }
+  if(path==="/api/admin/crons/run-status" && m==="GET"){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=="admin")return json({error:"Administrator required"},403);
+    const id=String(url.searchParams.get('id')||'');
+    if(!/^[a-f0-9-]{36}$/.test(id))return json({error:"Invalid job ID"},400);
+    const status=await cronRunStatus(DB,id);
+    if(!status)return json({error:"Job not found"},404);
+    if(status.kind==='hash'&&status.state==='queued'){
+      const scan=await DB.prepare("SELECT value FROM settings WHERE key='fingerprint_status'").first();
+      try{const v=JSON.parse(scan?.value||'{}');
+        if(v.state==='running')return json({...status,state:'running',progress:v.total?Math.round(Number(v.scanned)/Number(v.total)*100):10,message:`Hashed ${v.scanned||0} of ${v.total||0} files`});
+        if(v.state==='complete'||v.state==='error')return json({...status,state:v.state,progress:v.state==='complete'?100:status.progress,message:v.error||(v.state==='complete'?'SHA-256 scan complete':'SHA-256 scan failed')});
+      }catch{}
+    }
+    return json(status);
+  }
+  // Public mesh feed is read-only, with origin-tagged ids and no account/IP data.
+  if(path==='/api/hive/requests/feed' && m==='GET')return hiveRequestFeed(env,url);
+  if(path==='/api/hive/requests/status' && m==='GET'){
+    const me=await sessionInfo(req,env);
+    if(me?.role!=='admin')return json({error:'Admin required'},403);
+    await ensureHiveRequests(env);
+    const state=(await DB.prepare('SELECT url,cursor,synced_at,last_error FROM hive_request_peer_cursors ORDER BY synced_at DESC LIMIT 60').all()).results;
+    return json({peers:state});
+  }
   // ---------- public ----------
   if(path==="/api/catalog-version" && m==="GET") {
     return json({revision:await catalogueVersion(DB)},200,{"cache-control":"no-store"});
@@ -1601,12 +1921,8 @@ async function api(req, env, url, ctx) {
     const runs=await runDueCronJobs(env);
     // Keep the private Docker cron-tick HTTP request responsive even when a
     // remote HIVE peer is slow. The five-minute sync lease protects D1 writes.
-    if(typeof ctx?.waitUntil==='function') {
-      ctx.waitUntil(syncTelemetryPeers(env).catch(e=>console.warn('WASP Docker telemetry sync unavailable:',e.message)));
-    } else {
-      try { await syncTelemetryPeers(env); }
-      catch(e) { console.warn('WASP Docker telemetry sync unavailable:',e.message); }
-    }
+    if(typeof ctx?.waitUntil==='function')ctx.waitUntil(telemetryScheduleTick(env).catch(()=>{}));
+    else await telemetryScheduleTick(env);
     return json({ok:true,runs},200,{"cache-control":"no-store"});
   }
   if (path === "/api/internal/folder-index" && m === "POST") {
@@ -1692,7 +2008,11 @@ async function api(req, env, url, ctx) {
       (by[l.playlist_id] ??= []).push(l.track_id);
       upd[l.playlist_id] = Math.max(upd[l.playlist_id] || 0, l.added_at);
     });
-    return json(pls.map((p) => ({ ...p, updated_at: Math.max(p.created_at, upd[p.id] || 0), tracks: by[p.id] || [] })));
+    const refs=(await DB.prepare(`SELECT DISTINCT r.ref,r.origin,r.remote_id,r.title,r.artist,r.album,r.duration,r.cover_url
+      FROM peer_track_refs r JOIN playlist_tracks l ON l.track_id=r.ref`).all()).results;
+    const refMap=Object.fromEntries(refs.map(r=>[r.ref,r]));
+    return json(pls.map((p) => ({ ...p,updated_at:Math.max(p.created_at,upd[p.id]||0),
+      tracks:by[p.id]||[],track_sources:Object.fromEntries((by[p.id]||[]).filter(id=>refMap[id]).map(id=>[id,refMap[id]])) })));
   }
   if (path === "/api/user/peer-tracks" && m === "GET") {
     const auth = await sessionInfo(req, env);
@@ -1856,14 +2176,17 @@ async function api(req, env, url, ctx) {
   }
   if (path === "/api/requests" && m === "GET") {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all();
-    return json(results.map(({ meta, ...r }) => {
+    const local=results.map(({ meta, ...r }) => {
       let m = null; try { m = meta ? JSON.parse(meta) : null; } catch {}
       return m ? { ...r, total: m.total, partial: !!m.partial, matched: m.matched ?? null } : r;
-    }));
+    });
+    const remote=await hiveRequestsForDisplay(env);
+    return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
   }
   if (path === "/api/requests/history" && m === "GET") {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, done_at, playlist_id FROM requests WHERE status = 'done' ORDER BY done_at DESC LIMIT 300").all();
-    return json(results);
+    const remote=await hiveRequestsForDisplay(env,{history:true});
+    return json([...results,...remote].sort((a,b)=>Number(b.done_at)-Number(a.done_at)).slice(0,300));
   }
   if (path === "/api/request" && m === "POST") {
     const b = await req.json().catch(() => ({}));
@@ -1884,10 +2207,19 @@ async function api(req, env, url, ctx) {
       return json({ error: "That's already in the queue.", code: "in_queue" }, 409);
     if (await inLibrary(DB, item)) return json({ error: "That's already in the library.", code: "in_library" }, 409);
     try {
-      if (item.meta) item.meta.matched = matchPlaylist(await libraryRows(DB), item.meta.tracks).matched.length;
+      if(item.meta){
+        const matched=await matchPlaylistHIVE(env,item.meta.tracks);
+        item.meta.matched=matched.matched.length;
+        item.meta.matched_local=matched.local_count;
+        item.meta.matched_peer=matched.peer_count;
+      }
       await recordSignedInVoter(DB,await sessionInfo(req,env),voter);
+      const newId=crypto.randomUUID(),createdAt=Date.now();
+      const record={id:newId,kind:item.kind,title:item.title,artist:item.artist||'',album:item.album||'',
+        image:item.image||'',url:item.url||'',created_at:createdAt,meta:item.meta?JSON.stringify(item.meta):null};
       await DB.prepare("INSERT INTO requests (id, kind, title, artist, album, image, url, dedupe, voter, ip, created_at, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(crypto.randomUUID(), item.kind, item.title, item.artist || "", item.album || "", item.image, item.url || null, item.dedupe, voter, ipH, Date.now(), item.meta ? JSON.stringify(item.meta) : null).run();
+        .bind(newId, item.kind, item.title, item.artist || "", item.album || "", item.image, item.url || null, item.dedupe, voter, ipH, createdAt, record.meta).run();
+      try{await publishHiveRequest(env,record);}catch(e){console.warn('Request federation broadcast delayed:',e.message);}
     } catch { return json({ error: "That's already in the queue.", code: "in_queue" }, 409); }
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'active'").first();
     return json({ ok: true, position: n }, 201);
@@ -2112,6 +2444,61 @@ async function api(req, env, url, ctx) {
     // Authenticated user operations; admin credentials are handled separately.
 
     if (!auth || auth.role !== "user") return json({ error: "User login required." }, 401);
+    // Import Spotify into the user's own private playlist. The request queue
+    // receives ONLY absent song entries; the playlist itself is never posted.
+    if(path==='/api/user/spotify-import' && m==='POST'){
+      await ensureSpotifyImportSchema(DB);
+      const b=await req.json().catch(()=>({}));
+      let item;try{item=await spotifyPlaylist(String(b.url||''));}catch{return json({error:'Spotify metadata is unavailable right now.'},502);}
+      if(item.error)return json({error:item.error},400);
+      if(!item.meta?.tracks?.length)return json({error:'Spotify did not expose the playlist songs. Try another public playlist or reconnect later; no empty playlist was created.'},422);
+      const active=(await DB.prepare("SELECT COUNT(*) AS count FROM spotify_user_imports WHERE user_id=? AND state='draft'").bind(auth.user_id).first())?.count||0;
+      if(active>=10)return json({error:'Finish an existing Spotify import before creating more (maximum 10).'},429);
+      if(await DB.prepare('SELECT id FROM spotify_user_imports WHERE user_id=? AND spotify_url=?').bind(auth.user_id,item.url).first())
+        return json({error:'You already imported this Spotify playlist.'},409);
+      const name=clean(item.title,80),now=Date.now(),playlistId=crypto.randomUUID(),importId=crypto.randomUUID();
+      // Unique per user; never overwrite an existing playlist with same name.
+      let unique=name;for(let n=2;n<100;n++){
+        if(!(await DB.prepare('SELECT 1 FROM user_playlists WHERE user_id=? AND name=?').bind(auth.user_id,unique).first()))break;
+        unique=name.slice(0,69)+' ('+n+')';
+      }
+      await DB.batch([
+        DB.prepare("INSERT INTO user_playlists(id,user_id,name,is_public,created_at,cover_mode) VALUES(?,?,?,0,?,'copied')")
+          .bind(playlistId,auth.user_id,unique,now),
+        DB.prepare(`INSERT INTO spotify_user_imports
+          (id,user_id,playlist_id,spotify_url,cover_url,tracks_json,total,partial,missing,updated_at,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(importId,auth.user_id,playlistId,item.url,item.image||'',JSON.stringify(item.meta.tracks),
+            item.meta.total,item.meta.partial?1:0,item.meta.total,now,now)
+      ]);
+      await saveSpotifyImportedCover(env,playlistId,item.image).catch(()=>{});
+      const info=await refreshSpotifyUserImport(env,{id:importId,playlist_id:playlistId,user_id:auth.user_id,
+        tracks_json:JSON.stringify(item.meta.tracks),total:item.meta.total,partial:item.meta.partial,
+        created_at:now,state:'draft'},{fetchPeers:true});
+      return json({ok:true,...info,name:unique,source_url:item.url},201);
+    }
+    if(path==='/api/user/spotify-imports' && m==='GET'){
+      await ensureSpotifyImportSchema(DB);
+      const items=(await DB.prepare(`SELECT id,playlist_id,spotify_url,total,partial,matched,
+        local_count AS local,peer_count AS peer,missing,state,updated_at FROM spotify_user_imports
+        WHERE user_id=? ORDER BY created_at DESC LIMIT 50`).bind(auth.user_id).all()).results;
+      return json(items);
+    }
+    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/(refresh|complete)$/))&&m==='POST'){
+      await ensureSpotifyImportSchema(DB);
+      const imp=await DB.prepare('SELECT * FROM spotify_user_imports WHERE id=? AND user_id=?').bind(x[1],auth.user_id).first();
+      if(!imp)return json({error:'Spotify import not found.'},404);
+      if(imp.state!=='draft')return json({error:'Spotify import already completed.'},409);
+      const info=await refreshSpotifyUserImport(env,imp,{fetchPeers:x[2]==='refresh'});
+      if(x[2]==='refresh')return json({ok:true,...info});
+      if(info.missing>0)return json({error:`${info.missing} songs are still missing. Refresh later; only the owner can finish when the songs are available.`,...info},409);
+      // Public Spotify embed may contain only the first 50 or 100 tracks.
+      // Never claim the entire Spotify playlist is complete when truncated.
+      if(info.partial)return json({error:'Spotify exposed only part of this playlist. Completion is blocked until a complete song list can be retrieved.',...info},409);
+      await DB.prepare("UPDATE spotify_user_imports SET state='complete',updated_at=? WHERE id=?")
+        .bind(Date.now(),imp.id).run();
+      return json({ok:true,...info,state:'complete'});
+    }
     if (path === "/api/user/mobile-keys" || /^\/api\/user\/mobile-keys\/[\w-]+$/.test(path))
       return manageMobileBridge(req,env,"user",auth.user_id);
     if(path==="/api/user/username" && m==="PUT") {
@@ -2261,6 +2648,8 @@ async function api(req, env, url, ctx) {
     if ((x = path.match(/^\/api\/user\/playlists\/([\w-]+)$/)) && m === "DELETE") {
       const owned=await DB.prepare("SELECT id FROM user_playlists WHERE id = ? AND user_id = ?").bind(x[1],auth.user_id).first();
       if(!owned)return json({error:"Playlist not found."},404);
+      await ensureSpotifyImportSchema(DB);
+      await DB.prepare('DELETE FROM spotify_user_imports WHERE playlist_id=? AND user_id=?').bind(x[1],auth.user_id).run();
       await DB.batch([DB.prepare("DELETE FROM user_playlist_tracks WHERE playlist_id = ?").bind(x[1]),DB.prepare("DELETE FROM playlist_hearts WHERE playlist_id = ?").bind(x[1]),DB.prepare("DELETE FROM user_playlists WHERE id = ? AND user_id = ?").bind(x[1],auth.user_id)]);
       // Only this playlist's dedicated cover is removed: song objects and peer refs remain.
       await env.MUSIC.delete(`art/user-playlist/${x[1]}`).catch(()=>{});
@@ -2285,7 +2674,10 @@ async function api(req, env, url, ctx) {
   if(path==="/api/admin/crons" && m==="PUT") {
     const data=await req.json().catch(()=>null);
     let config;try{config=validateCronConfig(data);}catch(e){return json({error:e.message},400);}
-    await DB.prepare("INSERT INTO settings(key,value) VALUES('cron_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(config)).run();
+    await DB.batch([
+      DB.prepare("INSERT INTO settings(key,value) VALUES('cron_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(config)),
+      DB.prepare("INSERT INTO settings(key,value) VALUES('telemetry_share_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(config.jobs.telemetry.enabled?'1':'0')
+    ]);
     return json({ok:true,config},200,{"cache-control":"no-store"});
   }
 
@@ -2350,12 +2742,20 @@ async function api(req, env, url, ctx) {
     if(!user)return json({error:'User not found.'},404);
     const images=(await DB.prepare('SELECT id FROM user_playlists WHERE user_id=?').bind(user.id).all()).results;
     await ensureMobileSchema(DB); // Revoke any app credentials atomically with account deletion.
+    await ensureSpotifyImportSchema(DB);
+    const spotifyImportVoter=await sha256('spotify-import:'+user.id);
+    const importRequests=(await DB.prepare("SELECT * FROM requests WHERE voter=? AND status='active' LIMIT 100")
+      .bind(spotifyImportVoter).all()).results;
+    // Notify the HIVE before removing requests owned by this deleted account.
+    for(const own of importRequests)await publishHiveRequest(env,own,'cancelled').catch(()=>{});
     // Atomic D1 removal of user-owned data. Music files and other users' playlists are retained.
     await DB.batch([
       DB.prepare(`DELETE FROM user_playlist_tracks WHERE playlist_id IN (SELECT id FROM user_playlists WHERE user_id=?)`).bind(user.id),
       DB.prepare(`DELETE FROM playlist_hearts WHERE playlist_id IN (SELECT id FROM user_playlists WHERE user_id=?)`).bind(user.id),
       DB.prepare(`DELETE FROM entity_reactions WHERE kind='playlist' AND entity IN (SELECT id FROM user_playlists WHERE user_id=?)`).bind(user.id),
       DB.prepare(`DELETE FROM voted_playlist_cache WHERE id IN (SELECT id FROM user_playlists WHERE user_id=?)`).bind(user.id),
+      DB.prepare('DELETE FROM spotify_user_imports WHERE user_id=?').bind(user.id),
+      DB.prepare('DELETE FROM requests WHERE voter=?').bind(spotifyImportVoter),
       DB.prepare('DELETE FROM user_playlists WHERE user_id=?').bind(user.id),
       DB.prepare('DELETE FROM user_song_reactions WHERE user_id=?').bind(user.id),
       // v16.0.6: revoke the shared mobile/browser account voter as well.
@@ -2506,13 +2906,18 @@ async function api(req, env, url, ctx) {
   }
   if (path === "/api/admin/requests" && m === "GET") {
     const rows = (await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all()).results;
-    const lib = rows.some((r) => r.meta) ? await libraryRows(DB) : [];
-    return json(rows.map(({ meta, ...r }) => {
-      let mt = null; try { mt = meta ? JSON.parse(meta) : null; } catch {}
-      if (!mt || !mt.tracks) return r;
-      const { matched, missing } = matchPlaylist(lib, mt.tracks);
-      return { ...r, total: mt.total, partial: !!mt.partial, matched: matched.length, missing };
-    }));
+    const local=[];
+    for(const {meta,...r} of rows){
+      let mt=null;try{mt=meta?JSON.parse(meta):null;}catch{}
+      if(!mt?.tracks){local.push(r);continue;}
+      const matched=await matchPlaylistHIVE(env,mt.tracks);
+      local.push({...r,total:mt.total,partial:!!mt.partial,matched:matched.matched.length,
+        matched_local:matched.local_count,matched_peer:matched.peer_count,missing:matched.missing});
+    }
+    // Remote requests remain owned by their original server. A local admin
+    // may add music, but cannot delete or prematurely mark them complete.
+    const remote=(await hiveRequestsForDisplay(env,{admin:true})).map(r=>({...r,total:null,missing:[]}));
+    return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
   }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)\/(refresh|complete)$/)) && m === "POST") {
     const r = await DB.prepare("SELECT * FROM requests WHERE id = ? AND kind = 'playlist' AND status = 'active'").bind(x[1]).first();
@@ -2527,15 +2932,19 @@ async function api(req, env, url, ctx) {
       } catch { if (!meta) return json({ error: "Couldn't read the playlist from Spotify right now." }, 502); }
     }
     if (!meta || !meta.tracks || !meta.tracks.length) return json({ error: "The song list of this playlist isn't available." }, 400);
-    const { matched, missing } = matchPlaylist(await libraryRows(DB), meta.tracks);
-    meta.matched = matched.length;
+    const {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,meta.tracks,{register:x[2]==='complete'});
+    meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;
     await DB.prepare("UPDATE requests SET meta = ?, image = COALESCE(image, ?) WHERE id = ?").bind(JSON.stringify(meta), r.image || null, r.id).run();
     const all = !missing.length && !meta.partial;
-    if (x[2] === "complete" && !matched.length) return json({ error: "None of the songs of this playlist are in the library yet." }, 400);
-    if (all || x[2] === "complete") { const pid = await completePlaylistRequest(env, r, matched); return json({ status: "done", playlist_id: pid, total: meta.total, matched: matched.length }); }
-    return json({ status: "progress", total: meta.total, partial: meta.partial, matched: matched.length, missing });
+    if(x[2]==='complete' && missing.length)return json({error:`${missing.length} Spotify songs are still missing from this server and its connected peers. Refresh after peers add them.`,matched:matched.length,missing},409);
+    if(x[2]==='complete' && meta.partial)return json({error:'Spotify provided only a partial song list. We cannot verify the complete playlist yet.'},409);
+    if (x[2] === "complete" && !matched.length) return json({ error: "None of the songs are available yet." }, 400);
+    if(x[2]==='complete' && all) { const pid=await completePlaylistRequest(env,r,matched);return json({status:'done',playlist_id:pid,total:meta.total,matched:matched.length,local:local_count,peer:peer_count}); }
+    return json({ status: "progress", total: meta.total, partial: meta.partial, matched: matched.length,local:local_count,peer:peer_count,missing });
   }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)$/)) && m === "DELETE") {
+    const own=await DB.prepare("SELECT * FROM requests WHERE id=?").bind(x[1]).first();
+    if(own)await publishHiveRequest(env,own,'cancelled').catch(()=>{});
     await DB.prepare("DELETE FROM requests WHERE id = ?").bind(x[1]).run();
     return json({ ok: true });
   }
@@ -2909,13 +3318,10 @@ export default {
     await init(env);
     const when=controller.scheduledTime||Date.now();
     const cronResults=await runDueCronJobs(env,when);
-    // Separate bounded five-minute HIVE job. Do not multiply a peer check
-    // already running at the same minute; music handling is never on this path.
-    const schedule=await getCronConfig(env.DB);
-    const peerJobDue=shouldRunCron(schedule.jobs.peers,cronLocalDate(new Date(when),schedule.timezone));
-    if(Math.floor(when/60000)%5===0 && !peerJobDue) {
-      try{await syncTelemetryPeers(env);}catch(e){console.warn('Telemetry background sync unavailable:',e.message);}
-    }
+    // Telemetry cadence belongs to Network → Crons; default five minutes.
+    const config=await getCronConfig(env.DB);
+    const peerDue=shouldRunCron(config.jobs.peers,cronLocalDate(new Date(when),config.timezone));
+    await telemetryScheduleTick(env,when,{skipTelemetry:peerDue});
   },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);

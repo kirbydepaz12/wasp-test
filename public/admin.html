@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=16.0.6">
+<link rel="stylesheet" href="/style.css?v=17.0.2">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -325,6 +325,7 @@
         <div class="card">
           <h2>Scheduled maintenance</h2>
           <p class="muted">Enable jobs only when needed. Each schedule runs on this WASP server, using its saved timezone. Jobs update cached information and do not remove music or playlists.</p>
+          <p class="muted">The HIVE telemetry job appears first and is enabled automatically for new installations. Every job has a manual Run button with real progress.</p>
           <form id="cronForm" autocomplete="off">
             <label for="cronTimezone">Timezone</label>
             <select id="cronTimezone" name="timezone" required></select>
@@ -413,6 +414,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=16.0.6"></script>
+<script type="module" src="/admin.js?v=17.0.2"></script>
 </body>
 </html>

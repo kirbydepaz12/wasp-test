@@ -1,3 +1,11 @@
+## WASP v17.0.2 — HIVE Requests & Spotify Playlist Recreation (staging)
+
+WASP v17.0.2 adds default-on five-minute HIVE telemetry sync with a separate sharing toggle, manual **Run now** controls and real progress for all Admin → Network → Crons maintenance jobs, local/cloud/both source badges on tracks and artists, origin-tagged HIVE-wide request exchange through approved peers, and local-versus-peer availability counts for requested Spotify playlists. Signed-in members can privately recreate a **public Spotify playlist** from its URL under My Playlists; available local and remote tracks are referenced, while individual missing songs become network requests. Only the playlist owner can mark a fully known import as complete; imported playlists start private and retain Spotify cover artwork when available. Existing P2P audio streaming and the persistent browser player are preserved.
+
+**Important:** Spotify's public embed can provide incomplete metadata; the importer cannot reconstruct omitted tracks. Federation is eventually consistent, not real-time, and requires participating v17.0.2 peers. Telemetry sharing off blocks outgoing telemetry while incoming pulls continue. This is a **staging candidate**; back up DB and Docker volumes and verify with your actual HIVE before promoting. See [v17.0.2 release and test guidance](docs/V17-0-2-HIVE-REQUESTS-SPOTIFY.md).
+
+---
+
 ## WASP v17.0.1 — Interactive HIVE Telemetry Charts (staging)
 
 This focused visual refinement keeps the v17.0.0 federated music architecture and the persistent main-page audio player. It adds a 24-hour circular listening clock, hoverable genre stream with visible legend, numerical history tooltips, a compact artist-country heat map, and release-decade distributions using verified metadata only. Existing album/audio/peer routes are unchanged. See `docs/V17-0-1-TELEMETRY-VISUAL-REFINEMENT.md` for metadata limitations and deployment checks.
