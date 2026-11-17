@@ -10,8 +10,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.3";
-const BUILD_LABEL = "HIVE Peer Sync Hotfix";
+const BUILD_VERSION = "17.0.4";
+const BUILD_LABEL = "Spotify Playlist Completion Fix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -808,9 +808,27 @@ async function spotifyEmbed(id) {
   const sources = (findKey(data, "coverArt") || {}).sources || [];
   const best = [...sources].sort((p, q) => (q.width || 0) - (p.width || 0))[0];
   const entity = findKey(data, "entity") || {};
-  return { name: clean(entity.name || entity.title, 120), image: safeImage(best && best.url), tracks };
+  // Only a count belonging to the Spotify playlist entity is evidence of its
+  // full size. Do not use a recursively-found `total`: unrelated embed data
+  // (e.g. image sources) may expose that same property name.
+  const countCandidates = [entity.trackCount, entity.track_count,
+    entity.tracks?.totalCount, entity.tracks?.total, entity.trackList?.totalCount];
+  const sourceTotal = countCandidates.map(x => Number(x))
+    .find(x => Number.isSafeInteger(x) && x >= tracks.length && x <= 100000);
+  return { name: clean(entity.name || entity.title, 120), image: safeImage(best && best.url), tracks,
+    sourceTotal: sourceTotal ?? null };
 }
-const playlistMeta = (tracks) => ({ total: tracks.length, partial: tracks.length === 50 || tracks.length >= 100, tracks });
+function playlistMeta(tracks, sourceTotal = null) {
+  const count = sourceTotal !== null && sourceTotal !== '' ? Number(sourceTotal) : NaN;
+  const trusted = Number.isSafeInteger(count) && count >= tracks.length && count <= 100000;
+  const reported = trusted ? count : null;
+  const source_status = trusted ? (count === tracks.length ? 'verified' : 'incomplete') : 'unverified';
+  // Preserve prior behavior for short unverified embed lists; at Spotify's
+  // 50/100-track boundaries the administrator must explicitly acknowledge
+  // that Spotify may not have revealed the entire source playlist.
+  const partial = source_status === 'incomplete' || (source_status === 'unverified' && tracks.length >= 50);
+  return { total: tracks.length, partial, source_total: reported, source_status, tracks };
+}
 async function spotifyPlaylist(raw) {
   const m = raw.trim().match(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?playlist\/([A-Za-z0-9]{10,40})(?:[/?#].*)?$/);
   if (!m) return { error: "Paste the full Spotify playlist link, like https://open.spotify.com/playlist/…" };
@@ -823,7 +841,7 @@ async function spotifyPlaylist(raw) {
   const ov = o.status === "fulfilled" && o.value.body ? o.value.body : {}, ev = e.status === "fulfilled" ? e.value : null;
   const title = clean(ov.title, 120) || (ev && ev.name) || "Spotify playlist";
   const image = safeImage(ov.thumbnail_url) || (ev && ev.image) || null;
-  return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}`, meta: ev && ev.tracks.length ? playlistMeta(ev.tracks) : null };
+  return { kind: "playlist", title, artist: "", album: "", image, url: link, dedupe: `playlist|${m[1]}`, meta: ev && ev.tracks.length ? playlistMeta(ev.tracks, ev.sourceTotal) : null };
 }
 // v17.0.2: Spotify playlist recreation is an authenticated PRIVATE user
 // workflow. Missing songs enter the ordinary federated request queue one by
@@ -2912,7 +2930,9 @@ async function api(req, env, url, ctx) {
       let mt=null;try{mt=meta?JSON.parse(meta):null;}catch{}
       if(!mt?.tracks){local.push(r);continue;}
       const matched=await matchPlaylistHIVE(env,mt.tracks);
-      local.push({...r,total:mt.total,partial:!!mt.partial,matched:matched.matched.length,
+      local.push({...r,total:mt.total,partial:!!mt.partial,
+        source_total:Number.isSafeInteger(mt.source_total)?mt.source_total:null,
+        source_status:mt.source_status||'unverified',matched:matched.matched.length,
         matched_local:matched.local_count,matched_peer:matched.peer_count,missing:matched.missing});
     }
     // Remote requests remain owned by their original server. A local admin
@@ -2928,20 +2948,42 @@ async function api(req, env, url, ctx) {
       try {
         const e = await spotifyEmbed(String(r.dedupe).split("|")[1]);
         if (!e.tracks.length) throw new Error("empty");
-        meta = playlistMeta(e.tracks);
+        meta = playlistMeta(e.tracks, e.sourceTotal);
         if (!r.image && e.image) r.image = e.image;
       } catch { if (!meta) return json({ error: "Couldn't read the playlist from Spotify right now." }, 502); }
     }
     if (!meta || !meta.tracks || !meta.tracks.length) return json({ error: "The song list of this playlist isn't available." }, 400);
-    const {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,meta.tracks,{register:x[2]==='complete'});
+    const isCompletion=x[2]==='complete';
+    const {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,meta.tracks,{register:isCompletion});
     meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;
+    const reportedTotal=Number.isSafeInteger(meta.source_total)?meta.source_total:null;
+    const confirmedIncomplete=reportedTotal!==null && reportedTotal>meta.tracks.length;
+    let requestBody={};
+    if(isCompletion)requestBody=await req.json().catch(()=>({}));
+    const acceptedUnverified=isCompletion && !!meta.partial && !confirmedIncomplete &&
+      requestBody?.confirm_unverified===true;
+    if(acceptedUnverified){
+      // An explicit admin decision, not a claim that all Spotify songs were
+      // fetched. Persist the acknowledgement with the completed request.
+      meta.completed_unverified=true;meta.completed_retrieved=meta.tracks.length;
+      meta.completed_at=Date.now();
+    }
     await DB.prepare("UPDATE requests SET meta = ?, image = COALESCE(image, ?) WHERE id = ?").bind(JSON.stringify(meta), r.image || null, r.id).run();
-    const all = !missing.length && !meta.partial;
-    if(x[2]==='complete' && missing.length)return json({error:`${missing.length} Spotify songs are still missing from this server and its connected peers. Refresh after peers add them.`,matched:matched.length,missing},409);
-    if(x[2]==='complete' && meta.partial)return json({error:'Spotify provided only a partial song list. We cannot verify the complete playlist yet.'},409);
-    if (x[2] === "complete" && !matched.length) return json({ error: "None of the songs are available yet." }, 400);
-    if(x[2]==='complete' && all) { const pid=await completePlaylistRequest(env,r,matched);return json({status:'done',playlist_id:pid,total:meta.total,matched:matched.length,local:local_count,peer:peer_count}); }
-    return json({ status: "progress", total: meta.total, partial: meta.partial, matched: matched.length,local:local_count,peer:peer_count,missing });
+    if(isCompletion && missing.length)return json({error:`${missing.length} Spotify songs are still missing from this server and its connected peers. Refresh after peers add them.`,matched:matched.length,missing},409);
+    if(isCompletion && !matched.length)return json({error:'None of the songs are available yet.'},409);
+    if(isCompletion && confirmedIncomplete)return json({error:`Spotify reports ${reportedTotal} songs, but WASP retrieved only ${meta.tracks.length}. The known missing part of the Spotify playlist cannot be finalized.`,code:'spotify_list_incomplete',source_total:reportedTotal},409);
+    if(isCompletion && meta.partial && !acceptedUnverified)return json({
+      error:`Spotify exposed ${meta.tracks.length} songs, but its complete playlist length cannot be verified. Explicitly finalize only the retrieved songs to continue.`,
+      code:'spotify_list_unverified',requires_confirmation:true,retrieved:meta.tracks.length
+    },409);
+    if(isCompletion){
+      const pid=await completePlaylistRequest(env,r,matched);
+      return json({status:'done',playlist_id:pid,total:meta.total,matched:matched.length,
+        local:local_count,peer:peer_count,completed_unverified:acceptedUnverified});
+    }
+    return json({status:'progress',total:meta.total,partial:meta.partial,
+      source_total:reportedTotal,source_status:meta.source_status||'unverified',
+      matched:matched.length,local:local_count,peer:peer_count,missing});
   }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)$/)) && m === "DELETE") {
     const own=await DB.prepare("SELECT * FROM requests WHERE id=?").bind(x[1]).first();

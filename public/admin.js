@@ -404,7 +404,10 @@ async function loadRequests() {
   $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => {
     const pl = r.kind === "playlist", has = pl && r.total != null && Array.isArray(r.missing);
     const miss = has ? r.missing.length : 0;
-    const progress = has ? `${r.matched}/${r.total}${r.partial ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? "Song list not available" : "";
+    const sourceCount=Number.isSafeInteger(r.source_total)?r.source_total:null;
+    const knownIncomplete=has && sourceCount!==null && sourceCount>r.total;
+    const unverifiedBoundary=has && !!r.partial && !knownIncomplete;
+    const progress = has ? `${r.matched}/${r.total}${knownIncomplete ? ` of ${sourceCount} reported` : unverifiedBoundary ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? "Song list not available" : "";
     const open = openReq.has(r.id);
     return `<tr data-r="${r.id}">
     <td style="width:56px">${mini(r.image, r.title)}</td>
@@ -412,8 +415,13 @@ async function loadRequests() {
     <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl && !r.remote ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}${r.remote?'<span class="muted">Managed by originating WASP</span>':`<button class="btn ghost" data-a="remove" ${small}>Remove</button>`}</td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
       ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
-      ${r.partial ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify only shows the first ${r.total} songs of this playlist, so the rest can't be checked.</p>` : ""}
-      <button class="btn ghost" data-a="done" ${small}>Mark as done</button></td></tr>` : ""}`;
+      ${knownIncomplete ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${sourceCount} songs, but only ${r.total} were retrieved. Fetch the full song list before completion; known missing Spotify songs cannot be skipped.</p>` :
+        unverifiedBoundary ? `<p class="muted" style="margin:4px 0;font-size:13px">${r.total} Spotify songs retrieved; full playlist length unverified. More songs may exist beyond those retrieved.</p>` :
+        r.source_status==='verified' ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${r.total} songs; all ${r.total} were retrieved.</p>` : ""}
+      ${miss ? `<span class="muted" style="font-size:13px">Waiting for ${miss} missing song${miss===1?'':'s'} before completion.</span>` :
+        knownIncomplete ? `<span class="muted" style="font-size:13px">Cannot finish: complete Spotify song list unavailable.</span>` :
+        unverifiedBoundary ? `<button class="btn ghost" data-a="done-unverified" ${small}>Finalize ${r.total} retrieved songs…</button>` :
+        `<button class="btn ghost" data-a="done" ${small}>Mark as done</button>`}</td></tr>` : ""}`;
   }).join("")}</tbody></table>` : "The queue is empty.";
 }
 $("#reqRows").addEventListener("click", async (e) => {
@@ -425,16 +433,26 @@ $("#reqRows").addEventListener("click", async (e) => {
     d.classList.toggle("hidden", !show); show ? openReq.add(id) : openReq.delete(id);
     b.setAttribute("aria-expanded", show); b.textContent = show ? "▴" : "▾"; return;
   }
-  if (act === "refresh" || act === "done") {
+  if (act === "refresh" || act === "done" || act === "done-unverified") {
+    const isDone=act !== "refresh", unverified=act === "done-unverified";
+    if (unverified && !confirm(`Spotify provided ${r.total} retrieved songs for "${r.title}", but WASP cannot verify the full Spotify playlist length.\n\nFinalize ONLY these ${r.total} retrieved songs? Any additional Spotify songs will NOT be included. This moves the request to Previous requests.`)) return;
     if (act === "done" && !confirm(`Add "${r.title}" to the Playlists tab with the ${r.matched || 0} songs we have, and move it to Previous requests?`)) return;
-    b.disabled = true; const label = b.textContent; b.textContent = act === "done" ? "Working…" : "Refreshing…";
-    const res = await fetch(`/api/admin/requests/${id}/${act === "done" ? "complete" : "refresh"}`, { method: "POST" });
-    const j = await res.json().catch(() => ({}));
-    b.disabled = false; b.textContent = label;
-    if (!res.ok) { flashMsg("#reqMsg", j.error || "Couldn't refresh.", true); return; }
-    if (j.status === "done") { openReq.delete(id); flashMsg("#reqMsg", `"${r.title}" is complete: it is now in the Playlists tab and moved to Previous requests.`); loadPlaylists(); }
-    else flashMsg("#reqMsg", `${j.matched}/${j.total}${j.partial ? "+" : ""} songs are in the library, ${j.missing.length} missing.`);
-    loadRequests(); return;
+    b.disabled = true; const label = b.textContent; b.textContent = isDone ? "Working…" : "Refreshing…";
+    try {
+      const res = await fetch(`/api/admin/requests/${id}/${isDone ? "complete" : "refresh"}`, {
+        method: "POST", ...(unverified ? {headers:{"content-type":"application/json"},body:JSON.stringify({confirm_unverified:true})} : {})
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) { flashMsg("#reqMsg", j.error || `${isDone ? "Completion" : "Refresh"} failed (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}).`, true); return; }
+      if (j.status === "done") {
+        openReq.delete(id);
+        flashMsg("#reqMsg", `"${r.title}" was added to Playlists with ${j.matched} retrieved songs${j.completed_unverified ? " (full Spotify length unverified)" : ""}, and moved to Previous requests.`);
+        loadPlaylists();
+      } else flashMsg("#reqMsg", `${j.matched}/${j.total}${j.partial ? "+" : ""} songs found; ${j.missing.length} missing.`);
+      loadRequests();
+    } catch(err) { flashMsg("#reqMsg", `${isDone ? "Completion" : "Refresh"} failed: ${err.message}`, true); }
+    finally { b.disabled = false; b.textContent = label; }
+    return;
   }
   await fetch("/api/admin/requests/" + id, { method: "DELETE" }); openReq.delete(id); loadRequests();
 });
