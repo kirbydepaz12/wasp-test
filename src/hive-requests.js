@@ -1,4 +1,5 @@
 import { ensureTelemetrySchema } from './telemetry.js';
+import { requireNoRedirect } from './peer-fetch.js';
 // WASP v17.0.2: Federated community request queue.
 // Peer sync is pull-only. No user IDs, visitor tokens, IPs, account credentials,
 // or private playlist contents are exchanged. Origin + event ID is stable across
@@ -165,7 +166,7 @@ export async function syncHiveRequests(env,{fetcher=fetch,force=false}={}){
       const prior=await db.prepare('SELECT node_id,cursor FROM hive_request_peer_cursors WHERE url=?').bind(base).first();
       const request=new URL('/api/hive/requests/feed',u);
       request.searchParams.set('cursor',String(Number(prior?.cursor)||0));request.searchParams.set('limit',String(MAX_BATCH));
-      const response=await fetcher(request,{redirect:'error',signal:AbortSignal.timeout(TIMEOUT),headers:{accept:'application/json'}});
+      const response=requireNoRedirect(await fetcher(request,{redirect:'manual',signal:AbortSignal.timeout(TIMEOUT),headers:{accept:'application/json'}}));
       if([403,404].includes(response.status))continue; // Legacy/non-sharing peers remain compatible for music.
       if(!response.ok)throw Error('Peer HTTP '+response.status);
       const data=await response.json();

@@ -1,4 +1,5 @@
 import {RELEASE_DOCS} from "./release-docs.js";
+import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
   hiveRequestFeed,hiveRequestsForDisplay} from "./hive-requests.js";
 import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
@@ -9,8 +10,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.2";
-const BUILD_LABEL = "HIVE Cron & Source Awareness";
+const BUILD_VERSION = "17.0.3";
+const BUILD_LABEL = "HIVE Peer Sync Hotfix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -885,7 +886,7 @@ async function refreshSpotifyPeerCatalogue(env,{max=4}={}){
     const peer=candidates[(pos+i)%candidates.length];checked++;
     try{
       if(approved.some(p=>p.id===peer.id) && !(await publicPeerDNS(new URL(peer.url).hostname)))continue;
-      const version=await fetch(peer.url+'/api/catalog-version',{signal:AbortSignal.timeout(6000),redirect:'error'});
+      const version=requireNoRedirect(await fetch(peer.url+'/api/catalog-version',{signal:AbortSignal.timeout(6000),redirect:'manual'}));
       if(!version.ok)continue;
       const rev=clean((await version.json()).revision,80);
       const cached=await DB.prepare('SELECT revision,synced_at FROM peer_catalogue_cache WHERE peer_id=?').bind(peer.id).first();
@@ -974,7 +975,7 @@ async function refreshActiveSpotifyImports(env,{max=6,fetchPeers=false}={}){
 }
 async function saveSpotifyImportedCover(env,playlistId,source){
   if(!source||!safeImage(source))return;
-  const r=await fetch(source,{signal:AbortSignal.timeout(9000),redirect:'error'});
+  const r=requireNoRedirect(await fetch(source,{signal:AbortSignal.timeout(9000),redirect:'manual'}));
   if(!r.ok||!/^image\/(jpeg|png|webp)/i.test(r.headers.get('content-type')||''))return;
   const bytes=await r.arrayBuffer();if(!bytes.byteLength||bytes.byteLength>3*1024*1024)return;
   const type=(r.headers.get('content-type')||'image/jpeg').split(';')[0];

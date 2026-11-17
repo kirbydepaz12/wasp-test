@@ -1,6 +1,7 @@
 // WASP v17 HIVE telemetry: independent, anonymous confirmed-play ledger.
 // No user IDs, visitor IDs, addresses, tokens, or session IDs are transmitted.
 // Source identity is preserved through intermediate peers to prevent re-counting loops.
+import {requireNoRedirect} from './peer-fetch.js';
 const MINUTE = 60_000;
 const MAX_BATCH = 200;
 const FRESH_MS = 5 * MINUTE;
@@ -318,13 +319,13 @@ export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
     try {
       const base=new URL(url);
       if(!['https:','http:'].includes(base.protocol)||base.username||base.password)continue;
-      const ping=await fetcher(new URL('/api/peer',base),{signal:AbortSignal.timeout(5000),redirect:'error'});
+      const ping=requireNoRedirect(await fetcher(new URL('/api/peer',base),{signal:AbortSignal.timeout(5000),redirect:'manual'}));
       if(!ping.ok||!(await ping.json())?.ok)continue;
       const state=await db.prepare('SELECT node_id,cursor FROM telemetry_peer_cursors WHERE url=?').bind(url).first();
       const cursor=Number(state?.cursor)||0;
       const feedUrl=new URL('/api/telemetry/feed',base);
       feedUrl.searchParams.set('cursor',String(cursor));feedUrl.searchParams.set('limit',String(MAX_BATCH));
-      const response=await fetcher(feedUrl,{signal:AbortSignal.timeout(9000),redirect:'error'});
+      const response=requireNoRedirect(await fetcher(feedUrl,{signal:AbortSignal.timeout(9000),redirect:'manual'}));
       if(response.status===404||response.status===403)continue; // Older/non-sharing peers are optional.
       if(!response.ok)throw Error('Upstream HTTP '+response.status);
       const j=await response.json();

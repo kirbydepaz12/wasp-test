@@ -1,4 +1,5 @@
 import {recordTelemetryListen} from "./telemetry.js";
+import {requireNoRedirect} from './peer-fetch.js';
 import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
 import {readMobilePlaylists} from './mobile-playlists.js';
 import {makeMobileFolders, folderArtistIndex} from './mobile-folders.js';
@@ -11,7 +12,7 @@ import {recordMobilePlayback} from './mobile-live.js';
 const encoder = new TextEncoder();
 const dec = new TextDecoder();
 const VERSION = '1.16.1';
-const WASP_VERSION = '17.0.1';
+const WASP_VERSION = '17.0.3';
 const NO_STORE = {'cache-control':'private, no-store', 'x-content-type-options':'nosniff', 'referrer-policy':'no-referrer'};
 const KEYS_TABLE = `CREATE TABLE IF NOT EXISTS mobile_bridge_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, label TEXT NOT NULL,
@@ -672,7 +673,7 @@ export async function handleMobileRest(req,env,url,options={}){
       for(const origin of origins){
         try{
           const endpoint=origin.replace(/\/$/,'')+'/api/bio?name='+encodeURIComponent(artist.name);
-          const r=await fetch(endpoint,{headers:{accept:'application/json'},redirect:'error',signal:AbortSignal.timeout(6000)});
+          const r=requireNoRedirect(await fetch(endpoint,{headers:{accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(6000)}));
           if(!r.ok)continue;
           const d=await r.json();if(typeof d?.text==='string'&&d.text.trim()){bio=d;break;}
         }catch{};
