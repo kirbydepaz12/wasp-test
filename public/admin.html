@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=17.0.6">
+<link rel="stylesheet" href="/style.css?v=17.0.7">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -325,6 +325,17 @@
       <div id="netTelemetryPanel" class="hidden" role="tabpanel" aria-labelledby="netTabTelemetry">
         <div class="card"><h2>HIVE metadata intelligence</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
           <form id="metadataForm" class="metadata-form" autocomplete="off">
+            <section class="metadata-coverage" id="metadataCoverageCard" aria-labelledby="metadataCoverageTitle">
+              <h3 id="metadataCoverageTitle">Metadata coverage</h3>
+              <p class="muted">All retained listening history · local and synchronized peers</p>
+              <div class="coverage-row"><div class="coverage-label"><span>Album / track release year</span><strong id="metadataYearPercent">—</strong></div><progress class="coverage-year" id="metadataYearBar" max="100" value="0" aria-label="Release-year coverage"></progress><p class="muted" id="metadataYearCount">Coverage not loaded yet.</p></div>
+              <div class="coverage-row"><div class="coverage-label"><span>Artist country of origin</span><strong id="metadataOriginPercent">—</strong></div><progress class="coverage-origin" id="metadataOriginBar" max="100" value="0" aria-label="Artist-origin coverage"></progress><p class="muted" id="metadataOriginCount">Coverage not loaded yet.</p></div>
+              <div class="coverage-enrichment"><h3>Metadata enrichment</h3>
+                <label class="metadata-check coverage-priority"><span>Prioritize frequently played music</span><input type="checkbox" id="metadataPriority" checked></label>
+                <button type="button" class="btn coverage-scan" id="metadataScan">Scan missing metadata</button>
+                <p id="metadataCoverageStatus" class="muted" role="status" aria-live="polite">Runs one bounded batch using saved settings. Enable scheduled enrichment for continuous scanning.</p>
+              </div>
+            </section>
             <section class="metadata-section">
               <h3>Preferred metadata provider</h3>
               <label class="metadata-check"><input type="radio" name="metadata-preference" value="musicbrainz" checked><span>Prioritize MusicBrainz</span></label>
@@ -340,7 +351,7 @@
               <div class="metadata-actions"><button type="button" class="btn ghost" data-metadata-test="lastfm">Test Last.fm</button><span id="metadataLastfmStatus" class="metadata-provider-status" role="status"></span></div>
             </section>
             <section class="metadata-section">
-              <h3 class="metadata-mb">MusicBrainz</h3><p class="muted">Public lookups for recording release dates and artist origin. A valid contact identifies your installation.</p>
+              <h3 class="metadata-mb">MusicBrainz</h3><p class="muted">Public lookups for album release dates, recording metadata and artist origin. A valid contact identifies your installation.</p>
               <label class="metadata-check"><input type="checkbox" id="metadataMusicbrainz"><span>Enable MusicBrainz</span></label>
               <label class="metadata-field">Administrator contact email or URL<input id="metadataContact" type="text" maxlength="160" placeholder="admin@example.com" autocomplete="off"></label>
               <div class="metadata-actions"><button type="button" class="btn ghost" data-metadata-test="musicbrainz">Test MusicBrainz</button><span id="metadataMusicbrainzStatus" class="metadata-provider-status" role="status"></span></div>
@@ -349,10 +360,12 @@
               <h3>Verification and sharing</h3>
               <label class="metadata-check"><input type="checkbox" id="metadataEnabled"><span>Enable scheduled metadata enrichment</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataFallback"><span>Use the other enabled provider for missing fields</span></label>
+              <label class="metadata-check"><input type="checkbox" id="metadataWikidata" checked><span>Use Wikidata factual fallback (requires a valid contact and fallback enabled)</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataTrust"><span>Trust verified metadata from administrator-connected peers (not community peers)</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataShareLastfm"><span>I have Last.fm redistribution permission; allow Last.fm metadata exchange</span></label>
               <p class="muted">Leave Last.fm sharing off unless permitted by your agreement. Trusted peer data is reused locally and is not re-exported as locally verified.</p>
               <label class="metadata-field">Synchronization interval<select id="metadataMinutes"><option value="5">Every 5 minutes</option><option value="10">Every 10 minutes</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="120">Every 2 hours</option></select></label>
+              <label class="metadata-field">Entities per batch<select id="metadataBatchSize"><option value="1">1 · Cloudflare Free recommended</option><option value="2">2</option><option value="3">3</option></select></label>
               <div class="metadata-actions"><button class="btn" type="submit">Save settings</button><button class="btn ghost" type="button" id="metadataRun">Run batch now</button></div>
               <p class="muted">Test entered or saved values. Enrichment uses saved settings only.</p>
               <p id="metadataStatus" class="msg" role="status" aria-live="polite"></p>
@@ -360,9 +373,9 @@
             </section>
             <section class="metadata-section">
               <h3>Verified metadata</h3>
-              <div class="metadata-metrics"><div><strong id="metadataVerifiedTracks">—</strong><span>Tracks with verified fields</span></div><div><strong id="metadataVerifiedArtists">—</strong><span>Artists with verified fields</span></div><div><strong id="metadataVerifiedFields">—</strong><span>Verified fields</span></div></div>
+              <div class="metadata-metrics"><div><strong id="metadataVerifiedTracks">—</strong><span>Tracks with verified fields</span></div><div><strong id="metadataVerifiedArtists">—</strong><span>Artists with verified fields</span></div><div><strong id="metadataVerifiedAlbums">—</strong><span>Albums with verified fields</span></div><div><strong id="metadataVerifiedFields">—</strong><span>Verified fields</span></div></div>
               <p id="metadataStats" class="muted"></p><p id="metadataLastError" class="msg err" role="status"></p>
-              <p class="muted">Sources: <a href="https://www.last.fm/api" target="_blank" rel="noopener">Last.fm</a> · <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>. Unknown or ambiguous fields remain unknown.</p>
+              <p class="muted">Sources: <a href="https://www.last.fm/api" target="_blank" rel="noopener">Last.fm</a> · <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a> · <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a>. Unknown or ambiguous fields remain unknown.</p>
             </section>
           </form>
         </div>
@@ -460,6 +473,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=17.0.6"></script>
+<script type="module" src="/admin.js?v=17.0.7"></script>
 </body>
 </html>

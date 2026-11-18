@@ -6,15 +6,15 @@ const str=(s,n=200)=>String(s??'').trim().slice(0,n), norm=s=>str(s).toLowerCase
 const json=(v,status=200)=>Response.json(v,{status,headers:{'cache-control':'no-store'}});
 const rows=r=>r?.results||[];
 const changed=r=>Number(r?.meta?.changes||0);
-const configDefaults={preferred:'musicbrainz',musicbrainz:true,lastfm:false,fallback:true,enabled:false,minutes:5,trustPeers:false,shareLastfm:false,contact:''};
+const configDefaults={preferred:'musicbrainz',musicbrainz:true,lastfm:false,fallback:true,enabled:false,minutes:5,trustPeers:false,shareLastfm:false,contact:'',wikidata:true,prioritizePlayed:true,batchSize:1};
 export function ensureMetadataSchema(env){
  if(ready.has(env.DB))return ready.get(env.DB);
- const task=(async()=>{if(await setting(env.DB,'hive_metadata_schema')==='1')return;for(const sql of [
+ const task=(async()=>{if(await setting(env.DB,'hive_metadata_schema')==='2')return;for(const sql of [
  `CREATE TABLE IF NOT EXISTS hive_metadata (seq INTEGER PRIMARY KEY AUTOINCREMENT, artist TEXT NOT NULL,title TEXT NOT NULL,album TEXT NOT NULL,field TEXT NOT NULL,value TEXT NOT NULL,provider TEXT NOT NULL,reference TEXT NOT NULL DEFAULT '',verified_at INTEGER NOT NULL,local_verified INTEGER NOT NULL DEFAULT 0, UNIQUE(artist,title,album,field))`,
  `CREATE TABLE IF NOT EXISTS hive_metadata_jobs (artist TEXT NOT NULL,title TEXT NOT NULL,album TEXT NOT NULL,next_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(artist,title,album))`,
  `CREATE INDEX IF NOT EXISTS idx_hive_metadata_due ON hive_metadata_jobs(next_at)`,
  `CREATE TABLE IF NOT EXISTS hive_metadata_cursors(url TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0,node_id TEXT NOT NULL DEFAULT '',error TEXT NOT NULL DEFAULT '')`
- ])await env.DB.prepare(sql).run();await set(env.DB,'hive_metadata_schema','1');})().catch(e=>{ready.delete(env.DB);throw e});ready.set(env.DB,task);return task;
+ ])await env.DB.prepare(sql).run();try{await env.DB.prepare('ALTER TABLE hive_metadata_jobs ADD COLUMN play_priority INTEGER NOT NULL DEFAULT 0').run();}catch(e){if(!/duplicate column|already exists/i.test(String(e.message)))throw e;}await set(env.DB,'hive_metadata_schema','2');})().catch(e=>{ready.delete(env.DB);throw e});ready.set(env.DB,task);return task;
 }
 async function setting(db,key){return (await db.prepare('SELECT value FROM settings WHERE key=?').bind(key).first())?.value;}
 async function set(db,key,value){await db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(key,String(value)).run();}
@@ -30,11 +30,11 @@ async function encryptCredentials(env,key,secret){const iv=crypto.getRandomValue
 async function credentialState(env){let cred={},credentialError='';try{cred=await credentials(env)}catch(e){credentialError=e.message;}return {apiKeyConfigured:!!cred.apiKey,secretConfigured:!!cred.secret,credentialSource:cred.source||'none',credentialError,legacyKey:!!cred.legacyKey,encryptionReady:!!keyMaterial(env)};}
 const validContact=s=>/^(?:[^\s@]+@[^\s@]+\.[^\s@]+|https?:\/\/[^\s]+)$/.test(s);
 function validField(field,value){if(field==='release_year'){const y=Number(value);return Number.isInteger(y)&&y>=1850&&y<=new Date().getUTCFullYear()+1?String(y):'';}if(field==='country_code')return Object.values(countries).includes(String(value))?String(value):'';return field==='genre'?str(value,80).toLowerCase():'';}
-function factual(entry){return entry.provider==='musicbrainz' && ['release_year','country_code'].includes(entry.field);}
+function factual(entry){return ['musicbrainz','wikidata'].includes(entry.provider) && ['release_year','country_code'].includes(entry.field);}
 const isMbid=s=>/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(String(s));
-function cleanReference(provider,ref){if(typeof ref!=='string'||ref.length>500)return '';try{const u=new URL(ref);if(provider==='lastfm'&&u.protocol==='http:'&&u.hostname==='www.last.fm')u.protocol='https:';if(u.protocol!=='https:'||u.username||u.password||u.search||u.hash)return '';if(provider==='lastfm'&&u.hostname==='www.last.fm'&&u.pathname.startsWith('/music/'))return u.href;if(provider==='musicbrainz'&&u.hostname==='musicbrainz.org'&&/^\/(recording|artist)\/[a-f0-9-]+$/i.test(u.pathname))return u.href;}catch{}return '';}
-async function store(env,entry,local,config){const value=validField(entry.field,entry.value),reference=cleanReference(entry.provider,entry.reference);if(!value||!reference||!['lastfm','musicbrainz'].includes(entry.provider))return 0;
- const artist=key(entry.artist),title=entry.field==='country_code'?'':key(entry.title),album=title?key(entry.album):'';if(!artist||(!title&&entry.field==='release_year'))return 0;
+function cleanReference(provider,ref){if(typeof ref!=='string'||ref.length>500)return '';try{const u=new URL(ref);if(provider==='lastfm'&&u.protocol==='http:'&&u.hostname==='www.last.fm')u.protocol='https:';if(u.protocol!=='https:'||u.username||u.password||u.search||u.hash)return '';if(provider==='lastfm'&&u.hostname==='www.last.fm'&&u.pathname.startsWith('/music/'))return u.href;if(provider==='musicbrainz'&&u.hostname==='musicbrainz.org'&&/^\/(recording|artist|release-group)\/[a-f0-9-]+$/i.test(u.pathname))return u.href;if(provider==='wikidata'&&u.hostname==='www.wikidata.org'&&/^\/wiki\/Q[1-9][0-9]*$/.test(u.pathname))return u.href;}catch{}return '';}
+async function store(env,entry,local,config){const value=validField(entry.field,entry.value),reference=cleanReference(entry.provider,entry.reference);if(!value||!reference||!['lastfm','musicbrainz','wikidata'].includes(entry.provider)||(entry.provider==='lastfm'&&entry.field!=='genre'))return 0;
+ const artist=key(entry.artist),title=entry.field==='country_code'?'':key(entry.title),album=entry.field==='country_code'?'':key(entry.album);if(!artist||(!title&&!album&&entry.field==='release_year'))return 0;
  const prior=await env.DB.prepare('SELECT * FROM hive_metadata WHERE artist=? AND title=? AND album=? AND field=?').bind(artist,title,album,entry.field).first();
  if(prior&&(!local||prior.provider===config.preferred&&entry.provider!==config.preferred||prior.value===value&&prior.provider===entry.provider&&prior.local_verified&&local))return 0;
  // REPLACE assigns a new sequence only when a field is newly verified/changed. No event rows are changed.
@@ -44,20 +44,40 @@ async function store(env,entry,local,config){const value=validField(entry.field,
 const lucene=s=>'"'+str(s).replace(/[\\"]/g,'\\$&')+'"';
 async function getJSON(fetcher,url,headers={}){let res;try{res=requireNoRedirect(await fetcher(url,{redirect:'manual',signal:AbortSignal.timeout(8000),headers:{accept:'application/json',...headers}}));}catch{throw Error('Metadata provider connection failed');}if(!res.ok)throw Error('Metadata provider HTTP '+res.status+(res.status===429?' (rate limited)':''));let d;try{d=await res.json();}catch{throw Error('Metadata provider returned a non-JSON response (HTTP '+res.status+')');}if(!d||typeof d!=='object')throw Error('Invalid metadata provider response');if(d.error){const code=Number(d.error);throw Error('Metadata provider error'+(Number.isFinite(code)?' '+code:'')+(code===10?' (invalid API key)':code===29?' (rate limited)':''));}return d;}
 const tag=x=>str((x||[]).find(t=>t?.name)?.name,80);
+const credit=r=>norm((r['artist-credit']||[]).map(c=>(c.name||c.artist?.name||'')+(c.joinphrase||'')).join(''));
 export async function lookupMusicbrainz(job,{fetcher=fetch,contact=''}={}){
  if(!contact)throw Error('Set MusicBrainz contact email or URL first.');
- const artist=!job.title,kind=artist?'artist':'recording';const url=new URL('https://musicbrainz.org/ws/2/'+kind+'/');
- url.searchParams.set('query',artist?'artist:'+lucene(job.artist):'recording:'+lucene(job.title)+' AND artist:'+lucene(job.artist)+(job.album?' AND release:'+lucene(job.album):''));url.searchParams.set('fmt','json');url.searchParams.set('limit','5');
- const data=await getJSON(fetcher,url,{'User-Agent':`WASP/17.0.6 (${contact})`});
- const matches=(data[artist?'artists':'recordings']||[]).filter(r=>isMbid(r.id)&&Number(r.score)>=95&&(artist?norm(r.name)===norm(job.artist):norm(r.title)===norm(job.title)&&norm((r['artist-credit']||[]).map(c=>(c.name||c.artist?.name||'')+(c.joinphrase||'')).join(''))===norm(job.artist)&&(!job.album||(r.releases||[]).some(x=>norm(x.title)===norm(job.album)))));
- // Ambiguous exact matches are deliberately unresolved, not guessed.
+ const album=!job.title&&!!job.album,artist=!job.title&&!album,kind=album?'release-group':artist?'artist':'recording';const url=new URL('https://musicbrainz.org/ws/2/'+kind+'/');
+ url.searchParams.set('query',album?'releasegroup:'+lucene(job.album)+' AND artist:'+lucene(job.artist):artist?'artist:'+lucene(job.artist):'recording:'+lucene(job.title)+' AND artist:'+lucene(job.artist)+(job.album?' AND release:'+lucene(job.album):''));url.searchParams.set('fmt','json');url.searchParams.set('limit','10');
+ const data=await getJSON(fetcher,url,{'User-Agent':`WASP/17.0.7 (${contact})`});
+ const matches=(data[album?'release-groups':artist?'artists':'recordings']||[]).filter(r=>isMbid(r.id)&&Number(r.score)>=(album?85:artist?85:95)&&(artist?norm(r.name)===norm(job.artist):norm(r.title)===norm(album?job.album:job.title)&&credit(r)===norm(job.artist)&&(album||!job.album||(r.releases||[]).some(x=>norm(x.title)===norm(job.album)))));
+ // Exact identity required; do not pick a same-name artist/album merely by popularity.
  if(matches.length!==1)return [];const hit=matches[0],reference=`https://musicbrainz.org/${kind}/${hit.id}`,out=[];
- if(artist){const code=hit.country||hit.area?.['iso-3166-1-codes']?.[0];if(countries[code])out.push({field:'country_code',value:countries[code]});}
+ if(artist){const code=hit['begin-area']?.['iso-3166-1-codes']?.[0]||hit.country||hit.area?.['iso-3166-1-codes']?.[0];if(countries[code])out.push({field:'country_code',value:countries[code]});}
  else {const year=String(hit['first-release-date']||'').match(/^\d{4}/)?.[0];if(year)out.push({field:'release_year',value:year});}
- const genre=tag(hit.tags);if(genre)out.push({field:'genre',value:genre});return out.map(x=>({...job,...x,provider:'musicbrainz',reference}));
+ const genre=tag(hit.tags||hit.genres);if(genre)out.push({field:'genre',value:genre});return out.map(x=>({...job,...x,provider:'musicbrainz',reference}));
+}
+// Factual, exact-label fallback. Require one entity and one country or year;
+// never infer geography from a release market, nationality alone or a listener location.
+export async function lookupWikidata(job,{fetcher=fetch,contact=''}={}){
+ if(!validContact(contact))throw Error('Set a valid metadata contact for Wikidata.');
+ const album=!job.title&&!!job.album;if(job.title)return [];
+ const headers={'User-Agent':`WASP/17.0.7 (${contact})`};
+ // Jobs use normalized lowercase keys. Resolve candidate IDs using the search API,
+ // then constrain the structured query to those IDs rather than scanning all labels.
+ const search=new URL('https://www.wikidata.org/w/api.php');search.search=new URLSearchParams({action:'wbsearchentities',search:album?job.album:job.artist,language:'en',type:'item',limit:'10',format:'json'});
+ const found=await getJSON(fetcher,search,headers);const candidates=[...new Set((found.search||[]).filter(x=>norm(x.label)===norm(album?job.album:job.artist)&&/^Q[1-9][0-9]*$/.test(x.id)).map(x=>x.id))];if(!candidates.length||candidates.length>=10)return [];
+ const values=`VALUES ?item { ${candidates.map(id=>'wd:'+id).join(' ')} }`;
+ const query=album?`SELECT DISTINCT ?item ?year WHERE { ${values} ?item wdt:P31/wdt:P279* wd:Q482994; wdt:P175 ?artist; wdt:P577 ?date. ?artist rdfs:label ?name. FILTER(LANG(?name)="en" && LCASE(STR(?name))=${JSON.stringify(norm(job.artist))}) BIND(YEAR(?date) AS ?year) } LIMIT 12`:
+ `SELECT DISTINCT ?item ?code WHERE { ${values} { ?item wdt:P31/wdt:P279* wd:Q215380; wdt:P495 ?country. } UNION { ?item wdt:P31/wdt:P279* wd:Q215380; wdt:P740/wdt:P17 ?country. } UNION { ?item wdt:P31 wd:Q5; wdt:P106/wdt:P279* wd:Q639669; wdt:P19/wdt:P17 ?country. } ?country wdt:P297 ?code. } LIMIT 12`;
+ const url=new URL('https://query.wikidata.org/sparql');url.searchParams.set('query',query);url.searchParams.set('format','json');
+ const d=await getJSON(fetcher,url,{...headers,accept:'application/sparql-results+json'});const hits=d.results?.bindings||[];
+ const ids=new Set(hits.map(x=>x.item?.value?.match(/\/entity\/(Q[1-9][0-9]*)$/)?.[1]));if(ids.size!==1||!candidates.includes([...ids][0])||hits.length>=12)return [];
+ const vals=new Set(hits.map(x=>album?validField('release_year',x.year?.value):countries[x.code?.value]).filter(Boolean));if(vals.size!==1)return [];
+ return [{...job,field:album?'release_year':'country_code',value:[...vals][0],provider:'wikidata',reference:'https://www.wikidata.org/wiki/'+[...ids][0]}];
 }
 export async function lookupLastfm(job,{fetcher=fetch,apiKey}={}){
- if(!apiKey)throw Error('Last.fm API key not configured');const artist=!job.title,url=new URL('https://ws.audioscrobbler.com/2.0/');url.search=new URLSearchParams({method:artist?'artist.getInfo':'track.getInfo',api_key:apiKey,artist:job.artist,...(!artist?{track:job.title}:{}),format:'json',autocorrect:'0'});
+ if(!apiKey)throw Error('Last.fm API key not configured');const album=!job.title&&!!job.album,artist=!job.title&&!album,url=new URL('https://ws.audioscrobbler.com/2.0/');if(album)return [];url.search=new URLSearchParams({method:artist?'artist.getInfo':'track.getInfo',api_key:apiKey,artist:job.artist,...(!artist?{track:job.title}:{}),format:'json',autocorrect:'0'});
  const d=await getJSON(fetcher,url),hit=artist?d.artist:d.track;if(!hit||norm(artist?hit.name:hit.artist?.name)!==norm(job.artist)||(!artist&&(norm(hit.name)!==norm(job.title)||(job.album&&norm(hit.album?.title)!==norm(job.album)))))return [];
  const genre=tag((artist?hit.tags:hit.toptags)?.tag);return genre?[{...job,field:'genre',value:genre,provider:'lastfm',reference:hit.url}]:[];
 }
@@ -65,36 +85,56 @@ export async function lookupLastfm(job,{fetcher=fetch,apiKey}={}){
 // plus Last.fm fields when explicit redistribution permission was enabled, are exposed.
 export async function metadataFeed(env,url){await ensureMetadataSchema(env);const c=await metadataConfig(env);if(await setting(env.DB,'network_share')!=='1'||await setting(env.DB,'telemetry_share_enabled')==='0')return json({error:'Sharing disabled'},403);
  const cursor=Number(url.searchParams.get('cursor')||0);if(!Number.isSafeInteger(cursor)||cursor<0)return json({error:'Invalid cursor'},400);
- const result=rows(await env.DB.prepare(`SELECT seq,artist,title,album,field,value,provider,reference,verified_at FROM hive_metadata WHERE seq>? AND local_verified=1 AND ((provider='musicbrainz' AND field IN ('release_year','country_code')) OR (provider='lastfm' AND ?=1)) ORDER BY seq LIMIT 20`).bind(cursor,c.shareLastfm?1:0).all());return json({ok:true,protocol:1,nodeId:await setting(env.DB,'telemetry_instance_id'),cursor:result.at(-1)?.seq||cursor,entries:result});}
+ const limit=Math.max(1,Math.min(20,Number(url.searchParams.get('limit'))||20));const result=rows(await env.DB.prepare(`SELECT seq,artist,title,album,field,value,provider,reference,verified_at FROM hive_metadata WHERE seq>? AND local_verified=1 AND ((provider IN ('musicbrainz','wikidata') AND field IN ('release_year','country_code')) OR (provider='lastfm' AND ?=1)) ORDER BY seq LIMIT ?`).bind(cursor,c.shareLastfm?1:0,Math.floor(limit)).all());return json({ok:true,protocol:1,nodeId:await setting(env.DB,'telemetry_instance_id'),cursor:result.at(-1)?.seq||cursor,entries:result});}
 async function pullTrusted(env,c,{fetcher=fetch}={}){if(!c.trustPeers)return 0;const peers=rows(await env.DB.prepare('SELECT url FROM peers ORDER BY added_at LIMIT 60').all());if(!peers.length)return 0;const i=Number(await setting(env.DB,'hive_metadata_peer_offset'))||0,url=peers[i%peers.length].url;await set(env.DB,'hive_metadata_peer_offset',(i+1)%peers.length);let count=0;
- try{const base=new URL(url);if(!['http:','https:'].includes(base.protocol)||base.username||base.password)return 0;const prior=await env.DB.prepare('SELECT * FROM hive_metadata_cursors WHERE url=?').bind(url).first(),u=new URL('/api/telemetry/metadata/feed',base);const cursor=Number(prior?.cursor)||0;u.searchParams.set('cursor',String(cursor));const data=await getJSON(fetcher,u);if(data.protocol!==1||!data.ok||!isMbid(data.nodeId)||!Array.isArray(data.entries)||data.entries.length>20||!Number.isSafeInteger(data.cursor)||data.cursor<cursor||data.entries.some((r,i)=>!Number.isSafeInteger(r.seq)||r.seq<=(i?data.entries[i-1].seq:cursor)||r.seq>data.cursor))throw Error('Invalid peer metadata feed');if(prior?.node_id&&prior.node_id!==data.nodeId){await env.DB.prepare('DELETE FROM hive_metadata_cursors WHERE url=?').bind(url).run();return 0;}
- for(const e of data.entries)if(factual(e)||(c.shareLastfm&&e.provider==='lastfm'))count+=await store(env,e,false,c);
- await env.DB.prepare(`INSERT INTO hive_metadata_cursors(url,cursor,node_id,error) VALUES(?,?,?,'') ON CONFLICT(url) DO UPDATE SET cursor=excluded.cursor,node_id=excluded.node_id,error=''`).bind(url,data.cursor,str(data.nodeId,90)).run();
+ try{const base=new URL(url);if(!['http:','https:'].includes(base.protocol)||base.username||base.password)return 0;const prior=await env.DB.prepare('SELECT * FROM hive_metadata_cursors WHERE url=?').bind(url).first(),u=new URL('/api/telemetry/metadata/feed',base);const cursor=Number(prior?.cursor)||0;u.searchParams.set('cursor',String(cursor));u.searchParams.set('limit','3');const data=await getJSON(fetcher,u);if(data.protocol!==1||!data.ok||!isMbid(data.nodeId)||!Array.isArray(data.entries)||data.entries.length>20||!Number.isSafeInteger(data.cursor)||data.cursor<cursor||data.entries.some((r,i)=>!Number.isSafeInteger(r.seq)||r.seq<=(i?data.entries[i-1].seq:cursor)||r.seq>data.cursor))throw Error('Invalid peer metadata feed');if(prior?.node_id&&prior.node_id!==data.nodeId){await env.DB.prepare('DELETE FROM hive_metadata_cursors WHERE url=?').bind(url).run();return 0;}
+ const page=data.entries.slice(0,3);for(const e of page)if(factual(e)||(c.shareLastfm&&e.provider==='lastfm'))count+=await store(env,e,false,c);
+ await env.DB.prepare(`INSERT INTO hive_metadata_cursors(url,cursor,node_id,error) VALUES(?,?,?,'') ON CONFLICT(url) DO UPDATE SET cursor=excluded.cursor,node_id=excluded.node_id,error=''`).bind(url,page.length? page.at(-1).seq:data.cursor,str(data.nodeId,90)).run();
  }catch(e){await env.DB.prepare(`INSERT INTO hive_metadata_cursors(url,error) VALUES(?,?) ON CONFLICT(url) DO UPDATE SET error=excluded.error`).bind(url,str(e.message,120)).run();}return count;}
 export async function runMetadata(env,{force=false,fetcher=fetch}={}){await ensureMetadataSchema(env);const c=await metadataConfig(env);if(!force&&!c.enabled)return {disabled:true};const now=Date.now(),interval=Math.max(5,Number(c.minutes)||5)*60000;
  const claimed=await env.DB.prepare(`INSERT INTO settings(key,value) VALUES('hive_metadata_next',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(settings.value AS INTEGER)<?`).bind(String(now+(force?60000:interval)),now).run();if(!changed(claimed))return {skipped:true,reason:'Cooldown or another batch running'};
- const db=env.DB;const cursor=Number(await setting(db,'hive_metadata_discovery'))||0;let discovered=rows(await db.prepare('SELECT seq,artist,title,album FROM telemetry_events WHERE seq>? ORDER BY seq LIMIT 30').bind(cursor).all());let discoveryKey='hive_metadata_discovery';
- if(!discovered.length){discoveryKey='hive_metadata_library_cursor';const position=Number(await setting(db,discoveryKey))||0;try{discovered=rows(await db.prepare('SELECT rowid AS seq,artist,title,album FROM tracks WHERE rowid>? ORDER BY rowid LIMIT 30').bind(position).all());}catch{discovered=[];}}
- if(discovered.length){const statements=[],seen=new Set();for(const e of discovered){for(const [artist,title,album] of [[key(e.artist),'',''],[key(e.artist),key(e.title),key(e.album)]]){if(!artist)continue;const k=JSON.stringify([artist,title,album]);if(seen.has(k))continue;seen.add(k);statements.push(db.prepare('INSERT OR IGNORE INTO hive_metadata_jobs(artist,title,album) VALUES(?,?,?)').bind(artist,title,album));}}for(let i=0;i<statements.length;i+=30)await db.batch(statements.slice(i,i+30));await set(db,discoveryKey,discovered.at(-1).seq);}
- const imported=await pullTrusted(env,c,{fetcher});let verified=0,checked=0,errors=0;
- // One entity and at most one request to each provider per batch; never run from dashboard reads.
- const job=await db.prepare('SELECT * FROM hive_metadata_jobs WHERE next_at<=? ORDER BY next_at,artist,title,album LIMIT 1').bind(now).first();
- if(job){const needed=job.title?['genre','release_year']:['genre','country_code'];const existing=rows(await db.prepare('SELECT field FROM hive_metadata WHERE artist=? AND title=? AND album=?').bind(job.artist,job.title,job.album).all());const missing=new Set(needed.filter(f=>!existing.some(e=>e.field===f)));let problem='';
- const providers=[c.preferred,...(c.fallback?[c.preferred==='lastfm'?'musicbrainz':'lastfm']:[])];
- for(const provider of providers){if(!missing.size||!c[provider])continue;try{const records=provider==='musicbrainz'?await lookupMusicbrainz(job,{fetcher,contact:c.contact}):await lookupLastfm(job,{fetcher,apiKey:(await credentials(env)).apiKey});checked++;for(const r of records)if(missing.has(r.field)){const saved=await store(env,r,true,c);verified+=saved;if(saved)missing.delete(r.field);}}catch(e){errors++;problem=str(e.message,120);}}
- await db.prepare('UPDATE hive_metadata_jobs SET next_at=? WHERE artist=? AND title=? AND album=?').bind(now+(missing.size?(errors?30*60000:DAY):30*DAY),job.artist,job.title,job.album).run();await set(db,'hive_metadata_last_error',problem);}
- if(verified||imported)await db.prepare('DELETE FROM telemetry_summary_cache').run();const outcome={checked,verified,imported,errors,discovered:discovered.length,at:now};await set(db,'hive_metadata_last_run',JSON.stringify(outcome));return outcome;}
+ const db=env.DB;const cursor=Number(await setting(db,'hive_metadata_discovery_v177'))||0;let discovered=rows(await db.prepare('SELECT seq,artist,title,album FROM telemetry_events WHERE seq>? ORDER BY seq LIMIT 30').bind(cursor).all());let discoveryKey='hive_metadata_discovery_v177';let fromHistory=true;
+ if(!discovered.length){fromHistory=false;discoveryKey='hive_metadata_library_cursor_v177';const position=Number(await setting(db,discoveryKey))||0;try{discovered=rows(await db.prepare('SELECT rowid AS seq,artist,title,album FROM tracks WHERE rowid>? ORDER BY rowid LIMIT 30').bind(position).all());}catch{discovered=[];}}
+ if(discovered.length){const jobs=new Map();for(const e of discovered){for(const [artist,title,album] of [[key(e.artist),'',''],...(key(e.album)?[[key(e.artist),'',key(e.album)]]:[]),...(key(e.title)?[[key(e.artist),key(e.title),key(e.album)]]:[])]){if(!artist)continue;const k=JSON.stringify([artist,title,album]);jobs.set(k,(jobs.get(k)||0)+(fromHistory?1:0));}}
+ const statements=[],items=[...jobs];for(let i=0;i<items.length;i+=20){const chunk=items.slice(i,i+20);statements.push(db.prepare(`INSERT INTO hive_metadata_jobs(artist,title,album,play_priority) VALUES ${chunk.map(()=>'(?,?,?,?)').join(',')} ON CONFLICT(artist,title,album) DO UPDATE SET play_priority=play_priority+excluded.play_priority,next_at=CASE WHEN play_priority=0 AND excluded.play_priority>0 THEN 0 ELSE next_at END`).bind(...chunk.flatMap(([k,n])=>[...JSON.parse(k),n])));}
+ // Advance the cursor atomically with the queue writes so retries cannot inflate priority.
+ statements.push(db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(discoveryKey,String(discovered.at(-1).seq)));await db.batch(statements);}
+ const imported=await pullTrusted(env,c,{fetcher});let verified=0,checked=0,errors=0,processed=0,problem='';
+ const limit=Math.min(c.trustPeers?1:3,[1,2,3].includes(Number(c.batchSize))?Number(c.batchSize):1);const jobs=rows(await db.prepare(`SELECT * FROM hive_metadata_jobs WHERE next_at<=? ORDER BY ${c.prioritizePlayed?'play_priority DESC,':''} CASE WHEN title='' AND album='' THEN 0 WHEN title='' THEN 1 ELSE 2 END,next_at,artist,title,album LIMIT ?`).bind(now,limit).all());
+ const providerLast=new Map(),limited=new Set();
+ for(const job of jobs){if(processed&&Date.now()-now>20000)break;processed++;const album=!job.title&&!!job.album,artist=!job.title&&!album;
+ const needed=album?['release_year']:artist?['country_code','genre']:job.album?['genre']:['genre','release_year'];
+ const existing=rows(await db.prepare('SELECT field FROM hive_metadata WHERE artist=? AND title=? AND album=?').bind(job.artist,job.title,job.album).all());const missing=new Set(needed.filter(f=>!existing.some(e=>e.field===f)));
+ // Factual lookups use MusicBrainz even when Last.fm is preferred, if fallback is allowed.
+ const providers=[c.preferred,...(c.fallback?[c.preferred==='lastfm'?'musicbrainz':'lastfm']:[]),...(c.fallback&&c.wikidata?['wikidata']:[])];
+ let jobError=false;for(const provider of providers){if(!missing.size||limited.has(provider)||!c[provider]||(provider==='lastfm'&&!missing.has('genre'))||(provider==='wikidata'&&(job.title||(!missing.has('release_year')&&!missing.has('country_code')))))continue;
+ try{const elapsed=Date.now()-(providerLast.get(provider)||0);if(providerLast.has(provider)&&elapsed<1100)await new Promise(r=>setTimeout(r,1100-elapsed));providerLast.set(provider,Date.now());let records=provider==='musicbrainz'?await lookupMusicbrainz(job,{fetcher,contact:c.contact}):provider==='wikidata'?await lookupWikidata(job,{fetcher,contact:c.contact}):await lookupLastfm(job,{fetcher,apiKey:(await credentials(env)).apiKey});checked++;for(const r of records)if(missing.has(r.field)){const saved=await store(env,r,true,c);verified+=saved;if(saved)missing.delete(r.field);}}catch(e){errors++;jobError=true;problem=str(e.message,120);if(/rate limited|HTTP 429|error 29/.test(problem)){limited.add(provider);break;}}}
+ await db.prepare('UPDATE hive_metadata_jobs SET next_at=? WHERE artist=? AND title=? AND album=?').bind(now+(missing.size?(jobError?30*60000:DAY):30*DAY),job.artist,job.title,job.album).run();}
+ await set(db,'hive_metadata_last_error',problem);
+ if(verified||imported){await db.prepare('DELETE FROM telemetry_summary_cache').run();await db.prepare("DELETE FROM settings WHERE key='hive_metadata_coverage_v177'").run();}const outcome={checked,processed,verified,imported,errors,discovered:discovered.length,at:now};await set(db,'hive_metadata_last_run',JSON.stringify(outcome));return outcome;}
+// All retained HIVE plays. Same precedence as telemetry overview; one SQL aggregate,
+// cached separately so opening settings repeatedly does not rescan the event ledger.
+export async function metadataCoverage(env){const db=env.DB;let prior;try{prior=JSON.parse(await setting(db,'hive_metadata_coverage_v177')||'null')}catch{}if(prior&&Date.now()-prior.at<300000)return prior;
+ try{const r=await db.prepare(`SELECT COUNT(*) AS total,
+ SUM(CASE WHEN COALESCE(CAST(a.value AS INTEGER),CAST(t.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850 THEN 1 ELSE 0 END) AS years,
+ SUM(CASE WHEN COALESCE(NULLIF(c.value,''),NULLIF(e.country_code,''),g.country_code,'') GLOB '[A-Z][A-Z][A-Z]' THEN 1 ELSE 0 END) AS origins
+ FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON m.track_id=e.track_id
+ LEFT JOIN hive_metadata a ON a.artist=LOWER(TRIM(e.artist)) AND a.title='' AND a.album=LOWER(TRIM(e.album)) AND a.field='release_year' AND e.album<>''
+ LEFT JOIN hive_metadata t ON t.artist=LOWER(TRIM(e.artist)) AND t.title=LOWER(TRIM(e.title)) AND t.album=LOWER(TRIM(e.album)) AND t.field='release_year'
+ LEFT JOIN hive_metadata c ON c.artist=LOWER(TRIM(e.artist)) AND c.title='' AND c.album='' AND c.field='country_code'
+ LEFT JOIN telemetry_artist_metadata g ON LOWER(e.artist)=g.artist_key`).first();const data={total:Number(r?.total||0),years:Number(r?.years||0),origins:Number(r?.origins||0),at:Date.now()};await set(db,'hive_metadata_coverage_v177',JSON.stringify(data));return data;}catch(e){if(/no such table/i.test(String(e.message)))return null;throw e;}}
 export async function metadataAdmin(req,env,url,{fetcher=fetch}={}){
  await ensureMetadataSchema(env);const c=await metadataConfig(env),db=env.DB,action=url.pathname.split('/').at(-1);
  if(req.method==='GET'&&action==='metadata'){
   // Count distinct verified entities, not listening events; no upstream calls.
-  const counts=await db.prepare(`SELECT COALESCE(SUM(fields),0) verified,COALESCE(SUM(CASE WHEN title<>'' THEN 1 ELSE 0 END),0) verifiedTracks,COALESCE(SUM(CASE WHEN title='' THEN 1 ELSE 0 END),0) verifiedArtists FROM (SELECT artist,title,album,COUNT(*) fields FROM hive_metadata GROUP BY artist,title,album)`).first();
-  return json({...c,...await credentialState(env),lastRun:JSON.parse(await setting(db,'hive_metadata_last_run')||'null'),lastError:await setting(db,'hive_metadata_last_error')||'',verified:Number(counts?.verified||0),verifiedTracks:Number(counts?.verifiedTracks||0),verifiedArtists:Number(counts?.verifiedArtists||0)});
+  const counts=await db.prepare(`SELECT COALESCE(SUM(fields),0) verified,COALESCE(SUM(CASE WHEN title<>'' THEN 1 ELSE 0 END),0) verifiedTracks,COALESCE(SUM(CASE WHEN title='' AND album='' THEN 1 ELSE 0 END),0) verifiedArtists,COALESCE(SUM(CASE WHEN title='' AND album<>'' THEN 1 ELSE 0 END),0) verifiedAlbums FROM (SELECT artist,title,album,COUNT(*) fields FROM hive_metadata GROUP BY artist,title,album)`).first();
+  return json({...c,...await credentialState(env),lastRun:JSON.parse(await setting(db,'hive_metadata_last_run')||'null'),lastError:await setting(db,'hive_metadata_last_error')||'',verified:Number(counts?.verified||0),verifiedTracks:Number(counts?.verifiedTracks||0),verifiedArtists:Number(counts?.verifiedArtists||0),verifiedAlbums:Number(counts?.verifiedAlbums||0),coverage:await metadataCoverage(env).catch(()=>null)});
  }
  if(req.method==='PUT'&&action==='metadata'){
   const b=await req.json().catch(()=>null);if(!b||typeof b!=='object'||Array.isArray(b))return json({error:'Invalid settings payload.'},400);
   const next={...c};if(['lastfm','musicbrainz'].includes(b.preferred))next.preferred=b.preferred;
-  for(const k of ['musicbrainz','lastfm','fallback','enabled','trustPeers','shareLastfm'])if(typeof b[k]==='boolean')next[k]=b[k];
+  for(const k of ['musicbrainz','lastfm','fallback','enabled','trustPeers','shareLastfm','wikidata','prioritizePlayed'])if(typeof b[k]==='boolean')next[k]=b[k];
+  if([1,2,3].includes(Number(b.batchSize)))next.batchSize=Number(b.batchSize);
   if([5,10,15,30,60,120].includes(Number(b.minutes)))next.minutes=Number(b.minutes);
   if(typeof b.contact==='string'){next.contact=str(b.contact,160).replace(/[\r\n]/g,'');if(next.contact&&!validContact(next.contact))return json({error:'Use a valid MusicBrainz contact email or URL, or leave it blank.'},400);}
   const newKey=str(b.apiKey),newSecret=str(b.secret),replace=b.replaceCredentials===true;

@@ -198,7 +198,7 @@ async function showHive(){
       </div><div class="panel"><div class="chart-head"><h2>Music by decade</h2><small>Album / track release years</small></div>
         ${decadesChart(data.decades||[],Number(data.plays)||0,Number(data.yearMetadataPlays)||0)}</div></div>
       <div class="info-card section"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div>
-      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources: <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
+      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources: <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>, <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
     void mountWorldMap(request,data.countries||[],data.unknownCountryPlays||0);
   }catch(e){if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
   resized();
