@@ -5,12 +5,12 @@ let instanceCounter=0;
 
 function fixture(){
   const sqlite=new DatabaseSync(':memory:');
-  let worker=null;
+  let worker=null;const queries=[];
   class Query{constructor(sql,args=[]){this.sql=sql;this.args=args}bind(...args){return new Query(this.sql,args)}
     async first(){if(this.sql.includes('SUM(created_at > ?1')){const sql=this.sql.replaceAll('?1','?').replaceAll('?2','?').replaceAll('?3','?');return sqlite.prepare(sql).get(this.args[0],this.args[1],this.args[0],this.args[2])||null;}return sqlite.prepare(this.sql).get(...this.args)||null}
     async all(){return {results:sqlite.prepare(this.sql).all(...this.args)}}
     async run(){const r=sqlite.prepare(this.sql).run(...this.args);return {meta:{changes:r.changes}}}}
-  const DB={prepare:sql=>new Query(sql),batch:async stmts=>{
+  const DB={prepare:sql=>{queries.push(sql);return new Query(sql);},batch:async stmts=>{
     sqlite.exec('BEGIN');try{for(const st of stmts)await st.run();sqlite.exec('COMMIT')}catch(e){sqlite.exec('ROLLBACK');throw e;}
   }};
   const images=new Map();const env={DB,ASSETS:{fetch:async()=>new Response('not found',{status:404})},
@@ -29,7 +29,7 @@ function fixture(){
     sqlite.prepare('INSERT INTO sessions(token,expires,role) VALUES(?,?,?)').run(h,Date.now()+600000,'admin');
     return token;
   };
-  return {sqlite,call,init,images};
+  return {sqlite,call,init,images,queries};
 }
 const playlistId='7LQWEN3CgFCE9Q2gZ5Q7Zv';
 const playlistUrl=`https://open.spotify.com/playlist/${playlistId}`;
@@ -119,4 +119,17 @@ test('legacy 50-track partial requests remain finalizable with admin acknowledge
     assert.equal(done.status,200,JSON.stringify(done.data));
     assert.equal(f.sqlite.prepare('SELECT status FROM requests WHERE id=?').get(id).status,'done');
   }finally{restore();}
+});
+
+// v17.0.5: queue page must use persisted availability and never load catalogues.
+test('admin request queue reads cached availability, legacy items are pending, completion still verifies',async()=>{
+ const restore=mockSpotify({reportedCount:50,visible:50});try{
+ const f=fixture(),token=await f.init();seedSongs(f.sqlite,50);const request=await submit(f);
+ f.queries.length=0;const cached=await f.call('/api/admin/requests','GET',undefined,token);assert.equal(cached.status,200);assert.equal(cached.data[0].matched,50);assert.ok(cached.data[0].availability_checked_at);
+ assert.ok(!f.queries.some(q=>/FROM tracks|peer_catalogue_chunks/i.test(q)),f.queries.join('\n'));
+ const meta=JSON.parse(request.meta);delete meta.matched_missing;delete meta.availability_checked_at;f.sqlite.prepare('UPDATE requests SET meta=? WHERE id=?').run(JSON.stringify(meta),request.id);
+ const legacy=await f.call('/api/admin/requests','GET',undefined,token);assert.equal(legacy.data[0].matched,null);assert.equal(legacy.data[0].missing,null);
+ f.sqlite.prepare('DELETE FROM tracks WHERE id=?').run('local1');
+ const complete=await f.call(`/api/admin/requests/${request.id}/complete`,'POST',undefined,token);assert.equal(complete.status,409);assert.match(complete.data.error,/1 Spotify songs are still missing/);
+ }finally{restore();}
 });

@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=17.0.6">
+<link rel="stylesheet" href="/style.css?v=17.0.5">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -324,46 +324,28 @@
       </div>
       <div id="netTelemetryPanel" class="hidden" role="tabpanel" aria-labelledby="netTabTelemetry">
         <div class="card"><h2>HIVE metadata intelligence</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
-          <form id="metadataForm" class="metadata-form" autocomplete="off">
-            <section class="metadata-section">
-              <h3>Preferred metadata provider</h3>
-              <label class="metadata-check"><input type="radio" name="metadata-preference" value="musicbrainz" checked><span>Prioritize MusicBrainz</span></label>
-              <label class="metadata-check"><input type="radio" name="metadata-preference" value="lastfm"><span>Prioritize Last.fm</span></label>
-            </section>
-            <section class="metadata-section">
-              <h3 class="metadata-lastfm">Last.fm</h3><p class="muted">Genres and tags. The shared secret is optional for read-only lookups.</p>
-              <label class="metadata-check"><input type="checkbox" id="metadataLastfm"><span>Enable Last.fm</span></label>
-              <label class="metadata-field">API key<input id="metadataKey" type="password" autocomplete="new-password" placeholder="Enter Last.fm API key" maxlength="200"></label>
-              <label class="metadata-field">Shared secret (optional)<input id="metadataSecret" type="password" autocomplete="new-password" placeholder="Blank keeps saved value" maxlength="200"></label>
-              <p class="muted" id="metadataCredentialState" role="status"></p>
-              <label id="metadataReplaceRow" class="metadata-check hidden"><input type="checkbox" id="metadataReplace"><span>Replace unreadable saved credentials with the entered API key and optional secret</span></label>
-              <div class="metadata-actions"><button type="button" class="btn ghost" data-metadata-test="lastfm">Test Last.fm</button><span id="metadataLastfmStatus" class="metadata-provider-status" role="status"></span></div>
-            </section>
-            <section class="metadata-section">
-              <h3 class="metadata-mb">MusicBrainz</h3><p class="muted">Public lookups for recording release dates and artist origin. A valid contact identifies your installation.</p>
-              <label class="metadata-check"><input type="checkbox" id="metadataMusicbrainz"><span>Enable MusicBrainz</span></label>
-              <label class="metadata-field">Administrator contact email or URL<input id="metadataContact" type="text" maxlength="160" placeholder="admin@example.com" autocomplete="off"></label>
-              <div class="metadata-actions"><button type="button" class="btn ghost" data-metadata-test="musicbrainz">Test MusicBrainz</button><span id="metadataMusicbrainzStatus" class="metadata-provider-status" role="status"></span></div>
-            </section>
-            <section class="metadata-section">
-              <h3>Verification and sharing</h3>
-              <label class="metadata-check"><input type="checkbox" id="metadataEnabled"><span>Enable scheduled metadata enrichment</span></label>
-              <label class="metadata-check"><input type="checkbox" id="metadataFallback"><span>Use the other enabled provider for missing fields</span></label>
-              <label class="metadata-check"><input type="checkbox" id="metadataTrust"><span>Trust verified metadata from administrator-connected peers (not community peers)</span></label>
-              <label class="metadata-check"><input type="checkbox" id="metadataShareLastfm"><span>I have Last.fm redistribution permission; allow Last.fm metadata exchange</span></label>
-              <p class="muted">Leave Last.fm sharing off unless permitted by your agreement. Trusted peer data is reused locally and is not re-exported as locally verified.</p>
-              <label class="metadata-field">Synchronization interval<select id="metadataMinutes"><option value="5">Every 5 minutes</option><option value="10">Every 10 minutes</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="120">Every 2 hours</option></select></label>
-              <div class="metadata-actions"><button class="btn" type="submit">Save settings</button><button class="btn ghost" type="button" id="metadataRun">Run batch now</button></div>
-              <p class="muted">Test entered or saved values. Enrichment uses saved settings only.</p>
-              <p id="metadataStatus" class="msg" role="status" aria-live="polite"></p>
-              <div id="metadataProgressWrap" class="metadata-progress hidden"><label for="metadataProgress">Current batch</label><progress id="metadataProgress" max="100"></progress><span id="metadataProgressText" class="muted"></span></div>
-            </section>
-            <section class="metadata-section">
-              <h3>Verified metadata</h3>
-              <div class="metadata-metrics"><div><strong id="metadataVerifiedTracks">—</strong><span>Tracks with verified fields</span></div><div><strong id="metadataVerifiedArtists">—</strong><span>Artists with verified fields</span></div><div><strong id="metadataVerifiedFields">—</strong><span>Verified fields</span></div></div>
-              <p id="metadataStats" class="muted"></p><p id="metadataLastError" class="msg err" role="status"></p>
-              <p class="muted">Sources: <a href="https://www.last.fm/api" target="_blank" rel="noopener">Last.fm</a> · <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>. Unknown or ambiguous fields remain unknown.</p>
-            </section>
+          <form id="metadataForm" autocomplete="off">
+            <label>Preferred provider <select id="metadataPreferred"><option value="musicbrainz">MusicBrainz</option><option value="lastfm">Last.fm</option></select></label>
+            <h3>Last.fm</h3><p class="muted">Use Last.fm for genres and tags. The shared secret is optional and not used for read-only lookups.</p>
+            <label class="check"><input type="checkbox" id="metadataLastfm"> Enable Last.fm</label>
+            <label>API key <input id="metadataKey" type="password" autocomplete="new-password" placeholder="Enter key; blank keeps saved value"></label>
+            <label>Shared secret (optional) <input id="metadataSecret" type="password" autocomplete="new-password" placeholder="Blank keeps saved value"></label>
+            <p class="muted" id="metadataCredentialState"></p>
+            <div class="form"><button type="button" class="btn ghost" data-metadata-test="lastfm">Test saved Last.fm credentials</button></div>
+            <h3>MusicBrainz</h3><p class="muted">Keyless public lookups for recording release dates and artist origin. Provide a valid contact email or URL for the required application identification.</p>
+            <label class="check"><input type="checkbox" id="metadataMusicbrainz"> Enable MusicBrainz</label>
+            <label>Contact email or URL <input id="metadataContact" maxlength="160" placeholder="admin@example.com"></label>
+            <div class="form"><button type="button" class="btn ghost" data-metadata-test="musicbrainz">Test MusicBrainz</button></div>
+            <h3>Verification and sharing</h3>
+            <label class="check"><input type="checkbox" id="metadataEnabled"> Enable scheduled metadata enrichment</label>
+            <label class="check"><input type="checkbox" id="metadataFallback"> Use the other enabled provider for missing fields</label>
+            <label class="check"><input type="checkbox" id="metadataTrust"> Trust verified metadata from administrator-connected peers (not community peers)</label>
+            <label class="check"><input type="checkbox" id="metadataShareLastfm"> I have Last.fm redistribution permission; allow Last.fm metadata exchange</label>
+            <p class="muted">Leave Last.fm sharing off unless permitted by your agreement. Trusted peer data is reused locally and is not re-exported as locally verified.</p>
+            <label>Run interval <select id="metadataMinutes"><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option></select></label>
+            <div class="form"><button class="btn" type="submit">Save settings</button><button class="btn ghost" type="button" id="metadataRun">Run batch now</button></div>
+            <p id="metadataStatus" class="msg" role="status" aria-live="polite"></p><p id="metadataStats" class="muted"></p>
+            <p class="muted">Sources: <a href="https://www.last.fm/api" target="_blank" rel="noopener">Last.fm</a> · <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>. Unknown or ambiguous fields remain unknown.</p>
           </form>
         </div>
       </div>
@@ -460,6 +442,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=17.0.6"></script>
+<script type="module" src="/admin.js?v=17.0.5"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 // WASP v17 HIVE telemetry: independent, anonymous confirmed-play ledger.
 // No user IDs, visitor IDs, addresses, tokens, or session IDs are transmitted.
 // Source identity is preserved through intermediate peers to prevent re-counting loops.
+import {ensureMetadataSchema} from './hive-metadata.js';
 import {requireNoRedirect} from './peer-fetch.js';
 const MINUTE = 60_000;
 const MAX_BATCH = 200;
@@ -130,11 +131,12 @@ function scopeSql(scope,localId){
 
 export async function telemetrySummary(env,url) {
   await ensureTelemetrySchema(env);
+  await ensureMetadataSchema(env);
   const db=env.DB;
   const d=readDateWindow(url.searchParams),scope=url.searchParams.get('scope')||'hive';
   const local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   const f=scopeSql(scope,local);
-  const key=`v17.1:${scope}:${d.start}:${d.end}:${d.offset}`;
+  const key=`v17.5:${scope}:${d.start}:${d.end}:${d.offset}`;
   const cached=await db.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
   if(cached?.body) {try {return JSON.parse(cached.body);} catch { /* rebuild */ }}
   const clause=`played_at>=? AND played_at<?${f.where}`;
@@ -145,11 +147,11 @@ export async function telemetrySummary(env,url) {
     COUNT(DISTINCT (LOWER(album)||'~'||LOWER(artist))) AS albums,
     SUM(CASE WHEN duration>0 THEN duration ELSE 0 END) AS indexed_duration
     FROM telemetry_events WHERE ${clause}`).bind(...bind).first();
-  const topArtists=await q(`SELECT artist AS name,COUNT(*) AS plays FROM telemetry_events WHERE ${clause} AND artist<>''
+  const topArtists=await q(`SELECT artist AS name,COUNT(*) AS plays, MIN(origin_id) AS origin_id FROM telemetry_events WHERE ${clause} AND artist<>''
     GROUP BY LOWER(artist) ORDER BY plays DESC,name LIMIT 10`);
-  const topAlbums=await q(`SELECT album AS name,artist,COUNT(*) AS plays FROM telemetry_events WHERE ${clause} AND album<>''
+  const topAlbums=await q(`SELECT album AS name,artist,COUNT(*) AS plays, MIN(origin_id) AS origin_id FROM telemetry_events WHERE ${clause} AND album<>''
     GROUP BY LOWER(album),LOWER(artist) ORDER BY plays DESC,name LIMIT 10`);
-  const topTracks=await q(`SELECT title AS name,artist,album,COUNT(*) AS plays FROM telemetry_events WHERE ${clause}
+  const topTracks=await q(`SELECT title AS name,artist,album,COUNT(*) AS plays, MIN(origin_id) AS origin_id FROM telemetry_events WHERE ${clause}
     AND title<>'' GROUP BY LOWER(title),LOWER(artist) ORDER BY plays DESC,name LIMIT 10`);
   const shifted='(played_at + '+d.offsetMs+')';
   const unit=d.mode==='week'||d.mode==='month'||d.month?'%Y-%m-%d':'%Y-%m';
@@ -177,8 +179,8 @@ export async function telemetrySummary(env,url) {
   const periodUnit=d.mode==='year'&&!d.month?'%Y-%m':'%Y-%m-%d';
   const genreSource=await q(`SELECT LOWER(e.artist) AS artist_key,
     strftime('${periodUnit}',(e.played_at+${d.offsetMs})/1000,'unixepoch') AS bucket,
-    COUNT(*) AS plays, COALESCE(NULLIF(e.genre,''),NULLIF(m.genre,''),'') AS event_genre
-    FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON m.track_id=e.track_id
+    COUNT(*) AS plays, COALESCE(NULLIF(verified.value,''),NULLIF(e.genre,''),NULLIF(m.genre,''),'') AS event_genre
+    FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON m.track_id=e.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='genre'
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
       AND e.artist<>'' GROUP BY artist_key,bucket,event_genre ORDER BY plays DESC LIMIT 2400`);
   const artistInfo=await db.prepare("SELECT name, genres FROM artist_info WHERE genres IS NOT NULL AND genres!='[]'").all().then(toRows).catch(()=>[]);
@@ -188,9 +190,11 @@ export async function telemetrySummary(env,url) {
       knownGenres.set(normTag(row.name),[...new Set(parsed.map(normTag).filter(Boolean))].slice(0,3));}
     catch { /* ignore malformed artist records */ }
   }
+  const verifiedArtistGenres=await db.prepare("SELECT artist,value FROM hive_metadata WHERE title='' AND album='' AND field='genre'").all().then(toRows);
+  for(const r of verifiedArtistGenres)knownGenres.set(normTag(r.artist),[normTag(r.value)]);
   const tagByMonth=new Map(),tagCounts=new Map();
   for(const row of genreSource){
-    const genres=knownGenres.get(normTag(row.artist_key))||[normTag(row.event_genre)].filter(Boolean);
+    const genres=row.event_genre?[normTag(row.event_genre)]:(knownGenres.get(normTag(row.artist_key))||[]);
     for(const genre of genres){
       const plays=Number(row.plays)||0;
       tagCounts.set(genre,(tagCounts.get(genre)||0)+plays);
@@ -202,25 +206,25 @@ export async function telemetrySummary(env,url) {
     periods:[...(tagByMonth.get(name)||new Map())].map(([label,plays])=>({label,plays})).sort((a,b)=>a.label.localeCompare(b.label))}));
   // Release years are taken from explicit event metadata, or known local ID3 tags.
   // No year is inferred from a song name, upload date, or guessed artist era.
-  const decades=await q(`SELECT CAST(COALESCE(NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
+  const decades=await q(`SELECT CAST(COALESCE(CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
        COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists,
        COUNT(DISTINCT LOWER(e.album)||'~'||LOWER(e.artist)) AS albums,
        COUNT(DISTINCT LOWER(e.title)||'~'||LOWER(e.artist)) AS tracks
-     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id
+     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year'
      WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-       AND COALESCE(NULLIF(e.release_year,0),m.release_year,0)>=1850
+       AND COALESCE(CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850
      GROUP BY decade ORDER BY decade`);
-  const decadesTop=await q(`SELECT CAST(COALESCE(NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
+  const decadesTop=await q(`SELECT CAST(COALESCE(CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
     e.album AS album,e.artist AS artist,COUNT(*) AS plays FROM telemetry_events e
-    LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id
+    LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year'
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-    AND COALESCE(NULLIF(e.release_year,0),m.release_year,0)>=1850 AND e.album<>''
+    AND COALESCE(CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850 AND e.album<>''
     GROUP BY decade,LOWER(e.album),LOWER(e.artist) ORDER BY plays DESC LIMIT 250`);
   for(const drow of decades){const best=decadesTop.find(r=>Number(r.decade)===Number(drow.decade));
     drow.topAlbum=best?.album||'';drow.topArtist=best?.artist||'';}
-  const countries=await q(`SELECT COALESCE(NULLIF(e.country_code,''),a.country_code,'') AS code,
+  const countries=await q(`SELECT COALESCE(NULLIF(verified.value,''),NULLIF(e.country_code,''),a.country_code,'') AS code,
     COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists
-    FROM telemetry_events e LEFT JOIN telemetry_artist_metadata a ON LOWER(e.artist)=a.artist_key
+    FROM telemetry_events e LEFT JOIN telemetry_artist_metadata a ON LOWER(e.artist)=a.artist_key LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title='' AND verified.album='' AND verified.field='country_code'
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
     GROUP BY code ORDER BY plays DESC LIMIT 180`);
   const verifiedCountries=countries.filter(r=>/^[A-Z]{3}$/.test(r.code));
@@ -229,13 +233,14 @@ export async function telemetrySummary(env,url) {
   const topTagKnown=genreSource.filter(r=>knownGenres.has(normTag(r.artist_key))||r.event_genre).reduce((sum,r)=>sum+Number(r.plays||0),0);
   const sourceRow=await db.prepare(`SELECT COUNT(DISTINCT origin_id) AS nodes FROM telemetry_events WHERE ${clause}`).bind(...bind).first();
   const checked=await db.prepare('SELECT MAX(synced_at) AS updated,COUNT(*) AS peers FROM telemetry_peer_cursors WHERE synced_at>0').first();
-  const output={period:d.mode,year:d.year,month:d.month,start:d.start,end:d.end,scope,
+  const artworkOrigins=await db.prepare('SELECT node_id,url FROM telemetry_peer_cursors WHERE synced_at>0 LIMIT 60').all().then(toRows);
+  const output={artworkOrigins,period:d.mode,year:d.year,month:d.month,start:d.start,end:d.end,scope,
     plays:Number(totalRow?.plays||0),previousPlays:Number(previous?.plays||0),
     artists:Number(totalRow?.artists||0),tracks:Number(totalRow?.tracks||0),albums:Number(totalRow?.albums||0),
     // Catalogued song duration is not playback duration. Do not claim listening hours.
     indexedDuration:Number(totalRow?.indexed_duration||0),
     topArtists,topAlbums,topTracks,series,weekdays,hours,
-    topTags,taggedPlays:topTagKnown,decades,countries:verifiedCountries,
+    topTags,taggedPlays:topTagKnown,metadataAttribution:['MusicBrainz','Last.fm'],decades,countries:verifiedCountries,
     yearMetadataPlays:yearsKnown,unknownCountryPlays,
     activeDays:daily.length,longestStreak,mostActiveDay:mostActive?.day||null,
     mostActiveDayPlays:Number(mostActive?.plays||0),busiestHour:busiestHour?Number(busiestHour.hour):null,

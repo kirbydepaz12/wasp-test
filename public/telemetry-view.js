@@ -21,18 +21,27 @@ function showTooltip(e,content){
 
 function tell(type,extra={}){if(window.parent!==window)window.parent.postMessage({type,...extra},location.origin);}
 const int=(v,min,max)=>Math.max(min,Math.min(max,Number(v)||min));
-const cover=(src,alt)=>src?`<img loading="lazy" class="cover" src="${safe(src)}" alt="${safe(alt)}" onerror="this.style.display='none'">`:'<span class="cover empty">♫</span>';
+const cover=(src,alt,origin='')=>src?`<img loading="lazy" class="cover telemetry-art" src="${safe(src)}" data-art="${safe(src)}" data-origin="${safe(origin)}" alt="${safe(alt)}">`:'<span class="cover empty">♫</span>';
 function artUrl(r,type){
   if(type==='artists')return '/art/artist?name='+encodeURIComponent(r.name||'');
   return '/art/album?artist='+encodeURIComponent(r.artist||'')+'&album='+encodeURIComponent(r.album||r.name||'');
 }
+let artPeersPromise=null,artOrigins=[];
+function getArtPeers(){return artPeersPromise||(artPeersPromise=fetch('/api/network/peers',{cache:'no-store'}).then(r=>r.ok?r.json():[]).then(rows=>Array.isArray(rows)?rows:[]).catch(()=>[]));}
+root.addEventListener('error',async e=>{const img=e.target;if(!img.classList?.contains('telemetry-art'))return;
+ if(img.dataset.busy==='1')return;img.dataset.busy='1';const peers=await getArtPeers();if(!img.isConnected)return;
+ const source=artOrigins.find(x=>x.node_id===img.dataset.origin)?.url;
+ const sorted=[...peers].filter(p=>p.online!==false&&p.url).sort((a,b)=>Number(b.url===source)-Number(a.url===source));
+ const i=Number(img.dataset.attempt)||0;const bases=sorted.map(p=>p.relay_base||p.url).filter(b=>b&&(/^\/_peer\/[\w-]+$/.test(b)||/^https:\/\//.test(b)));const base=bases[i];
+ img.dataset.attempt=String(i+1);img.dataset.busy='0';if(base&&i<3){img.src=base.replace(/\/$/,'')+img.dataset.art;}else {const placeholder=document.createElement('span');placeholder.className='cover empty';placeholder.textContent='♫';img.replaceWith(placeholder);}
+},true);
 function rankList(rows,type){
   const noun=type==='artists'?'artist':type==='albums'?'album':'track';
   return `<div class="ranking-card"><h3>Top ${safe(type)}</h3>${rows?.length?rows.map((r,i)=>{
     const target=type==='artists'?'#artist/'+encodeURIComponent(r.name):
       type==='albums'?'#album/'+encodeURIComponent(r.artist||'')+'/'+encodeURIComponent(r.name):'';
     return `<button class="rank-row" type="button" ${target?`data-href="${safe(target)}"`:'data-noaction="true"'}>
-      <span class="position">${i+1}</span>${cover(artUrl(r,type),r.name)}<span class="song-info"><b>${safe(r.name)}</b><small>${safe(type==='artists'?'Artist':r.artist||noun)}</small></span>
+      <span class="position">${i+1}</span>${cover(artUrl(r,type),r.name,r.origin_id)}<span class="song-info"><b>${safe(r.name)}</b><small>${safe(type==='artists'?'Artist':r.artist||noun)}</small></span>
       <span class="count">${n(r.plays)}</span></button>`;
   }).join(''):'<p class="message">No confirmed listens yet.</p>'}</div>`;
 }
@@ -97,17 +106,18 @@ function tagStream(tags,series){
      <p class="note">Tags can overlap: a play may count toward more than one genre. Labels come from available artist or track metadata.</p></div>`;
 }
 function decadesChart(rows,total,yearMetadataPlays){
-  const decades=rows||[];
-  if(!decades.length)return `<p class="message">No verified release-year metadata yet. Future indexed tracks will use their ID3 release year; unknown years are never estimated.</p>`;
+  const raw=rows||[];
+  if(!raw.length)return `<p class="message">No verified release-year metadata yet. Enable metadata enrichment in Admin → Network → Telemetry. Unknown years are never estimated.</p>`;
+  const early=raw.filter(r=>Number(r.decade)<1960);const decades=[{decade:1950,plays:early.reduce((n,r)=>n+Number(r.plays||0),0),topAlbum:early.sort((a,b)=>b.plays-a.plays)[0]?.topAlbum||'',topArtist:early[0]?.topArtist||''},...Array.from({length:Math.max(7,Math.floor(new Date().getFullYear()/10)-196)},(_,i)=>raw.find(r=>Number(r.decade)===1960+i*10)||{decade:1960+i*10,plays:0})];
   const max=Math.max(1,...decades.map(r=>Number(r.plays)||0));
   const bars=decades.map(r=>{
     const d=Number(r.decade),label=d<1960?'Pre-1960':`${d}s`,plays=Number(r.plays)||0;
     const pct=total?100*plays/total:0;
     const details=[`${label}: ${n(plays)} plays (${pct.toFixed(1)}%)`,`${n(r.artists)} artists, ${n(r.albums)} albums, ${n(r.tracks)} tracks`,r.topAlbum?`Top album: ${r.topAlbum} · ${r.topArtist}`:''].filter(Boolean).join(' · ');
-    return `<div class="decade-row" tabindex="0" data-tip="${safe(details)}"><span>${safe(label)}</span><div class="decade-track"><div class="decade-fill" style="width:${Math.max(1,100*plays/max)}%"></div></div><b>${n(plays)}</b><small>${pct.toFixed(1)}%</small></div>`;
+    return `<div class="decade-row" tabindex="0" data-tip="${safe(details)}"><span>${safe(label)}</span><div class="decade-track"><div class="decade-fill${plays===max?' best':''}" style="width:${Math.max(0,100*plays/max)}%"></div></div><b>${n(plays)}</b><small>${pct.toFixed(1)}%</small></div>`;
   }).join('');
   const best=[...decades].sort((a,b)=>Number(b.plays)-Number(a.plays))[0];
-  return `<div class="decades-chart">${bars}<div class="decade-summary"><b>Most played era: ${Number(best.decade)}s</b><small>${best.topAlbum?`Top album: ${safe(best.topAlbum)} · ${safe(best.topArtist)}`:'Decade with the most confirmed plays'}</small></div>
+  return `<div class="decades-chart">${bars}<div class="decade-summary"><b>${best.decade<1960?'Pre-1960':Number(best.decade)+'s'} · Most played era</b>${best.topAlbum?cover(artUrl({name:best.topAlbum,artist:best.topArtist},'albums'),best.topAlbum):''}<small>${best.topAlbum?`Top album: ${safe(best.topAlbum)} · ${safe(best.topArtist)}`:'Decade with the most confirmed plays'}</small></div>
   <p class="note">${n(yearMetadataPlays)} of ${n(total)} plays have verified release-year metadata. Unknown years are excluded.</p></div>`;
 }
 let worldPromise=null;
@@ -158,6 +168,7 @@ async function showHive(){
     const response=await fetch('/api/telemetry?'+params,{cache:'no-store'});
     const data=await response.json();
     if(request!==state.request)return;
+    artOrigins=Array.isArray(data.artworkOrigins)?data.artworkOrigins:[];
     if(!response.ok)throw Error(data.error||'Statistics are temporarily unavailable');
     const growth=data.previousPlays>0?`${Math.round((data.plays-data.previousPlays)*100/data.previousPlays)}% vs previous period`:'No comparable previous period';
     root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">${safe(syncLabel(data))}</span></div>
@@ -187,7 +198,7 @@ async function showHive(){
       </div><div class="panel"><div class="chart-head"><h2>Music by decade</h2><small>Album / track release years</small></div>
         ${decadesChart(data.decades||[],Number(data.plays)||0,Number(data.yearMetadataPlays)||0)}</div></div>
       <div class="info-card section"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div>
-      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs.</p>`;
+      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources: <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
     void mountWorldMap(request,data.countries||[],data.unknownCountryPlays||0);
   }catch(e){if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
   resized();

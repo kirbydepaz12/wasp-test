@@ -52,3 +52,6 @@
 @media(max-width:720px){.clock-wrap svg{width:min(100%,290px)}.clock-caption{max-width:none;text-align:center}.tag-legend{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:380px){.decade-row{grid-template-columns:52px minmax(20px,1fr) 44px 38px;gap:4px;font-size:10px}.decade-row b{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.genre-layer,.tag-key,.map-country,.clock-sector,.decade-fill,.bar-slot .bar{transition:none!important}}
+
+/* v17.0.5 segmented listening-era graph */
+.decade-track{height:22px;border-radius:0;background:#292b2a}.decade-fill{border-radius:0;min-width:0;background:repeating-linear-gradient(90deg,#4b8276 0px,#4b8276 4px,#242725 4px,#242725 5px)}.decade-fill.best{background:repeating-linear-gradient(90deg,#a5e96c 0px,#a5e96c 4px,#242725 4px,#242725 5px)}.decade-summary .cover{width:48px;height:48px}.history-note a{color:var(--accent)}

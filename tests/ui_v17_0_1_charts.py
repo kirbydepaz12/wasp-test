@@ -25,17 +25,17 @@ with sync_playwright() as p:
  page.locator('.clock-sector').first.wait_for();page.locator('.map-country').first.wait_for()
  assert page.locator('.clock-sector').count()==24
  assert page.locator('.genre-layer').count()==2
- assert page.locator('.decade-row').count()==2
+ assert page.locator('.decade-row').count()>=8
  assert page.locator('.map-country').count()>100
  page.locator('.clock-sector.has-plays').last.hover();assert 'confirmed plays' in page.locator('.telemetry-tooltip').inner_text()
  page.locator('.tag-key').first.hover();assert page.locator('.genre-layer.highlighted').count()==1
  assert page.locator('.genre-layer.dimmed').count()==1
  page.locator('.bar-slot').first.hover();assert 'confirmed plays' in page.locator('.telemetry-tooltip').inner_text()
- page.locator('.decade-row').first.hover();assert 'Top album' in page.locator('.telemetry-tooltip').inner_text()
+ page.locator('.decade-row').filter(has_text='2000s').hover();assert 'Top album' in page.locator('.telemetry-tooltip').inner_text()
  page.locator('.map-country.active').first.hover();assert 'confirmed plays' in page.locator('.telemetry-tooltip').inner_text()
  page.mouse.move(5,5)
- page.screenshot(path='/mnt/data/WASP-v17.0.1-telemetry-desktop-preview.png',full_page=True)
- page.set_viewport_size({'width':395,'height':820});page.screenshot(path='/mnt/data/WASP-v17.0.1-telemetry-mobile-preview.png',full_page=True)
+ page.screenshot(path='/mnt/data/WASP-v17.0.5-telemetry-desktop-preview.png',full_page=True)
+ page.set_viewport_size({'width':395,'height':820});page.screenshot(path='/mnt/data/WASP-v17.0.5-telemetry-mobile-preview.png',full_page=True)
  assert not errors,errors
  browser.close()
 print('PASS v17.0.1: radial clock, genre stream highlight, history counts, country heatmap, decades and responsive layout')
