@@ -10,14 +10,14 @@ function fixture(){
  const env={DB:{prepare:q=>new S(q),batch:async ss=>{sql.exec('BEGIN');try{const out=[];for(const s of ss)out.push(await s.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e}}},METADATA_SETTINGS_KEY:'example-test-installation-key-with-length'};
  const set=(k,v)=>sql.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(k,String(v));
  const reset=()=>set('hive_metadata_next',0);
- const admin=(method,body,action='')=>{const u=new URL('https://example.invalid/api/admin/telemetry/metadata'+action);return metadataAdmin(new Request(u,{method,...(body?{headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{})}),env,u)};
+ const admin=(method,body,action='',options={})=>{const u=new URL('https://example.invalid/api/admin/telemetry/metadata'+action);return metadataAdmin(new Request(u,{method,...(body?{headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{})}),env,u,options)};
  return {sql,env,set,reset,admin};
 }
 const record={id:'sample-listen-unique',artist:'Sample Band',title:'Sample Song',album:'Sample Record',played_at:stamp};
 const mbArtist={id:artistId,score:100,name:'Sample Band',country:'PH',tags:[{name:'rock'}]};
 const mbTrack={id:recordingId,score:100,title:'Sample Song','artist-credit':[{name:'Sample Band'}],releases:[{title:'Sample Record'}],'first-release-date':'2003-04-01',tags:[{name:'rock'}]};
 const lastfm=(artist=true)=>artist?{artist:{name:'Sample Band',url:'https://www.last.fm/music/Sample+Band',tags:{tag:[{name:'alternative rock'}]}}}:{track:{name:'Sample Song',artist:{name:'Sample Band'},album:{title:'Sample Record'},url:'https://www.last.fm/music/Sample+Band/_/Sample+Song',toptags:{tag:[{name:'alternative rock'}]}}};
-function mock(calls){return async(input,options)=>{const u=new URL(input);assert.equal(options.redirect,'manual');calls.push({host:u.hostname,path:u.pathname,method:u.searchParams.get('method')});if(u.hostname==='musicbrainz.org'){assert.match(options.headers['User-Agent'],/WASP\/17\.0\.5/);return Response.json(u.pathname.includes('/artist/')?{artists:[mbArtist]}:{recordings:[mbTrack]})}if(u.hostname==='ws.audioscrobbler.com')return Response.json(lastfm(u.searchParams.get('method').startsWith('artist')));throw Error('unexpected upstream')}}
+function mock(calls){return async(input,options)=>{const u=new URL(input);assert.equal(options.redirect,'manual');calls.push({host:u.hostname,path:u.pathname,method:u.searchParams.get('method')});if(u.hostname==='musicbrainz.org'){assert.match(options.headers['User-Agent'],/WASP\/17\.0\.6/);return Response.json(u.pathname.includes('/artist/')?{artists:[mbArtist]}:{recordings:[mbTrack]})}if(u.hostname==='ws.audioscrobbler.com')return Response.json(lastfm(u.searchParams.get('method').startsWith('artist')));throw Error('unexpected upstream')}}
 
 test('MusicBrainz verifies release and country, rejects ambiguous exact matches',async()=>{
  const result=await lookupMusicbrainz(record,{contact:'admin@example.invalid',fetcher:async()=>Response.json({recordings:[mbTrack]})});assert.equal(result.find(x=>x.field==='release_year').value,'2003');
@@ -51,4 +51,25 @@ test('trusted direct peer verification is reused and not relayed as local valida
  const result=await runMetadata(f.env,{force:true,fetcher});assert.equal(result.imported,2);assert.equal(calls.length,1);assert.match(calls[0],/metadata\/feed/);
  const summary=await telemetrySummary(f.env,new URL('https://example.invalid/api/telemetry?period=all'));assert.equal(summary.plays,1);assert.equal(summary.decades[0].decade,2000);assert.equal(summary.countries[0].code,'PHL');
  const feed=await(await metadataFeed(f.env,new URL('https://example.invalid/api/telemetry/metadata/feed'))).json();assert.equal(feed.entries.length,0);
+});
+
+test('metadata hotfix accepts runtime credentials, keeps old encryption fallback and supports explicit replacement',async()=>{
+ const f=fixture();const old=f.env.METADATA_SETTINGS_KEY;delete f.env.METADATA_SETTINGS_KEY;f.env.SCANNER_SECRET=old;f.env.LASTFM_API_KEY='runtime-fixture-key';
+ let d=await(await f.admin('GET')).json();assert.equal(d.credentialSource,'runtime');assert.equal(d.apiKeyConfigured,true);assert.ok(!JSON.stringify(d).includes('runtime-fixture-key'));
+ d=await(await f.admin('PUT',{lastfm:true,apiKey:'saved-fixture-key',secret:'fixture-secret'})).json();assert.equal(d.credentialSource,'saved');assert.equal(d.apiKeyConfigured,true);
+ f.env.METADATA_SETTINGS_KEY='new-dedicated-fixture-secret-long-enough';d=await(await f.admin('GET')).json();assert.equal(d.legacyKey,true);assert.equal(d.apiKeyConfigured,true);
+ assert.equal((await f.admin('PUT',{apiKey:'replacement-fixture-key'})).status,200);delete f.env.SCANNER_SECRET;d=await(await f.admin('GET')).json();assert.equal(d.legacyKey,false);assert.equal(d.secretConfigured,true);
+ f.env.METADATA_SETTINGS_KEY='different-fixture-key-with-length';d=await(await f.admin('GET')).json();assert.equal(d.apiKeyConfigured,false);assert.match(d.credentialError,/cannot be decrypted/);
+ const before=f.sql.prepare("SELECT value FROM settings WHERE key='hive_lastfm_encrypted'").get().value;
+ assert.equal((await f.admin('PUT',{apiKey:'new-key'})).status,409);assert.equal(f.sql.prepare("SELECT value FROM settings WHERE key='hive_lastfm_encrypted'").get().value,before);
+ assert.equal((await f.admin('PUT',{apiKey:'new-key',replaceCredentials:true})).status,200);d=await(await f.admin('GET')).json();assert.equal(d.apiKeyConfigured,true);assert.equal(d.secretConfigured,false);
+});
+test('provider tests accept entered values without saving and return useful non-JSON errors',async()=>{
+ const f=fixture();let calls=0;const fetcher=async(input,options)=>{calls++;const u=new URL(input);assert.equal(options.redirect,'manual');if(u.hostname==='musicbrainz.org'){assert.match(options.headers['User-Agent'],/contact@example.invalid/);return Response.json({artists:[]})}assert.equal(u.searchParams.get('api_key'),'entered-fixture-key');return Response.json({artist:{name:'Cher',tags:{tag:[]}}})};
+ let d=await(await f.admin('POST',{provider:'lastfm',apiKey:'entered-fixture-key'},'/test',{fetcher})).json();assert.equal(d.source,'entered');assert.equal(d.ok,true);assert.equal((await(await f.admin('GET')).json()).apiKeyConfigured,false);
+ d=await(await f.admin('POST',{provider:'musicbrainz',contact:'contact@example.invalid'},'/test',{fetcher})).json();assert.equal(d.ok,true);assert.equal(d.source,'entered');assert.equal((await(await f.admin('GET')).json()).contact,'');assert.equal(calls,2);
+ f.set('hive_metadata_test_next_lastfm',0);const r=await f.admin('POST',{provider:'lastfm',apiKey:'entered-fixture-key'},'/test',{fetcher:async()=>new Response('<!DOCTYPE html>error',{status:200})});assert.equal(r.status,502);assert.match((await r.json()).error,/non-JSON response/);
+});
+test('admin counters report distinct track and artist cache entities, not listening events',async()=>{
+ const f=fixture();await ensureMetadataSchema(f.env);const add=f.sql.prepare("INSERT INTO hive_metadata(artist,title,album,field,value,provider,verified_at) VALUES(?,?,?,?,?,'musicbrainz',1)");add.run('band','song','album','genre','rock');add.run('band','song','album','release_year','2003');add.run('band','','','country_code','PHL');const d=await(await f.admin('GET')).json();assert.equal(d.verified,3);assert.equal(d.verifiedTracks,1);assert.equal(d.verifiedArtists,1);
 });
