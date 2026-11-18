@@ -216,3 +216,7 @@ To change the folder later, update the stack's `MUSIC_FOLDER` environment variab
 ---
 
 **Before sharing your library with anyone:** sign in, change the default administrator password, and only then enable **Admin → Network → Share this library on the network**. Keep your server and credentials secure.
+
+### HIVE music metadata (optional)
+
+Under Admin → Network → Telemetry, configure Last.fm and/or MusicBrainz, choose the preferred provider, then opt in to scheduled enrichment. See [v17.0.6 credential setup and integration hotfix](docs/V17-0-6-METADATA-INTEGRATION-HOTFIX.md) and [v17.0.5 metadata setup and provider permissions](docs/V17-0-5-HIVE-METADATA-RESOURCE-OPTIMIZATION.md). Metadata is gathered incrementally; existing listening totals and music playback remain separate from the enrichment job.

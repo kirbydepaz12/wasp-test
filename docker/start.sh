@@ -12,13 +12,9 @@ if [ -z "${SCANNER_SECRET:-}" ]; then
   SCANNER_SECRET=$(cat "$SECRET_FILE")
 fi
 export SCANNER_SECRET
-# Supply optional Spotify credentials to Wrangler's local Worker bindings without
-# putting secrets in process arguments, the Docker image, or Git.
-if [ -n "${SPOTIFY_CLIENT_ID:-}" ] && [ -n "${SPOTIFY_CLIENT_SECRET:-}" ]; then
-  node -e 'const fs=require("node:fs");const keys=["SPOTIFY_CLIENT_ID","SPOTIFY_CLIENT_SECRET"];fs.writeFileSync("/app/.dev.vars",keys.map(k=>k+"="+JSON.stringify(process.env[k])).join("\n")+"\n",{mode:0o600});'
-else
-  rm -f /app/.dev.vars
-fi
+# Supply optional Spotify and metadata bindings through a private dev-vars file.
+# Do not pass API credentials as command-line arguments or bake them into images.
+node /app/docker/write-dev-vars.mjs
 # Keep the JSON origin map intact. A shell parameter expansion containing a
 # literal { default appends an extra } when the variable is already set.
 PEER_ORIGIN_ALIASES="${PEER_RELAY_ALIASES:-}"

@@ -705,3 +705,21 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 
 /* v17.0.2: account-owned Spotify recreation controls */
 .spotify-import-form,.spotify-import-status{background:var(--panel,#211f1e);border:1px solid var(--line2,#383535);border-radius:14px;padding:18px;margin:12px 0 24px;max-width:1000px}.spotify-import-form h3{margin:0 0 8px}.spotify-import-form p{line-height:1.5}.spotify-import-controls{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0}.spotify-import-controls input{min-width:230px;flex:1;border-radius:22px;padding:12px;background:var(--bg,#121111);border:1px solid var(--line2,#383535);color:inherit}.spotify-import-pending{display:block;color:var(--accent,#c8f169);font-size:12px;margin-top:4px}.spotify-import-status progress{width:100%;height:12px;accent-color:var(--accent,#c8f169)}.spotify-import-actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.spotify-peer{color:#79c6e8}.spotify-local{color:var(--accent,#c8f169)}
+
+/* v17.0.6 — Scoped admin metadata settings. */
+#netTelemetryPanel .card{max-width:900px;margin-right:auto;color-scheme:dark;min-width:0}
+.metadata-form{display:grid;gap:0;max-width:780px;min-width:0}
+.metadata-section{display:grid;gap:14px;padding:22px 0;border-top:1px solid var(--line2);min-width:0}
+.metadata-section:first-child{border-top:0;padding-top:10px}.metadata-section:last-child{padding-bottom:0}
+.metadata-section h3{font-size:17px;font-weight:750;margin:0}.metadata-section h3.metadata-lastfm{color:#ff6a64}.metadata-section h3.metadata-mb{color:#c4a8ee}
+.metadata-section p{margin:0;overflow-wrap:anywhere}
+.metadata-form .metadata-check{display:flex;align-items:flex-start;gap:10px;line-height:1.5;min-width:0;white-space:normal;font-weight:500}
+.metadata-check span{min-width:0;overflow-wrap:anywhere}.metadata-check input{flex:none;accent-color:var(--accent);width:18px;height:18px;margin:2px 0 0}
+.metadata-form .metadata-field{display:grid;gap:7px;min-width:0;color:var(--muted);font-size:14px;font-weight:600}
+.metadata-form .metadata-field input,.metadata-form .metadata-field select{width:100%;height:46px;min-width:0;padding:0 15px;border:1px solid var(--line2);border-radius:12px;background:var(--bg);color:var(--text);font-size:15px;font-weight:400;color-scheme:dark}
+.metadata-form select option{background:var(--panel);color:var(--text)}
+.metadata-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-width:0}.metadata-actions button{max-width:100%;white-space:normal;padding-top:7px;padding-bottom:7px}
+.metadata-provider-status{font-size:13px;color:var(--muted);overflow-wrap:anywhere;min-width:0}.metadata-provider-status.ok{color:var(--accent)}.metadata-provider-status.err{color:var(--danger)}
+.metadata-progress{display:grid;gap:6px;font-size:14px}.metadata-progress progress{width:100%;height:12px;accent-color:var(--accent)}
+.metadata-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metadata-metrics>div{background:var(--bg);border:1px solid var(--line2);border-radius:12px;padding:12px;display:grid;gap:4px;overflow-wrap:anywhere}.metadata-metrics strong{font-size:25px;color:var(--accent);font-variant-numeric:tabular-nums}.metadata-metrics span{font-size:12px;color:var(--muted)}
+@media(max-width:600px){#netTelemetryPanel .card{padding:14px}.metadata-section{padding:18px 0}.metadata-metrics{grid-template-columns:1fr}.metadata-actions button{width:100%}}

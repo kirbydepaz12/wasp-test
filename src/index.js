@@ -1,8 +1,9 @@
+import {metadataAdmin, metadataFeed, runMetadata} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
   hiveRequestFeed,hiveRequestsForDisplay} from "./hive-requests.js";
-import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi} from "./telemetry.js";
+import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi, ensureTelemetrySchema as ensureTelemetrySchemaForMetadata} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
@@ -10,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.4";
-const BUILD_LABEL = "Spotify Playlist Completion Fix";
+const BUILD_VERSION = "17.0.6";
+const BUILD_LABEL = "HIVE Metadata Integration Hotfix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -948,10 +949,10 @@ async function refreshSpotifyUserImport(env,imp,{fetchPeers=false,requestMissing
   if(fetchPeers)await refreshSpotifyPeerCatalogue(env,{max:8});
   const songs=JSON.parse(imp.tracks_json||'[]');
   const {local,remote}=await spotifyImportCatalogue(DB);
-  const add=[],missing=[];let own=0,others=0;
+  const add=[],missing=[];let own=0,others=0;const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
   for(const target of songs){
-    let hit=local.find(row=>sourceMatch(row,target)),source='local';
-    if(!hit){hit=remote.find(row=>sourceMatch(row,target));source='peer';}
+    const key=core(target.t);let hit=(localIndex.get(key)||[]).find(row=>sourceMatch(row,target)),source='local';
+    if(!hit){hit=(remoteIndex.get(key)||[]).find(row=>sourceMatch(row,target));source='peer';}
     if(!hit){missing.push(target);continue;}
     const reference=source==='local'?hit.id:'peer:'+await sha256(hit.origin+'\n'+hit.remote_id);
     if(source==='local')own++;else others++;
@@ -1095,16 +1096,18 @@ const libraryRows = async (DB) => (await DB.prepare("SELECT id, title, artist, a
 // Count both local tracks and trusted peer-catalogue matches without
 // duplicating content. An exact match is required; a matching playlist name
 // by itself never proves all its songs are available.
-async function matchPlaylistHIVE(env,requested,{register=false}={}){
-  const {local,remote}=await spotifyImportCatalogue(env.DB);
+function titleIndex(list){const out=new Map();for(const row of list){const key=core(row.title);if(!out.has(key))out.set(key,[]);out.get(key).push(row);}return out;}
+async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null}={}){
+  const {local,remote}=catalogue||await spotifyImportCatalogue(env.DB);
+  const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
   const matched=[],missing=[];let localCount=0,peerCount=0;
   for(const song of requested){
-    let hit=local.find(r=>sourceMatch(r,song)),isRemote=false;
-    if(!hit){hit=remote.find(r=>sourceMatch(r,song));isRemote=true;}
+    const key=core(song.t);let hit=(localIndex.get(key)||[]).find(r=>sourceMatch(r,song)),isRemote=false;
+    if(!hit){hit=(remoteIndex.get(key)||[]).find(r=>sourceMatch(r,song));isRemote=true;}
     if(!hit){missing.push(song);continue;}
     if(isRemote){
       peerCount++;
-      const ref='peer:'+await sha256(hit.origin+'\n'+hit.remote_id);
+      const ref=register?'peer:'+await sha256(hit.origin+'\n'+hit.remote_id):'peer-match:'+hit.remote_id;
       if(register)await env.DB.prepare(`INSERT OR IGNORE INTO peer_track_refs
         (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)`)
         .bind(ref,hit.origin,hit.remote_id,clean(hit.title),clean(hit.artist),clean(hit.album),Number(hit.duration)||0,clean(hit.cover_url,500)).run();
@@ -1114,8 +1117,11 @@ async function matchPlaylistHIVE(env,requested,{register=false}={}){
   return {matched,missing,local_count:localCount,peer_count:peerCount};
 }
 async function reconcileHIVERequests(env){
-  const rows=(await env.DB.prepare("SELECT * FROM requests WHERE status='active' LIMIT 250").all()).results;
-  const candidates=rows.filter(r=>r.kind==='song'||r.kind==='playlist');
+  const db=env.DB;
+  const offset=Number((await db.prepare("SELECT value FROM settings WHERE key='hive_match_offset'").first())?.value)||0;
+  const total=Number((await db.prepare("SELECT COUNT(*) n FROM requests WHERE status='active' AND kind IN ('song','playlist')").first())?.n||0);
+  const candidates=total?(await db.prepare("SELECT * FROM requests WHERE status='active' AND kind IN ('song','playlist') ORDER BY created_at,id LIMIT 1 OFFSET ?").bind(offset%total).all()).results:[];
+  if(total)await db.prepare("INSERT INTO settings(key,value) VALUES('hive_match_offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String((offset+1)%total)).run();
   if(!candidates.length)return {checked:0,completed:0};
   const {local,remote}=await spotifyImportCatalogue(env.DB);
   let completed=0;
@@ -1128,10 +1134,9 @@ async function reconcileHIVERequests(env){
     }else if(req.meta){
       let meta;try{meta=JSON.parse(req.meta);}catch{continue;}
       if(!Array.isArray(meta.tracks)||!meta.tracks.length)continue;
-      const result=await matchPlaylistHIVE(env,meta.tracks);
-      const next={...meta,matched:result.matched.length,matched_local:result.local_count,matched_peer:result.peer_count};
-      if(meta.matched!==next.matched||meta.matched_local!==next.matched_local||meta.matched_peer!==next.matched_peer)
-        await env.DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(next),req.id).run();
+      const result=await matchPlaylistHIVE(env,meta.tracks,{catalogue:{local,remote}});
+      const next={...meta,matched:result.matched.length,matched_local:result.local_count,matched_peer:result.peer_count,matched_missing:result.missing,availability_checked_at:Date.now()};
+      await env.DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(next),req.id).run();
       // Do not auto-close a request just because one peer reports a partial
       // Spotify catalogue. Ownership & explicit admin completion are preserved.
     }
@@ -1168,19 +1173,11 @@ async function completePlaylistRequest(env, r, ids) {
 }
 // After songs are added: refresh how many songs of each requested playlist we have, and finish the ones that are complete.
 async function rematchPlaylists(env) {
-  const DB = env.DB;
-  const rows = (await DB.prepare("SELECT * FROM requests WHERE kind = 'playlist' AND status = 'active' AND meta IS NOT NULL").all()).results;
-  if (!rows.length) return;
-  const lib = await libraryRows(DB);
-  for (const r of rows) {
-    let meta; try { meta = JSON.parse(r.meta); } catch { continue; }
-    if (!meta.tracks || !meta.tracks.length) continue;
-    const { matched } = matchPlaylist(lib, meta.tracks);
-    // Leave final completion to the originating administrator after verifying
-    // all local + peer sources, even if all names currently match.
-    if (matched.length !== meta.matched) await DB.prepare("UPDATE requests SET meta = ? WHERE id = ?").bind(JSON.stringify({ ...meta, matched: matched.length }), r.id).run();
-  }
+  // Playlist requests are incrementally rechecked by the scheduled matcher.
+  // Do not scan every playlist and all tracks on every individual upload.
+  return {scheduled:true};
 }
+
 async function inLibrary(DB, it) {
   if (it.kind === "playlist") return (await DB.prepare("SELECT name FROM playlists").all()).results.some((p) => norm(p.name) === norm(it.title));
   const lib = (await DB.prepare("SELECT artist, artists, title, album FROM tracks").all()).results;
@@ -1196,7 +1193,7 @@ async function fulfil(env, t) {
     : r.kind === "album" ? t.album && same(r.title, t.album) && by(r.artist) : by(r.title));
   for (const r of done){ await markDone(env.DB, r.id);await publishHiveRequest(env,r,'done').catch(()=>{}); }
   await rematchPlaylists(env); // a requested playlist may now be complete
-  await refreshActiveSpotifyImports(env,{max:5}).catch(()=>{});
+  await refreshActiveSpotifyImports(env,{max:1}).catch(()=>{});
 }
 
 const MUSICY = /\b(band|musician|singer|rapper|songwriter|group|duo|trio|quartet|dj|composer|vocalist|guitarist|producer|artist|metal|rock|pop|hip hop)\b/i;
@@ -1621,7 +1618,7 @@ async function syncPeerAll(env,peer){
     try{counts.federation=await syncFederatedFromGateway(env,peer);}catch(e){counts.federation={sources:0,errors:[e.message]};}
   }
   await touchCatalogue(env.DB);
-  await refreshActiveSpotifyImports(env,{max:5}).catch(()=>{});
+  await refreshActiveSpotifyImports(env,{max:1}).catch(()=>{});
   await reconcileHIVERequests(env).catch(()=>{});
   return counts;
 }
@@ -1730,22 +1727,21 @@ async function executeManualCron(env,kind,runId){
   }catch(error){await setCronRunStatus(env.DB,runId,{kind,state:'error',progress:0,message:String(error.message).slice(0,160),started});}
 }
 async function telemetryScheduleTick(env,when=Date.now(),{skipTelemetry=false}={}){
-  const config=await getCronConfig(env.DB),job=config.jobs.telemetry;
-  const minutes=Number(job.minutes)||5;
-  // Request federation is a core peer service, not a separate enabled maintenance cron.
-  if(Math.floor(when/60000)%5!==0 && (!job?.enabled||Math.floor(when/60000)%minutes!==0))return {notDue:true};
-  const telemetry=!skipTelemetry && job?.enabled && Math.floor(when/60000)%minutes===0
-    ? await syncTelemetryPeers(env).catch(e=>({error:String(e.message)})) : {disabled:true};
+  const minute=Math.floor(when/60000), slot=((minute%5)+5)%5;
+  // Separate expensive operations across invocations. Each branch does one
+  // kind of work; a catalogue deadline cannot prevent telemetry ingestion.
+  if(slot===1){await ensureTelemetrySchemaForMetadata(env);return {metadata:await runMetadata(env).catch(e=>({error:String(e.message)}))};}
+  if(slot===2)return {matching:await reconcileHIVERequests(env).catch(e=>({error:String(e.message)}))};
+  if(slot===3)return {imports:await refreshActiveSpotifyImports(env,{max:1,fetchPeers:false}).catch(e=>({error:String(e.message)}))};
+  if(slot===4){
+    const queued=await env.DB.prepare("SELECT 1 FROM requests WHERE status='active' LIMIT 1").first();
+    const drafts=await env.DB.prepare("SELECT 1 FROM spotify_user_imports WHERE state='draft' LIMIT 1").first().catch(()=>null);
+    return {catalogues:queued||drafts?await refreshSpotifyPeerCatalogue(env,{max:1}).catch(e=>({error:String(e.message)})):{checked:0}};
+  }
+  const config=await getCronConfig(env.DB),job=config.jobs.telemetry,minutes=Number(job.minutes)||5;
+  const telemetry=!skipTelemetry&&job?.enabled&&minute%minutes===0?await syncTelemetryPeers(env).catch(e=>({error:String(e.message)})):{disabled:true};
   const requests=await syncHiveRequests(env).catch(e=>({error:String(e.message)}));
-  const imports=await refreshActiveSpotifyImports(env,{max:5,fetchPeers:false}).catch(e=>({error:String(e.message)}));
-  let catalogues={checked:0};
-  const queued=(await env.DB.prepare("SELECT 1 FROM requests WHERE status='active' LIMIT 1").first());
-  const drafts=await env.DB.prepare("SELECT 1 FROM spotify_user_imports WHERE state='draft' LIMIT 1").first().catch(()=>null);
-  if(queued||drafts)catalogues=await refreshSpotifyPeerCatalogue(env,{max:2}).catch(e=>({error:String(e.message)}));
-  const matching=queued||drafts?await Promise.all([
-    refreshActiveSpotifyImports(env,{max:5}).catch(()=>({checked:0})),
-    reconcileHIVERequests(env).catch(()=>({checked:0}))]):[];
-  return {telemetry,requests,imports,catalogues,matching};
+  return {telemetry,requests};
 }
 
 async function api(req, env, url, ctx) {
@@ -1753,6 +1749,11 @@ async function api(req, env, url, ctx) {
   const m = req.method;
   const DB = env.DB;
   let x;
+  if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
+  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run))?$/.test(path)){
+    const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    await ensureTelemetrySchemaForMetadata(env);return metadataAdmin(req,env,url);
+  }
   if(path==='/api/telemetry'||path==='/api/telemetry/feed')return telemetryApi(req,env,url);
   if(path==='/api/admin/telemetry/sync'){
     const info=await sessionInfo(req,env);
@@ -2197,7 +2198,7 @@ async function api(req, env, url, ctx) {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all();
     const local=results.map(({ meta, ...r }) => {
       let m = null; try { m = meta ? JSON.parse(meta) : null; } catch {}
-      return m ? { ...r, total: m.total, partial: !!m.partial, matched: m.matched ?? null } : r;
+      return m ? { ...r, total: m.total, partial: !!m.partial, matched: m.matched ?? null, matched_local:m.matched_local??null,matched_peer:m.matched_peer??null,availability_checked_at:m.availability_checked_at??null } : r;
     });
     const remote=await hiveRequestsForDisplay(env);
     return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
@@ -2231,6 +2232,7 @@ async function api(req, env, url, ctx) {
         item.meta.matched=matched.matched.length;
         item.meta.matched_local=matched.local_count;
         item.meta.matched_peer=matched.peer_count;
+        item.meta.matched_missing=matched.missing;item.meta.availability_checked_at=Date.now();
       }
       await recordSignedInVoter(DB,await sessionInfo(req,env),voter);
       const newId=crypto.randomUUID(),createdAt=Date.now();
@@ -2924,16 +2926,16 @@ async function api(req, env, url, ctx) {
     return json({ error: "Method not allowed." }, 405);
   }
   if (path === "/api/admin/requests" && m === "GET") {
-    const rows = (await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all()).results;
+    const rows = (await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, CASE WHEN json_valid(meta) THEN json_remove(meta,'$.tracks') ELSE NULL END AS meta, CASE WHEN json_valid(meta) THEN json_type(meta,'$.tracks')='array' ELSE 0 END AS has_tracks FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all()).results;
     const local=[];
-    for(const {meta,...r} of rows){
+    for(const {meta,has_tracks,...r} of rows){
       let mt=null;try{mt=meta?JSON.parse(meta):null;}catch{}
-      if(!mt?.tracks){local.push(r);continue;}
-      const matched=await matchPlaylistHIVE(env,mt.tracks);
+      if(!mt||!has_tracks){local.push(r);continue;}
+      const checked=Array.isArray(mt.matched_missing)&&Number.isFinite(mt.availability_checked_at);
       local.push({...r,total:mt.total,partial:!!mt.partial,
         source_total:Number.isSafeInteger(mt.source_total)?mt.source_total:null,
-        source_status:mt.source_status||'unverified',matched:matched.matched.length,
-        matched_local:matched.local_count,matched_peer:matched.peer_count,missing:matched.missing});
+        source_status:mt.source_status||'unverified',matched:checked?mt.matched:null,
+        matched_local:checked?mt.matched_local:null,matched_peer:checked?mt.matched_peer:null,missing:checked?mt.matched_missing:null,availability_checked_at:checked?mt.availability_checked_at:null});
     }
     // Remote requests remain owned by their original server. A local admin
     // may add music, but cannot delete or prematurely mark them complete.
@@ -2955,7 +2957,7 @@ async function api(req, env, url, ctx) {
     if (!meta || !meta.tracks || !meta.tracks.length) return json({ error: "The song list of this playlist isn't available." }, 400);
     const isCompletion=x[2]==='complete';
     const {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,meta.tracks,{register:isCompletion});
-    meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;
+    meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;meta.matched_missing=missing;meta.availability_checked_at=Date.now();
     const reportedTotal=Number.isSafeInteger(meta.source_total)?meta.source_total:null;
     const confirmedIncomplete=reportedTotal!==null && reportedTotal>meta.tracks.length;
     let requestBody={};
@@ -3419,7 +3421,7 @@ export default {
       if (url.pathname.startsWith("/api/")) {
         const res = await api(req, env, url, ctx);
         // CORS only on public read endpoints (not admin)
-        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens" || url.pathname === "/api/active-streams" || url.pathname === "/api/telemetry/feed");
+        const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens" || url.pathname === "/api/active-streams" || url.pathname === "/api/telemetry/feed" || url.pathname === "/api/telemetry/metadata/feed");
         const output=withCors(res,publicPeer);
         if(req.method !== "GET" && output.ok && changesCatalogue(url.pathname)) {
           try { await touchCatalogue(env.DB); } catch(e) {console.warn("Unable to update catalogue revision",e.message);}
