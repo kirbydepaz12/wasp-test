@@ -15,7 +15,7 @@ const MAX_BATCH = 120;
 const MAX_PEERS = 10;
 const MAX_META = 65536;
 const TIMEOUT = 9000;
-const ready = new WeakMap();
+const ready = new WeakSet();
 const changes = r => Number(r?.meta?.changes??r?.changes??0);
 function validateEvent(ev){
   if(!ev||typeof ev!=='object'||!originValid(ev.origin_id)||!idValid(ev.event_id)||!idValid(ev.request_id)||
@@ -38,22 +38,22 @@ function statement(db,ev){
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(ev.origin_id,ev.event_id,ev.request_id,ev.status,ev.kind,
       ev.title,ev.artist,ev.album,ev.image,ev.url,ev.created_at,ev.updated_at,ev.meta);
 }
-async function applyState(db,ev,source=''){
-  await db.prepare(`INSERT INTO hive_request_state
+function stateStatement(db,ev,source=''){
+  return db.prepare(`INSERT INTO hive_request_state
     (origin_id,request_id,status,kind,title,artist,album,image,url,created_at,updated_at,meta,source_url)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(origin_id,request_id) DO UPDATE SET
+    SELECT origin_id,request_id,status,kind,title,artist,album,image,url,created_at,updated_at,meta,? FROM hive_request_events WHERE origin_id=? AND event_id=? ON CONFLICT(origin_id,request_id) DO UPDATE SET
     status=excluded.status,kind=excluded.kind,title=excluded.title,artist=excluded.artist,
     album=excluded.album,image=excluded.image,url=excluded.url,updated_at=excluded.updated_at,
-    meta=excluded.meta,source_url=excluded.source_url
-    WHERE excluded.updated_at>=hive_request_state.updated_at`)
-    .bind(ev.origin_id,ev.request_id,ev.status,ev.kind,ev.title,ev.artist,ev.album,ev.image,ev.url,
-      ev.created_at,ev.updated_at,ev.meta,txt(source,250)).run();
+    meta=excluded.meta,source_url=CASE WHEN excluded.source_url='' THEN hive_request_state.source_url ELSE excluded.source_url END
+    WHERE excluded.updated_at>hive_request_state.updated_at OR (excluded.updated_at=hive_request_state.updated_at AND hive_request_state.status='active')`)
+    .bind(txt(source,250),ev.origin_id,ev.event_id);
 }
-export function ensureHiveRequests(env){
-  if(ready.has(env.DB))return ready.get(env.DB);
-  const task=(async()=>{
+export async function ensureHiveRequests(env){
+  if(ready.has(env.DB))return;
+  await (async()=>{
     const db=env.DB;
     await ensureTelemetrySchema(env); // Stable instance identity used for origin-tagged deduplication.
+    if((await db.prepare("SELECT value FROM settings WHERE key='hive_request_schema'").first())?.value==='18.2')return;
     for(const sql of [
       `CREATE TABLE IF NOT EXISTS hive_request_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, origin_id TEXT NOT NULL,event_id TEXT NOT NULL,
@@ -80,8 +80,9 @@ export function ensureHiveRequests(env){
         synced_at INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '')`
     ])await db.prepare(sql).run();
     await db.prepare(`INSERT OR IGNORE INTO settings(key,value) VALUES('hive_req_next_sync','0')`).run();
-  })().catch(e=>{ready.delete(env.DB);throw e;});
-  ready.set(env.DB,task);return task;
+    await db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('hive_request_schema','18.2')").run();
+  })();
+  ready.add(env.DB);
 }
 // Own request events are exported only after explicit public request submission.
 export async function publishHiveRequest(env,row,status='active'){
@@ -94,8 +95,7 @@ export async function publishHiveRequest(env,row,status='active'){
     kind:row.kind,title:row.title,artist:row.artist,album:row.album,image:row.image,
     url:row.url,created_at:Number(row.created_at)||Date.now(),updated_at:Date.now(),meta:sharedMeta};
   const ev=validateEvent(raw);if(!ev)throw Error('Invalid request event');
-  await db.batch([statement(db,ev)]);
-  await applyState(db,ev,'');
+  await db.batch([statement(db,ev),stateStatement(db,ev,'')]);
   return ev;
 }
 export async function reconcileLocalRequestEvents(env){
@@ -202,6 +202,15 @@ export async function syncHiveRequests(env,{fetcher=fetch,force=false,targetOrig
       .bind(String(now+300000),now).run();
     if(!changes(lease))return {skipped:true};
   }
+  // v18.0.1 could persist an event/cursor before its state write. Replay existing
+  // ledger in bounded pages; origin ownership and newer states are preserved.
+  const repair=(await db.prepare("SELECT value FROM settings WHERE key='hive_request_repair_v182'").first())?.value;
+  if(repair!=='done'){
+    const page=rows(await db.prepare('SELECT * FROM hive_request_events WHERE seq>? ORDER BY seq LIMIT 60').bind(Number(repair)||0).all());
+    const operations=page.map(e=>stateStatement(db,e,''));
+    operations.push(db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('hive_request_repair_v182',?)").bind(page.length<60?'done':String(page.at(-1).seq)));
+    await db.batch(operations);
+  }
   const direct=rows(await db.prepare('SELECT url FROM peers ORDER BY added_at LIMIT 60').all()).map(x=>x.url);
   const published=rows(await db.prepare(`SELECT l.url FROM user_published_peers l
     LEFT JOIN user_peer_permissions p ON p.user_id=l.user_id
@@ -238,22 +247,16 @@ export async function syncHiveRequests(env,{fetcher=fetch,force=false,targetOrig
       if(events.some(e=>!e))throw Error('Invalid HIVE request event');
       const next=Number(data.cursor),cursor=Number(prior?.cursor)||0;
       if(!Number.isSafeInteger(next)||next<cursor||(events.length&&next<=cursor))throw Error('Invalid sync cursor');
-      const newly=[];
-      for(const ev of events){
-        if(ev.origin_id===local)continue;
-        // Do not apply an event already imported through a different route.
-        if(await db.prepare('SELECT 1 FROM hive_request_events WHERE origin_id=? AND event_id=?')
-          .bind(ev.origin_id,ev.event_id).first())continue;
-        newly.push(ev);
-      }
-      const statements=newly.map(e=>statement(db,e));
+      // INSERT OR IGNORE deduplicates atomically; avoid one D1 subrequest per
+      // event, which exhausted the Free Worker limit on larger request feeds.
+      const incoming=events.filter(e=>e.origin_id!==local);
+      const statements=incoming.flatMap(e=>[statement(db,e),stateStatement(db,e,base)]);
       statements.push(db.prepare(`INSERT INTO hive_request_peer_cursors(url,node_id,cursor,synced_at,last_error)
-        VALUES(?,?,?,?,'') ON CONFLICT(url) DO UPDATE SET node_id=excluded.node_id,cursor=excluded.cursor,
+        VALUES(?,?,?,?,'') ON CONFLICT(url) DO UPDATE SET node_id=excluded.node_id,cursor=MAX(hive_request_peer_cursors.cursor,excluded.cursor),
         synced_at=excluded.synced_at,last_error=''`).bind(base,data.nodeId,next,now));
-      await db.batch(statements);
-      for(const ev of newly)await applyState(db,ev,base);
-      await db.prepare('UPDATE hive_request_local_review SET hidden_at=NULL WHERE origin_id=? AND hidden_at IS NOT NULL AND hidden_at<=?').bind(data.nodeId,now).run();
-      checked++;imported+=newly.length;
+      statements.push(db.prepare('UPDATE hive_request_local_review SET hidden_at=NULL WHERE origin_id=? AND hidden_at IS NOT NULL AND hidden_at<=?').bind(data.nodeId,now));
+      const applied=await db.batch(statements);
+      checked++;imported+=incoming.reduce((n,_,i)=>n+changes(applied[2*i]),0);
     }catch(error){
       errors++;
       await db.prepare(`INSERT INTO hive_request_peer_cursors(url,node_id,cursor,synced_at,last_error)

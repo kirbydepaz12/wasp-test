@@ -957,7 +957,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html';
+  frame.src='/telemetry.html?v=18.0.2';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -2413,6 +2413,25 @@ window.addEventListener('pagehide',()=>{
   }
 });
 
+// Retry confirmed listen submissions with the original per-play UUID. A short
+// server failure must not lose telemetry; session storage survives page reloads.
+const pendingPlayKey='wasp:pending-plays:v182';
+let pendingPlays=[];try{pendingPlays=JSON.parse(sessionStorage.getItem(pendingPlayKey)||'[]');if(!Array.isArray(pendingPlays))pendingPlays=[];}catch{}
+let sendingPlays=false;
+function savePendingPlays(){try{sessionStorage.setItem(pendingPlayKey,JSON.stringify(pendingPlays));}catch{}}
+async function flushPendingPlays(){
+ if(sendingPlays)return;sendingPlays=true;
+ try{const now=Date.now();pendingPlays=pendingPlays.filter(p=>p&&now-p.created<86400000).slice(-100);
+ for(const p of [...pendingPlays].filter(p=>!p.next||p.next<=now).slice(0,8)){
+  try{const headers={'X-WASP-Play-Id':p.id,...(p.body?{'content-type':'application/json'}:{})};const r=await fetch(p.url,{method:'POST',headers,...(p.body?{body:JSON.stringify(p.body)}:{}),signal:AbortSignal.timeout(10000)});if(r.ok||([400,401,403,404].includes(r.status))){pendingPlays=pendingPlays.filter(x=>x.id!==p.id);continue;}}catch{}
+  p.tries=(p.tries||0)+1;p.next=Date.now()+Math.min(300000,5000*2**Math.min(p.tries-1,6));
+ }
+ }finally{sendingPlays=false;savePendingPlays();}
+}
+function submitConfirmedPlay(url,body){pendingPlays.push({id:makeId(),url,body,created:Date.now(),tries:0});pendingPlays=pendingPlays.slice(-100);savePendingPlays();void flushPendingPlays();}
+setInterval(()=>{if(pendingPlays.length)void flushPendingPlays();},5000);
+window.addEventListener('online',()=>void flushPendingPlays());
+if(pendingPlays.length)void flushPendingPlays();
 audio.addEventListener("timeupdate", () => {
   $("#cur").textContent = fmt(audio.currentTime); $("#dur").textContent = fmt(audio.duration);
   syncLyrics();
@@ -2421,8 +2440,8 @@ audio.addEventListener("timeupdate", () => {
   if (t && !counted && !playbackRoute?.loading && audio.currentTime >= 10) {
     counted = true; t.plays++;
     const played=playbackRoute?.source||t;
-    if(played.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(played.origin),remote_id:played.remote_id||String(played.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||"",duration:t.duration||0})}).catch(()=>{});
-    else fetch("/api/play/" + played.id, { method: "POST" }).catch(() => {});
+    if(played.origin) submitConfirmedPlay("/api/play-peer",{origin:registeredPeerOrigin(played.origin),remote_id:played.remote_id||String(played.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||"",duration:t.duration||0});
+    else submitConfirmedPlay("/api/play/" + played.id);
   }
 });
 audio.addEventListener("play", () => { setTip("#pp", "Pause"); $("#ppi").innerHTML = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'; });
@@ -2431,7 +2450,7 @@ audio.addEventListener("ended", () => {
   const route=playbackRoute,expected=Number(cur()?.duration)||0;
   if(route&&routingIntent&&expected>0&&Number(audio.duration)>0&&Number(audio.duration)<expected-5&&route.sources.length>1){recoverRoute('Source ended early');return;}
   clearRouteTimer();
-  if (left > 0) { left--; audio.currentTime = 0; audio.play(); } else step(1);
+  if (left > 0) { left--; counted=false; audio.currentTime = 0; audio.play(); } else step(1);
 });
 if ("mediaSession" in navigator) {
   try{navigator.mediaSession.setActionHandler('pause',()=>{routingIntent=false;clearRouteTimer();if(playbackRoute)playbackRoute.switching=false;audio.pause();});navigator.mediaSession.setActionHandler('play',()=>{if(playbackRoute?.exhausted&&cur())beginRoute(cur(),playbackRoute.lastTime);else {routingIntent=true;audio.play().catch(()=>{});}});}catch{}

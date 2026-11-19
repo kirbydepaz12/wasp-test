@@ -112,9 +112,10 @@ function countryDetail(row,name){
   if(!row?.topArtist)return `<div class="chart-detail-label">${safe(name)}</div><p class="muted">No confirmed artist data for this country.</p>`;
   return `<div class="chart-detail-label">Top artist · ${safe(name)}</div><button type="button" class="chart-detail-item" data-href="#artist/${safe(encodeURIComponent(row.topArtist))}">${cover(artUrl({name:row.topArtist},'artists'),row.topArtist,row.topArtistOrigin)}<span><b>${safe(row.topArtist)}</b><small>${n(row.topArtistPlays)} plays</small></span></button>${chartAlbum(row,'Top album by this artist')}`;
 }
-let decadeSelections=new Map(),countrySelections=new Map();
+let decadeSelections=new Map(),countrySelections=new Map(),selectedDecade="",selectedCountry="";
 function setChartSelection(kind,key){
   const choices=kind==='decade'?decadeSelections:countrySelections,entry=choices.get(String(key));if(!entry)return;
+  if(kind==='decade')selectedDecade=String(key);else selectedCountry=String(key);
   const target=root.querySelector(kind==='decade'?'#decadeDetail':'#countryDetail');if(!target)return;
   root.querySelectorAll(`[data-chart-${kind}]`).forEach(el=>{const active=el.getAttribute('data-chart-'+kind)===String(key);el.classList.toggle('selected',active);el.setAttribute('aria-pressed',String(active));});
   target.innerHTML=kind==='decade'?chartAlbum(entry.row,'Top album · '+entry.label):countryDetail(entry.row,entry.label);
@@ -125,7 +126,7 @@ function decadesChart(rows,total,yearMetadataPlays){
   if(!raw.length)return `<p class="message">No verified release-year metadata yet. Enable metadata enrichment in Admin → Network → Telemetry. Unknown years are never estimated.</p>`;
   const early=raw.filter(r=>Number(r.decade)<1960),earlyTop=[...early].sort((a,b)=>Number(b.topAlbumPlays||b.plays)-Number(a.topAlbumPlays||a.plays))[0];
   const decades=[{...earlyTop,decade:1950,plays:early.reduce((n,r)=>n+Number(r.plays||0),0)},...Array.from({length:Math.max(7,Math.floor(new Date().getFullYear()/10)-195)},(_,i)=>raw.find(r=>Number(r.decade)===1960+i*10)||{decade:1960+i*10,plays:0})];
-  const max=Math.max(1,...decades.map(r=>Number(r.plays)||0)),best=[...decades].sort((a,b)=>Number(b.plays)-Number(a.plays))[0];
+  const max=Math.max(1,...decades.map(r=>Number(r.plays)||0)),best=decades.find(r=>String(r.decade)===selectedDecade)||[...decades].sort((a,b)=>Number(b.plays)-Number(a.plays))[0];
   const bars=decades.map(r=>{
     const d=Number(r.decade),label=d<1960?'Pre-1960':`${d}s`,plays=Number(r.plays)||0,pct=total?100*plays/total:0,selected=r===best;
     decadeSelections.set(String(d),{row:r,label});
@@ -153,7 +154,7 @@ async function mountWorldMap(request,countries,unknown){
     }).join('');
     target.innerHTML=`<svg viewBox="0 0 900 435" role="group" aria-label="Listening activity by verified artist origin country">${paths}</svg>`;
     const best=[...countriesMap.values()].filter(r=>countrySelections.has(String(r.code))).sort((a,b)=>b.plays-a.plays)[0];
-    if(best)setChartSelection('country',best.code);
+    if(selectedCountry&&countrySelections.has(selectedCountry))setChartSelection('country',selectedCountry);else if(best)setChartSelection('country',best.code);
     resized();
   }catch {worldPromise=null;if(target.isConnected)target.textContent='Map data unavailable.';}
 }
@@ -172,14 +173,16 @@ function controls(){return `<div class="controls" role="group" aria-label="Telem
   <label class="control">Year<select id="year">${Array.from({length:12},(_,i)=>new Date().getFullYear()-i).map(y=>`<option value="${y}" ${state.year===y?'selected':''}>${y}</option>`).join('')}</select></label>
   ${state.period==='month'?`<label class="control">Month<select id="month">${months.map((v,i)=>`<option value="${i+1}" ${state.month===i+1?'selected':''}>${v}</option>`).join('')}</select></label>`:''}
   <label class="control">Listening scope<select id="scope"><option value="hive" ${state.scope==='hive'?'selected':''}>Entire HIVE</option><option value="local" ${state.scope==='local'?'selected':''}>This server</option></select></label>
-  <div class="period-nav"><button type="button" data-step="-1" title="Previous period" aria-label="Previous period">‹</button><button type="button" data-step="1" title="Next period" aria-label="Next period">›</button></div>
+  <button type="button" class="chip" data-refresh-telemetry>Refresh telemetry</button><div class="period-nav"><button type="button" data-step="-1" title="Previous period" aria-label="Previous period">‹</button><button type="button" data-step="1" title="Next period" aria-label="Next period">›</button></div>
   </div>`;}
 function syncLabel(data){return data.lastSynced?'Synced '+new Date(data.lastSynced).toLocaleString():'Local cache · peer sync pending';}
-async function showHive(){
-  const request=++state.request;
-  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">Loading historical data…</span></div>${controls()}<p class="loading">Reading cached telemetry…</p>`;
+let telemetryRefreshAt=0,telemetryBusy=false;
+async function showHive({quiet=false}={}){
+  if(quiet&&telemetryBusy)return;
+  const request=++state.request;telemetryBusy=true;
+  if(!quiet)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">Loading historical data…</span></div>${controls()}<p class="loading">Reading cached telemetry…</p>`;
   resized();
-  const params=new URLSearchParams({scope:state.scope,period:state.period,year:String(state.year),month:String(state.month),offset:String(-new Date().getTimezoneOffset())});
+  const params=new URLSearchParams({scope:state.scope,period:state.period,year:String(state.year),month:String(state.period==='month'?state.month:'all'),offset:String(-new Date().getTimezoneOffset())});
   if(state.period==='week')params.set('start',state.start);
   try{
     const response=await fetch('/api/telemetry?'+params,{cache:'no-store'});
@@ -187,8 +190,9 @@ async function showHive(){
     if(request!==state.request)return;
     artOrigins=Array.isArray(data.artworkOrigins)?data.artworkOrigins:[];
     if(!response.ok)throw Error(data.error||'Statistics are temporarily unavailable');
+    telemetryRefreshAt=Date.now()+Math.max(60000,Number(data.refreshMs)||300000);
     const growth=data.previousPlays>0?`${Math.round((data.plays-data.previousPlays)*100/data.previousPlays)}% vs previous period`:'No comparable previous period';
-    root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">${safe(syncLabel(data))}</span></div>
+    root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">${safe(syncLabel(data))}${data.generatedAt?` · Updated ${safe(new Date(data.generatedAt).toLocaleTimeString())}`:''}</span></div>
       ${controls()}
       <div class="metric-grid">${metric('Confirmed plays',data.plays,growth)}${metric('Unique artists',data.artists)}${metric('Unique albums',data.albums)}${metric('Unique tracks',data.tracks)}</div>
       <div class="two-col section"><div class="panel"><div class="chart-head"><h2>Listening history</h2><small>${safe(state.period==='year'?'By month':'By day')}</small></div>${bars(data.series||[])}</div>
@@ -217,10 +221,11 @@ async function showHive(){
       <div class="info-card section"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div>
       <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources: <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>, <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
     void mountWorldMap(request,data.countries||[],data.unknownCountryPlays||0);
-  }catch(e){if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
+  }catch(e){if(request!==state.request)return;telemetryRefreshAt=Date.now()+300000;if(quiet){const status=root.querySelector('.status');if(status)status.textContent='Refresh failed; showing previous statistics.';}else if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
+  finally{if(request===state.request)telemetryBusy=false;}
   resized();
 }
-function showRanking(){++state.request;const rows=state.items;const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
+function showRanking(){++state.request;telemetryBusy=false;const rows=state.items;const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
   root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':'Reactions recorded for local and available peer music.'}</p></div></div>
     ${rows.length?`<div class="browse-grid">${rows.map((r,i)=>`<button type="button" class="browse-tile" data-kind="${safe(r.kind)}" data-id="${safe(r.id)}"><span class="picture">${r.cover?`<img loading="lazy" src="${safe(r.cover)}" alt="" onerror="this.style.display='none'">`:''}</span><b>${safe(r.title)}</b><small>${safe(r.subtitle||'')}</small><small>${n(r.score)} ${safe(r.scoreLabel||'votes')}</small></button>`).join('')}</div>`:
       '<p class="message">Nothing here yet. Results appear when songs are played or rated.</p>'}`;
@@ -260,6 +265,7 @@ root.addEventListener('change',e=>{
 });
 root.addEventListener('keydown',e=>{const c=e.target.closest?.('[data-chart-country]');if(c&&['Enter',' '].includes(e.key)){e.preventDefault();setChartSelection('country',c.dataset.chartCountry);}});
 root.addEventListener('click',e=>{
+  if(e.target.closest('[data-refresh-telemetry]')){void showHive({quiet:true});return;}
   const c=e.target.closest('[data-chart-country]');if(c){setChartSelection('country',c.dataset.chartCountry);return;}
   const d=e.target.closest('[data-chart-decade]');if(d){setChartSelection('decade',d.dataset.chartDecade);return;}
   const period=e.target.closest('[data-period]');if(period){state.period=period.dataset.period;void showHive();return;}
@@ -284,3 +290,5 @@ const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(resized):n
 if(observer)observer.observe(root);
 window.addEventListener('load',()=>{tell('wasp:telemetry-ready');resized();});
 window.addEventListener('pageshow',()=>{tell('wasp:telemetry-ready');resized();});
+
+setInterval(()=>{if(state.mode==='top'&&state.sub==='telemetry'&&!document.hidden&&telemetryRefreshAt&&Date.now()>=telemetryRefreshAt)void showHive({quiet:true});},15000);

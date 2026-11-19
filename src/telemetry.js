@@ -6,7 +6,7 @@ import {requireNoRedirect} from './peer-fetch.js';
 const MINUTE = 60_000;
 const MAX_BATCH = 200;
 const FRESH_MS = 5 * MINUTE;
-const schemaPromises = new WeakMap();
+const schemaPromises = new WeakSet();
 const text = (v, n = 200) => String(v ?? '').trim().slice(0, n);
 const result = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: {'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'}
@@ -31,9 +31,9 @@ export async function rememberTrackYear(env,trackId,year) {
   return rememberTrackMetadata(env,trackId,{release_year:year});
 }
 
-export function ensureTelemetrySchema(env) {
-  if(schemaPromises.has(env.DB))return schemaPromises.get(env.DB);
-  const task=(async () => {
+export async function ensureTelemetrySchema(env) {
+  if(schemaPromises.has(env.DB))return;
+  await (async () => {
     const db = env.DB;
     const marker = await db.prepare("SELECT value FROM settings WHERE key='wasp_telemetry_schema'").first();
     if (marker?.value === '17.2') return;
@@ -77,9 +77,8 @@ export function ensureTelemetrySchema(env) {
       SELECT ?,id,played_at,track_id,title,artist,album,0 FROM recent_listens
       WHERE played_at>0 AND title<>'' ORDER BY played_at DESC LIMIT 1000`).bind(instance).run();
     await db.prepare("INSERT INTO settings(key,value) VALUES('wasp_telemetry_schema','17.2') ON CONFLICT(key) DO UPDATE SET value='17.2'").run();
-  })().catch(e => {schemaPromises.delete(env.DB); throw e;});
-  schemaPromises.set(env.DB,task);
-  return task;
+  })();
+  schemaPromises.add(env.DB);
 }
 
 export async function recordTelemetryListen(env, event) {
@@ -99,10 +98,11 @@ function readDateWindow(params) {
   const now=new Date(),year=Number(params.get('year') ?? now.getUTCFullYear());
   if(!Number.isInteger(year)||year<2000||year>2100)throw Error('Invalid year');
   const monthRaw=params.get('month')||'all';
-  const month=monthRaw==='all'?0:Number(monthRaw);
+  let month=monthRaw==='all'?0:Number(monthRaw);
   if(!Number.isInteger(month)||month<0||month>12)throw Error('Invalid month');
   const mode=params.get('period')||'year';
   if(!['year','month','week','all'].includes(mode))throw Error('Invalid period');
+  if(mode==='year'||mode==='all'||mode==='week')month=0;
   const offset=Math.max(-720,Math.min(840,Math.trunc(Number(params.get('offset'))||0)));
   const offsetMs=offset*MINUTE;
   let start,end;
@@ -114,7 +114,7 @@ function readDateWindow(params) {
     const day=(ref.getUTCDay()+6)%7;
     start=Date.UTC(ref.getUTCFullYear(),ref.getUTCMonth(),ref.getUTCDate()-day)-offsetMs;
     end=start+7*86400000;
-  } else if(mode==='month'||month) {
+  } else if(mode==='month') {
     if(!month)throw Error('Choose a month');
     start=Date.UTC(year,month-1,1)-offsetMs;
     end=Date.UTC(year,month,1)-offsetMs;
@@ -136,7 +136,7 @@ export async function telemetrySummary(env,url) {
   const d=readDateWindow(url.searchParams),scope=url.searchParams.get('scope')||'hive';
   const local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   const f=scopeSql(scope,local);
-  const key=`v18:${scope}:${d.start}:${d.end}:${d.offset}`;
+  const key=`v182:${scope}:${d.start}:${d.end}:${d.offset}`;
   const cached=await db.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
   if(cached?.body) {try {return JSON.parse(cached.body);} catch { /* rebuild */ }}
   const clause=`played_at>=? AND played_at<?${f.where}`;
@@ -263,10 +263,10 @@ export async function telemetrySummary(env,url) {
     nodes:Number(sourceRow?.nodes||0),
     connectedCaches:Number(checked?.peers||0),lastSynced:Number(checked?.updated||0),
     historicalCoverage:'Available from v17 confirmed plays and retained recent history; older years may be incomplete.',
-    generatedAt:Date.now()};
+    generatedAt:Date.now(),refreshMs:env.WASP_RUNTIME==='docker'?60000:FRESH_MS};
   await db.prepare(`INSERT INTO telemetry_summary_cache(key,body,expires_at) VALUES(?,?,?)
     ON CONFLICT(key) DO UPDATE SET body=excluded.body,expires_at=excluded.expires_at`)
-    .bind(key,JSON.stringify(output),Date.now()+FRESH_MS).run();
+    .bind(key,JSON.stringify(output),Date.now()+(env.WASP_RUNTIME==='docker'?60000:FRESH_MS)).run();
   // Cache is bounded and cleaned occasionally, never on playback.
   if(Math.random()<0.03)await db.prepare('DELETE FROM telemetry_summary_cache WHERE expires_at<?').bind(Date.now()-86400000).run();
   return output;

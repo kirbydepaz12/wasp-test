@@ -371,10 +371,10 @@ export async function readVirtualLibrary(DB){
 const virtualCache=new WeakMap();
 async function libraryForRequest(DB){
   const prior=virtualCache.get(DB),now=Date.now();
-  if(prior && now-prior.time<10000)return prior.promise;
-  const promise=readVirtualLibrary(DB);
-  virtualCache.set(DB,{time:now,promise});
-  try{return await promise;}catch(e){virtualCache.delete(DB);throw e;}
+  if(prior && now-prior.time<10000)return prior.value;
+  const value=await readVirtualLibrary(DB);
+  virtualCache.set(DB,{time:now,value});
+  return value;
 }
 function songBase(t){return {id:t.id,parent:t.albumId,isDir:false,title:t.title,album:t.album,artist:t.artist,
   artistId:t.artistId,albumId:t.albumId,track:t.track||1,discNumber:1,duration:Math.round(t.duration),size:Math.round(t.size),

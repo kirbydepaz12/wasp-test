@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.1">
+<link rel="stylesheet" href="/style.css?v=18.0.2">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -340,8 +340,12 @@
               <div class="coverage-row"><div class="coverage-label"><span>Album / track release year</span><strong id="metadataYearPercent">—</strong></div><progress class="coverage-year" id="metadataYearBar" max="100" value="0" aria-label="Release-year coverage"></progress><p class="muted" id="metadataYearCount">Coverage not loaded yet.</p></div>
               <div class="coverage-row"><div class="coverage-label"><span>Artist country of origin</span><strong id="metadataOriginPercent">—</strong></div><progress class="coverage-origin" id="metadataOriginBar" max="100" value="0" aria-label="Artist-origin coverage"></progress><p class="muted" id="metadataOriginCount">Coverage not loaded yet.</p></div>
               <div class="coverage-enrichment"><h3>Metadata enrichment</h3>
+                <p id="metadataRuntime" class="muted"></p><p id="metadataCloudWarning" class="muted hidden" style="color:#e6b36a">Cloudflare: enrichment and imports consume D1 reads and writes. Prefer verified metadata from a trusted Docker peer; local scanning is optional.</p>
                 <label class="metadata-check coverage-priority"><span>Prioritize frequently played music</span><input type="checkbox" id="metadataPriority" checked></label>
                 <button type="button" class="btn coverage-scan" id="metadataScan">Scan missing metadata</button>
+                <div id="metadataScanControls" class="metadata-actions hidden"><button class="btn ghost" type="button" id="metadataPause">Pause scan</button><button class="btn ghost" type="button" id="metadataStop">Stop scan</button></div>
+                <div id="metadataScanProgress" class="metadata-progress hidden"><label for="metadataScanBar">Scan progress · processed jobs, not coverage</label><progress id="metadataScanBar" max="100"></progress><span id="metadataScanText" class="muted" role="status"></span></div>
+                <div id="metadataProgressWrap" class="metadata-progress hidden"><label for="metadataProgress">Current batch</label><progress id="metadataProgress" max="100"></progress><span id="metadataProgressText" class="muted"></span></div>
                 <p id="metadataCoverageStatus" class="muted" role="status" aria-live="polite">Runs one bounded batch using saved settings. Enable scheduled enrichment for continuous scanning.</p>
               </div>
             </section>
@@ -371,6 +375,8 @@
               <label class="metadata-check"><input type="checkbox" id="metadataFallback"><span>Use the other enabled provider for missing fields</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataWikidata" checked><span>Use Wikidata factual fallback (requires a valid contact and fallback enabled)</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataTrust"><span>Trust verified metadata from administrator-connected peers (not community peers)</span></label>
+              <label class="metadata-field">Preferred metadata peer<select id="metadataPreferredPeer"><option value="">Rotate trusted admin peers</option></select></label>
+              <button class="btn ghost" type="button" id="metadataPull">Pull metadata from HIVE</button>
               <label class="metadata-check"><input type="checkbox" id="metadataShareLastfm"><span>I have Last.fm redistribution permission; allow Last.fm metadata exchange</span></label>
               <p class="muted">Leave Last.fm sharing off unless permitted by your agreement. Trusted peer data is reused locally and is not re-exported as locally verified.</p>
               <label class="metadata-field">Synchronization interval<select id="metadataMinutes"><option value="5">Every 5 minutes</option><option value="10">Every 10 minutes</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="120">Every 2 hours</option></select></label>
@@ -378,7 +384,7 @@
               <div class="metadata-actions"><button class="btn" type="submit">Save settings</button><button class="btn ghost" type="button" id="metadataRun">Run batch now</button></div>
               <p class="muted">Test entered or saved values. Enrichment uses saved settings only.</p>
               <p id="metadataStatus" class="msg" role="status" aria-live="polite"></p>
-              <div id="metadataProgressWrap" class="metadata-progress hidden"><label for="metadataProgress">Current batch</label><progress id="metadataProgress" max="100"></progress><span id="metadataProgressText" class="muted"></span></div>
+
             </section>
             <section class="metadata-section">
               <h3>Verified metadata</h3>
@@ -482,6 +488,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.0.1"></script>
+<script type="module" src="/admin.js?v=18.0.2"></script>
 </body>
 </html>

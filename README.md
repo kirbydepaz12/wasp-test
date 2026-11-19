@@ -1,3 +1,7 @@
+## WASP v18.0.2 — HIVE Telemetry Intelligence (staging)
+
+Docker-first persistent metadata scanning and progress, Cloudflare peer-only verified metadata pulls, full-year telemetry and duplicate-safe playback retries, and atomic HIVE request synchronization with legacy ledger repair. See the [v18.0.2 setup and validation guide](docs/V18-0-2-HIVE-TELEMETRY-INTELLIGENCE.md). Upgrade from exact v18.0.1.
+
 ## WASP v18.0.1 — HIVE Request & Playlist Recovery (staging)
 
 Selected request refresh, administrator-only origin checks and temporary offline hiding, Spotify partial playlist finalization, and missing-song recovery across eligible HIVE peers. Upgrade from exact v18.0.0; see the [v18.0.1 rollout and validation guide](docs/V18-0-1-HIVE-REQUEST-PLAYLIST-RECOVERY.md).

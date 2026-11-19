@@ -10,3 +10,10 @@ const work=async()=>{
 };
 setInterval(work,60000);
 setTimeout(work,12000);
+
+// Sequential background metadata batches; closing the browser does not stop scanning.
+async function metadataLoop(){
+  try{await fetch('http://127.0.0.1:8787/api/internal/metadata-tick',{method:'POST',headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(115000)});}catch{}
+  setTimeout(metadataLoop,3000);
+}
+setTimeout(metadataLoop,15000);

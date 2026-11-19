@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.1";
-const BUILD_LABEL = "HIVE Request & Playlist Recovery";
+const BUILD_VERSION = "18.0.2";
+const BUILD_LABEL = "HIVE Telemetry Intelligence";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -279,9 +279,10 @@ async function recordSignedInVoter(DB,info,voter) {
     await DB.prepare('INSERT OR IGNORE INTO user_voter_tokens(user_id,voter) VALUES(?,?)').bind(info.user_id,voter).run();
 }
 
-let ready;
-function init(env) {
-  return (ready ??= (async () => {
+const initialized = new WeakSet();
+async function init(env) {
+  if(initialized.has(env.DB))return;
+  await (async () => {
     const q = (s) => env.DB.prepare(s);
     // v14: migration work is one-time. A new Worker isolate checks one indexed
     // settings row instead of trying dozens of CREATE/ALTER statements.
@@ -437,7 +438,8 @@ function init(env) {
     } finally {
       if(claimed) await q("DELETE FROM settings WHERE key='wasp_v14_migration_lease' AND value=?").bind(lease).run().catch(()=>{});
     }
-  })().catch((e) => { ready = undefined; throw e; }));
+  })();
+  initialized.add(env.DB);
 }
 
 function getCookie(req, name) {
@@ -859,12 +861,12 @@ const SPOTIFY_IMPORT_SCHEMA = [
     updated_at INTEGER NOT NULL,created_at INTEGER NOT NULL,UNIQUE(user_id,spotify_url))`,
   'CREATE INDEX IF NOT EXISTS idx_spotify_user_imports_owner ON spotify_user_imports(user_id,state)'
 ];
-const spotifyImportReady=new WeakMap();
+const spotifyImportReady=new WeakSet();
 async function ensureSpotifyImportSchema(DB){
-  if(spotifyImportReady.has(DB))return spotifyImportReady.get(DB);
-  const pending=(async()=>{for(const sql of SPOTIFY_IMPORT_SCHEMA)await DB.prepare(sql).run(); for(const col of ['missing_json TEXT','source_total INTEGER','completed_partial INTEGER NOT NULL DEFAULT 0','user_supplied_count INTEGER NOT NULL DEFAULT 0']){try{await DB.prepare('ALTER TABLE spotify_user_imports ADD COLUMN '+col).run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}}})()
-    .catch(e=>{spotifyImportReady.delete(DB);throw e;});
-  spotifyImportReady.set(DB,pending);return pending;
+  if(spotifyImportReady.has(DB))return;
+  await (async()=>{for(const sql of SPOTIFY_IMPORT_SCHEMA)await DB.prepare(sql).run(); for(const col of ['missing_json TEXT','source_total INTEGER','completed_partial INTEGER NOT NULL DEFAULT 0','user_supplied_count INTEGER NOT NULL DEFAULT 0']){try{await DB.prepare('ALTER TABLE spotify_user_imports ADD COLUMN '+col).run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}}})()
+    ;
+  spotifyImportReady.add(DB);
 }
 // Include both admin peers and approved user-submitted peers; only saved
 // catalogue snapshots are trusted for adding peer-backed entries.
@@ -1173,7 +1175,7 @@ async function reconcileHIVERequests(env){
 }
 
 async function markDone(DB, id, playlistId = null) {
-  await DB.prepare("UPDATE requests SET status = 'done', done_at = ?, playlist_id = COALESCE(?, playlist_id), dedupe = dedupe || '|done|' || id WHERE id = ?").bind(Date.now(), playlistId, id).run();
+  await DB.prepare("UPDATE requests SET status = 'done', done_at = ?, playlist_id = COALESCE(?, playlist_id), dedupe = dedupe || '|done|' || id WHERE id = ? AND status = 'active'").bind(Date.now(), playlistId, id).run();
 }
 // the playlist picture from Spotify becomes the playlist's own picture (unless the admin already chose one)
 async function coverFromRequest(env, playlistId, image) {
@@ -1650,16 +1652,20 @@ async function syncPeerAll(env,peer){
   await reconcileHIVERequests(env).catch(()=>{});
   return counts;
 }
-async function recordListen(env,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url='',duration=0},{relayed=false}={}){
-  const DB=env.DB, eventId=crypto.randomUUID(), playedAt=Date.now();
-  await DB.prepare("INSERT INTO recent_listens (id,track_id,origin,remote_id,title,artist,album,cover_url,played_at) VALUES (?,?,?,?,?,?,?,?,?)")
-    .bind(eventId,clean(track_id,200),clean(origin,300),clean(remote_id,100),clean(title,200),clean(artist,200),clean(album,200),clean(cover_url,500),playedAt).run();
-  // Never allow a telemetry or D1 failure to interrupt a native listening event.
-  // A peer's relay /api/play increments its old play counter but is not a second listener.
-  if(!relayed)try{await recordTelemetryListen(env,{id:eventId,track_id,title,artist,album,duration,played_at:playedAt});}
-    catch(e){console.warn('Telemetry recording unavailable:',e.message);}
-  // Bound storage without a full-table cleanup on every play.
-  if(Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run();
+// The client supplies a random per-play ID. Counter, recent activity and ledger
+// commit together so retrying a lost response cannot double count a listen.
+function playEventId(req){const id=req.headers.get('x-wasp-play-id')||'';return /^[a-f0-9-]{36}$/i.test(id)?id:crypto.randomUUID();}
+async function recordListen(env,{track_id,origin='',remote_id='',title='',artist='',album='',cover_url='',duration=0},{relayed=false,eventId=crypto.randomUUID()}={}){
+  const DB=env.DB,playedAt=Date.now();await ensureTelemetrySchemaForMetadata(env);
+  const local=(await DB.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value;
+  const guard='NOT EXISTS(SELECT 1 FROM recent_listens WHERE id=?) AND NOT EXISTS(SELECT 1 FROM telemetry_events WHERE origin_id=? AND event_id=?)';
+  const counter=origin?DB.prepare(`INSERT INTO peer_listens(origin,remote_id,plays) SELECT ?,?,1 WHERE ${guard} ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1`).bind(origin,remote_id,eventId,local,eventId):DB.prepare(`UPDATE tracks SET plays=plays+1 WHERE id=? AND ${guard}`).bind(track_id,eventId,local,eventId);
+  const recent=DB.prepare(`INSERT OR IGNORE INTO recent_listens (id,track_id,origin,remote_id,title,artist,album,cover_url,played_at) SELECT ?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM telemetry_events WHERE origin_id=? AND event_id=?)`).bind(eventId,clean(track_id,200),clean(origin,300),clean(remote_id,100),clean(title,200),clean(artist,200),clean(album,200),clean(cover_url,500),playedAt,local,eventId);
+  const writes=[counter,recent];
+  if(!relayed)writes.push(DB.prepare(`INSERT OR IGNORE INTO telemetry_events(origin_id,event_id,played_at,track_id,title,artist,album,duration) VALUES(?,?,?,?,?,?,?,?)`).bind(local,eventId,playedAt,clean(track_id,160),clean(title,200),clean(artist,200),clean(album,200),Math.max(0,Math.min(86400,Number(duration)||0))));
+  const result=await DB.batch(writes);const inserted=Number(result[0]?.meta?.changes??result[0]?.changes??0)>0;
+  if(inserted&&Math.random()<0.02)await DB.prepare("DELETE FROM recent_listens WHERE id IN (SELECT id FROM recent_listens ORDER BY played_at DESC LIMIT -1 OFFSET 1000)").run().catch(()=>{});
+  return inserted;
 }
 async function runCronJob(env,kind,progress=async()=>{}){
   if(kind==="telemetry"){
@@ -1779,7 +1785,7 @@ async function api(req, env, url, ctx) {
   const DB = env.DB;
   let x;
   if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
-  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run))?$/.test(path)){
+  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull))?$/.test(path)){
     const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
     await ensureTelemetrySchemaForMetadata(env);return metadataAdmin(req,env,url);
   }
@@ -1848,18 +1854,18 @@ async function api(req, env, url, ctx) {
         if(new URL(bridgeOrigin).origin===origin && new URL(publicOrigin).protocol==="https:")canonical=new URL(publicOrigin).origin;
       }
     }catch{}
-    await DB.prepare("INSERT INTO peer_listens(origin,remote_id,plays) VALUES(?,?,1) ON CONFLICT(origin,remote_id) DO UPDATE SET plays=plays+1").bind(canonical,remote).run();
-    await recordListen(env,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url,duration:b.duration});
+    const eventId=playEventId(req);
+    const inserted=await recordListen(env,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url,duration:b.duration},{eventId});
     // Docker can send genuine listening events directly to its configured
     // source peer via Bridge. The source already exposes an anonymous /api/play
     // counter; this is what lets main Cloudflare charts reflect Docker listens.
     // Mark a local listen as synced only after the source acknowledges it, so
     // federation sums never count the same listen twice.
-    if(env.PEER_PLAY_SYNC==="1" && ctx?.waitUntil){
+    if(inserted && env.PEER_PLAY_SYNC==="1" && ctx?.waitUntil){
       ctx.waitUntil((async()=>{
         try{
           const response=await fetch(origin+"/api/play/"+encodeURIComponent(remote),{
-            method:"POST",signal:AbortSignal.timeout(6000),headers:{"X-WASP-Relay-Play":"1"}});
+            method:"POST",signal:AbortSignal.timeout(6000),headers:{"X-WASP-Relay-Play":"1","X-WASP-Play-Id":eventId}});
           if(response.ok)await DB.prepare("UPDATE peer_listens SET synced_plays=synced_plays+1 WHERE origin=? AND remote_id=? AND synced_plays<plays").bind(canonical,remote).run();
         }catch{/* Remains locally counted if the peer cannot be reached. */}
       })());
@@ -1908,11 +1914,10 @@ async function api(req, env, url, ctx) {
     if(url.searchParams.get('routing')==='1'){
       let cached=routingDemandCache.get(DB);
       if(!cached||cached.expires<=now){
-        const task=DB.prepare('SELECT origin,COUNT(*) AS listeners FROM active_streams WHERE expires_at>? GROUP BY origin ORDER BY listeners DESC LIMIT 120').bind(now).all().then(r=>({sources:r.results.map(x=>({origin:x.origin||'',listeners:Number(x.listeners)||0})),observed_at:now}));
-        cached={expires:now+30000,task};routingDemandCache.set(DB,cached);
-        task.catch(()=>{if(routingDemandCache.get(DB)===cached)routingDemandCache.delete(DB);});
+        const r=await DB.prepare('SELECT origin,COUNT(*) AS listeners FROM active_streams WHERE expires_at>? GROUP BY origin ORDER BY listeners DESC LIMIT 120').bind(now).all();
+        cached={expires:now+30000,value:{sources:r.results.map(x=>({origin:x.origin||'',listeners:Number(x.listeners)||0})),observed_at:now}};routingDemandCache.set(DB,cached);
       }
-      return json(await cached.task);
+      return json(cached.value);
     }
     if(url.searchParams.get('summary')==='1'){
       // A separate aggregate provides a *complete* listener count, even when
@@ -1972,6 +1977,10 @@ async function api(req, env, url, ctx) {
     return json(rows,200,{"cache-control":"no-store"});
   }
   // Local-only scanner authentication. This secret is never configured on the production Worker.
+  if(path==="/api/internal/metadata-tick" && m==="POST") {
+    if(env.WASP_RUNTIME!=='docker'||!env.SCANNER_SECRET||req.headers.get('x-scanner-secret')!==env.SCANNER_SECRET)return json({error:'Forbidden'},403);
+    await ensureTelemetrySchemaForMetadata(env);return json(await runMetadata(env,{continuous:true}));
+  }
   if(path==="/api/internal/cron-tick" && m==="POST") {
     if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
     // Docker installations do not execute Cloudflare scheduled handlers.
@@ -2403,10 +2412,9 @@ async function api(req, env, url, ctx) {
     return json({ ...counts, origin, remote_id:remoteId });
   }
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
-    const played = await DB.prepare("UPDATE tracks SET plays = plays + 1 WHERE id = ?").bind(x[1]).run();
-    if(Number(played.meta?.changes ?? played.changes ?? 0) === 0) return json({error:"Track not found"},404);
     const track=await DB.prepare("SELECT id,title,artist,album,duration FROM tracks WHERE id=?").bind(x[1]).first();
-    if(track)await recordListen(env,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album,duration:track.duration},{relayed:req.headers.get("x-wasp-relay-play")==="1"});
+    if(!track)return json({error:"Track not found"},404);
+    await recordListen(env,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album,duration:track.duration},{relayed:req.headers.get("x-wasp-relay-play")==="1",eventId:playEventId(req)});
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/react\/([\w-]+)$/)) && m === "POST") {
