@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=17.0.7">
+<link rel="stylesheet" href="/style.css?v=18.0.0">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -127,6 +127,12 @@
         <div class="card">
           <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded, and move to Previous requests. For a Spotify playlist, Refresh reads the playlist again and checks which of its songs are already in the library; when all of them are, the playlist is added to the Playlists tab with Spotify's picture and leaves the queue. Open the arrow to see what is still missing.</p>
           <p class="msg" id="reqMsg" role="status"></p>
+          <div class="request-housekeeping" id="reqHousekeeping">
+            <button class="btn ghost" type="button" id="reqSelectAll">Select visible</button>
+            <button class="btn ghost" type="button" id="reqRemoveSelected" disabled>Remove selected</button>
+            <button class="btn ghost" type="button" id="reqRemoveRemote">Remove all HIVE requests</button>
+            <button class="btn ghost" type="button" id="reqRemoveAll">Remove all requests</button>
+          </div><p class="muted">HIVE removals are local only. Removing local requests cancels them across HIVE. Completed requests and music are preserved.</p>
           <div id="reqRows" class="muted">The queue is empty.</div>
         </div>
       </div>
@@ -323,6 +329,7 @@
         </div>
       </div>
       <div id="netTelemetryPanel" class="hidden" role="tabpanel" aria-labelledby="netTabTelemetry">
+        <div class="card"><h2>HIVE telemetry synchronization</h2><p class="muted">Pull confirmed listening events from connected peers using the existing bounded synchronization job.</p><button class="btn ghost" type="button" id="telemetryPullShortcut">Pull telemetry from connected peers</button><p class="muted">Opens Crons and starts the Grab telemetry now action. Your automatic schedule remains unchanged.</p></div>
         <div class="card"><h2>HIVE metadata intelligence</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
           <form id="metadataForm" class="metadata-form" autocomplete="off">
             <section class="metadata-coverage" id="metadataCoverageCard" aria-labelledby="metadataCoverageTitle">
@@ -473,6 +480,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=17.0.7"></script>
+<script type="module" src="/admin.js?v=18.0.0"></script>
 </body>
 </html>

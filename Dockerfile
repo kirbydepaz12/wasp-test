@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     apt-get update && apt-get install -y --no-install-recommends caddy && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=optional
+RUN npm install --include=optional --no-audit --no-fund && npm cache clean --force
 COPY wrangler.local.jsonc wrangler.jsonc ./
 COPY src ./src
 COPY docs ./docs

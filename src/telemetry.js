@@ -106,7 +106,7 @@ function readDateWindow(params) {
   const offset=Math.max(-720,Math.min(840,Math.trunc(Number(params.get('offset'))||0)));
   const offsetMs=offset*MINUTE;
   let start,end;
-  if(mode==='all') {start=Date.UTC(2000,0,1);end=Date.now()+86400000;}
+  if(mode==='all') {start=Date.UTC(2000,0,1);end=Math.floor(Date.now()/86400000)*86400000+86400000;}
   else if(mode==='week') {
     const input=params.get('start');
     const ref=input && /^\d{4}-\d{2}-\d{2}$/.test(input)?new Date(input+'T00:00:00Z'):now;
@@ -136,7 +136,7 @@ export async function telemetrySummary(env,url) {
   const d=readDateWindow(url.searchParams),scope=url.searchParams.get('scope')||'hive';
   const local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   const f=scopeSql(scope,local);
-  const key=`v17.7:${scope}:${d.start}:${d.end}:${d.offset}`;
+  const key=`v18:${scope}:${d.start}:${d.end}:${d.offset}`;
   const cached=await db.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
   if(cached?.body) {try {return JSON.parse(cached.body);} catch { /* rebuild */ }}
   const clause=`played_at>=? AND played_at<?${f.where}`;
@@ -206,7 +206,7 @@ export async function telemetrySummary(env,url) {
     periods:[...(tagByMonth.get(name)||new Map())].map(([label,plays])=>({label,plays})).sort((a,b)=>a.label.localeCompare(b.label))}));
   // Release years are taken from explicit event metadata, or known local ID3 tags.
   // No year is inferred from a song name, upload date, or guessed artist era.
-  const decades=await q(`SELECT CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
+  const decades=await q(`SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 END AS decade,
        COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists,
        COUNT(DISTINCT LOWER(e.album)||'~'||LOWER(e.artist)) AS albums,
        COUNT(DISTINCT LOWER(e.title)||'~'||LOWER(e.artist)) AS tracks
@@ -214,19 +214,31 @@ export async function telemetrySummary(env,url) {
      WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
        AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850
      GROUP BY decade ORDER BY decade`);
-  const decadesTop=await q(`SELECT CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 AS decade,
-    e.album AS album,e.artist AS artist,COUNT(*) AS plays FROM telemetry_events e
+  const decadesTop=await q(`WITH album_counts AS (SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 END AS decade,
+    MIN(e.album) AS album,MIN(e.artist) AS artist,MIN(e.origin_id) AS origin_id,COUNT(*) AS plays FROM telemetry_events e
     LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year' LEFT JOIN hive_metadata albumYear ON albumYear.artist=LOWER(TRIM(e.artist)) AND albumYear.title='' AND albumYear.album=LOWER(TRIM(e.album)) AND albumYear.field='release_year' AND e.album<>''
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
     AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850 AND e.album<>''
-    GROUP BY decade,LOWER(e.album),LOWER(e.artist) ORDER BY plays DESC LIMIT 250`);
+    GROUP BY decade,LOWER(TRIM(e.album)),LOWER(TRIM(e.artist))), ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY decade ORDER BY plays DESC,LOWER(album),LOWER(artist)) AS rn FROM album_counts) SELECT * FROM ranked WHERE rn=1`);
   for(const drow of decades){const best=decadesTop.find(r=>Number(r.decade)===Number(drow.decade));
-    drow.topAlbum=best?.album||'';drow.topArtist=best?.artist||'';}
-  const countries=await q(`SELECT COALESCE(NULLIF(verified.value,''),NULLIF(e.country_code,''),a.country_code,'') AS code,
-    COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists
+    drow.topAlbum=best?.album||'';drow.topArtist=best?.artist||'';drow.topAlbumOrigin=best?.origin_id||'';drow.topAlbumPlays=Number(best?.plays||0);}
+  // One grouped scan, ranked inside SQLite: each country gets its highest-played
+  // artist and that artist's highest-played album for this same scope/date window.
+  const countries=await q(`WITH album_counts AS (
+    SELECT COALESCE(NULLIF(verified.value,''),NULLIF(e.country_code,''),a.country_code,'') AS code,
+      LOWER(TRIM(e.artist)) AS artist_key,LOWER(TRIM(e.album)) AS album_key,
+      MIN(e.artist) AS artist,MIN(e.album) AS album,MIN(e.origin_id) AS origin_id,COUNT(*) AS plays
     FROM telemetry_events e LEFT JOIN telemetry_artist_metadata a ON LOWER(e.artist)=a.artist_key LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title='' AND verified.album='' AND verified.field='country_code'
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-    GROUP BY code ORDER BY plays DESC LIMIT 180`);
+    GROUP BY code,artist_key,album_key),
+    artist_counts AS (SELECT code,artist_key,MIN(artist) AS artist,MIN(origin_id) AS origin_id,SUM(plays) AS plays FROM album_counts GROUP BY code,artist_key),
+    totals AS (SELECT code,SUM(plays) AS plays,COUNT(DISTINCT NULLIF(artist_key,'')) AS artists FROM artist_counts GROUP BY code),
+    artist_rank AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY code ORDER BY plays DESC,artist_key) AS rn FROM artist_counts WHERE artist_key<>''),
+    album_rank AS (SELECT ac.*,ROW_NUMBER() OVER(PARTITION BY ac.code,ac.artist_key ORDER BY ac.plays DESC,ac.album_key) AS rn FROM album_counts ac JOIN artist_rank ar ON ar.code=ac.code AND ar.artist_key=ac.artist_key AND ar.rn=1 WHERE ac.album_key<>'')
+    SELECT t.*,ar.artist AS topArtist,ar.plays AS topArtistPlays,ar.origin_id AS topArtistOrigin,
+      al.album AS topAlbum,al.plays AS topAlbumPlays,al.origin_id AS topAlbumOrigin FROM totals t
+      LEFT JOIN artist_rank ar ON ar.code=t.code AND ar.rn=1 LEFT JOIN album_rank al ON al.code=t.code AND al.rn=1
+      ORDER BY t.plays DESC,t.code`);
   const verifiedCountries=countries.filter(r=>/^[A-Z]{3}$/.test(r.code));
   const unknownCountryPlays=countries.filter(r=>!/^[A-Z]{3}$/.test(r.code)).reduce((sum,r)=>sum+Number(r.plays||0),0);
   const yearsKnown=decades.reduce((sum,r)=>sum+Number(r.plays||0),0);

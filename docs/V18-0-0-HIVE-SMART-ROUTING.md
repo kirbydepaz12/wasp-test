@@ -1,0 +1,33 @@
+# WASP v18.0.0 — HIVE Smart Routing
+
+**Staging release candidate.** Upgrade baseline: v17.0.7. This release does not deploy to any existing server automatically.
+
+## Native web player
+
+WASP retains alternate sources behind deduplicated catalogue rows. Candidates must match normalized artist, title, album and a duration within two seconds (or be the exact same source ID). This is a conservative metadata-based match, not a cryptographic guarantee of identical recordings. Unknown duration or album metadata prevents cross-source matching. The native player ranks up to six candidates using configured primary-peer preference, known offline state, observed playback startup latency, recent failures, anonymous active-stream counts, and a small randomized distribution factor. Primary preference is a weighting, not an exclusive pin. Demand observations are bounded to local and up to four peer endpoints, at most once per minute per browser; previous WASP versions without the routing summary remain playable. No audio is downloaded just to measure a server. This is browser-side routing, not an actual bandwidth measurement, a centralized load balancer, or a change to third-party Subsonic player behavior.
+
+On audio errors or a ten-second stall, the same persistent audio element tries another eligible source through the normal peer relay, restores the last playback position once metadata is ready, and preserves the queue and logical track. Once all candidates have been tried, the final source gets one retry. If unavailable, the player stops with a status and a manual retry option. A source switch can produce an audible buffering gap; recovery depends on matching seekable audio and available peers. The confirmed-play threshold remains ten seconds into a track and a source switch does not double-count that track. No music is copied or deleted. Listener presence describes the source actually in use.
+
+## HIVE requests
+
+Admin → Requests → Request queue provides individual Remove, Select visible / Clear selection, Remove selected, Remove all HIVE requests and Remove all requests. Every action asks for confirmation. Remote removals create persistent **local dismissals** by originating instance ID and request ID; they also hide the active request in this instance's public request display. A dismissed request continues to exist on its originating WASP and other peers; relaying and future completion history are unaffected. A newly submitted request with a different ID is not dismissed. Remove all applies to currently stored requests and is not a filter for future requests. Completed requests, uploaded music, playlists and accounts are not deleted. Removing a local active request cancels it on HIVE, unlike dismissing a remote request. Local bulk removal is bounded and continues in batches of eight. Migration creates a new dismissal table lazily and is additive; do not reset peer IDs or cursors.
+
+## Pull telemetry
+
+Admin → Network → Telemetry → **Pull telemetry from peers** links to the existing Admin → Network → Crons → **Grab telemetry now** action. It reports imported event count, successfully read peer feeds, eligible peer count, errors and new request events. A run rotates through up to ten eligible configured or approved published peers; repeat if needed, or allow the existing scheduled sync to continue. Older/nonsharing peers may not provide telemetry. Default five-minute schedule and independent sharing controls are preserved. Requests may sync as part of the same job. The cached dashboard may take up to five minutes to reflect imported history.
+
+## Interactive listening charts
+
+Most listened → Telemetry: select a country on Artist Map to highlight it and show the top artist and that artist's most-played album for the current listening scope and date filter. Hover, focus, tap or click Music by Decade to highlight the decade and reveal its top album, album artist and artwork. The statistics are independent rankings of confirmed plays, not number of songs stored. Verified release-year/origin metadata drives classification; no invented origin or release year. Missing data displays a fallback. The WASP color theme and persistent audio player are preserved. Artwork resolution uses local art then known peer fallback. Both charts support keyboard selection.
+
+## Safe deployment and rollback
+
+1. Keep a copy of your exact v17.0.7 files. Back up the current D1 database and R2 or Docker SQLite state, uploads, music, and Caddy state. Test against a separate staging database and stack before promoting to production.
+2. Full ZIP contains the entire source. The changes-only ZIP may be applied **only to an exact v17.0.7 source tree**, preserving host-specific configuration and credentials. It contains paths relative to repository root. Keep the same Docker stack name, existing service/container names, volume mappings, Worker name and bindings for a genuine upgrade; those files are unchanged.
+3. Check EC2 free disk (`df -h`, `sudo docker system df`) before rebuilding. The Dockerfile now includes optional dependencies required by workerd and cleans the npm cache. Enlarging EBS and its filesystem may still be required; do not delete inactive volumes. The archive contains no npm lockfile because the original release did not contain one; dependency resolution remains dependent on the registry.
+4. Deploy to isolated staging first. Confirm admin sidebar label `v18.0.0 · HIVE Smart Routing`, existing accounts and playlists, local and peer audio seek, requests, telemetry, and reverse-proxy HTTPS. Stop one staging source during a song to test real failover. Then try a genuine single-source failure and manual retry, and verify no double-count. Check D1 quota/read usage under representative traffic.
+5. To roll back, redeploy exact prior source against a consistent backed-up state. The additive dismissals table is ignored by older versions, so dismissed requests may reappear after rollback. Never run `docker compose down -v` on your live stack. Do not replace a production D1/R2 binding with a disposable one by accident.
+
+## Validation limits
+
+Node tests use a SQLite-backed D1 test adapter. Chromium tests use fixture APIs and real browser media with synthetic WAV sources (failure/resume are exercised without remote servers). They do not exercise real network transport, live Cloudflare D1 quotas or third-party mobile clients. This environment has no Docker CLI and cannot resolve the npm registry, so image build and live Wrangler/Worker deployment could not be validated. This is **not a production-certified release**. See the accompanying test report for regression results and outstanding baseline failures.

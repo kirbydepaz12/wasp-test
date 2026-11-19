@@ -1,3 +1,7 @@
+## WASP v18.0.0 — HIVE Smart Routing (staging)
+
+Adaptive browser audio-source selection and bounded failover, local HIVE request housekeeping, a manual peer telemetry shortcut, and interactive country and decade listening details. Existing storage, accounts and peer settings are preserved. Upgrade only from v17.0.7; review the [v18 rollout and validation guide](docs/V18-0-0-HIVE-SMART-ROUTING.md) before staging.
+
 ## WASP v17.0.7 — HIVE Metadata Coverage Enhancement (staging)
 
 Admin → Network → Telemetry now includes release-year and artist-origin coverage percentages, classified play counts, a manual bounded scan, and configurable frequently-played priority. MusicBrainz album release groups are cached by artist and album and reused across historical tracks; optional Wikidata factual fallback fills missing fields without fabricating data. Existing metadata, credentials, peer cursors and confirmed listening history are preserved. Use the default one entity per batch on Cloudflare Free; enable scheduled enrichment and allow MusicBrainz/Wikidata fallback if Last.fm is preferred. See [v17.0.7 setup, limits and rollback](docs/V17-0-7-HIVE-METADATA-COVERAGE.md).

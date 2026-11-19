@@ -69,6 +69,9 @@ export function ensureHiveRequests(env){
         updated_at INTEGER NOT NULL,meta TEXT,source_url TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(origin_id,request_id))`,
       `CREATE INDEX IF NOT EXISTS idx_hive_active_request ON hive_request_state(status,created_at)`,
+      `CREATE TABLE IF NOT EXISTS hive_request_dismissals (
+        origin_id TEXT NOT NULL, request_id TEXT NOT NULL, dismissed_at INTEGER NOT NULL,
+        PRIMARY KEY(origin_id,request_id))`,
       `CREATE TABLE IF NOT EXISTS hive_request_peer_cursors (
         url TEXT PRIMARY KEY,node_id TEXT NOT NULL DEFAULT '',cursor INTEGER NOT NULL DEFAULT 0,
         synced_at INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '')`
@@ -96,14 +99,13 @@ export async function reconcileLocalRequestEvents(env){
   const db=env.DB,local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   if(!originValid(local))return 0;
   // Bounded backfill on first upgrade and eventual status reconciliation.
-  const source=rows(await db.prepare(`SELECT id,kind,title,artist,album,image,url,created_at,done_at,status,meta
-    FROM requests ORDER BY created_at DESC LIMIT 500`).all());
+  const source=rows(await db.prepare(`SELECT r.id,r.kind,r.title,r.artist,r.album,r.image,r.url,r.created_at,r.done_at,r.status,r.meta
+    FROM requests r LEFT JOIN hive_request_state h ON h.origin_id=? AND h.request_id=r.id
+    WHERE h.request_id IS NULL OR h.status<>CASE WHEN r.status IN ('done','active') THEN r.status ELSE 'cancelled' END
+    ORDER BY r.created_at DESC LIMIT 8`).bind(local).all());
   let added=0;
   for(const r of source){
     const status=['done','active'].includes(r.status)?r.status:'cancelled';
-    const prior=await db.prepare('SELECT status FROM hive_request_state WHERE origin_id=? AND request_id=?')
-      .bind(local,r.id).first();
-    if(prior?.status===status)continue;
     try{await publishHiveRequest(env,r,status);added++;}catch{}
   }
   return added;
@@ -125,17 +127,31 @@ export async function hiveRequestFeed(env,url){
 export async function hiveRequestsForDisplay(env,{history=false,admin=false}={}){
   await ensureHiveRequests(env);
   const db=env.DB,local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
-  const rowsOut=rows(await db.prepare(`SELECT * FROM hive_request_state WHERE origin_id<>? AND status=?
-    ORDER BY created_at ASC LIMIT 500`).bind(local,history?'done':'active').all());
+  const rowsOut=rows(await db.prepare(`SELECT s.* FROM hive_request_state s WHERE s.origin_id<>? AND s.status=?
+    AND (s.status='done' OR NOT EXISTS (SELECT 1 FROM hive_request_dismissals d WHERE d.origin_id=s.origin_id AND d.request_id=s.request_id))
+    ORDER BY s.created_at ASC LIMIT 500`).bind(local,history?'done':'active').all());
   return rowsOut.map(r=>{
     let meta=null;try{meta=r.meta?JSON.parse(r.meta):null;}catch{}
     return {id:r.origin_id+'|'+r.request_id,kind:r.kind,title:r.title,artist:r.artist,album:r.album,
       image:r.image,url:r.url,created_at:r.created_at,done_at:history?r.updated_at:null,
       remote:true,origin_id:r.origin_id,source_url:r.source_url,
       ...(meta&&meta.total?{total:meta.total,partial:!!meta.partial}:{}),
-      // Only the originating WASP may complete/remove remote requests.
+      // Origin alone can complete/cancel; local admins can dismiss active remote rows.
       read_only:true};
   });
+}
+// Remote dismissals are private to this server; no exported cancellation event.
+export async function dismissHiveRequests(env,{ids=[],all=false}={}){
+  await ensureHiveRequests(env);
+  const db=env.DB,local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value;
+  const now=Date.now();
+  if(all){const r=await db.prepare(`INSERT OR IGNORE INTO hive_request_dismissals(origin_id,request_id,dismissed_at)
+    SELECT origin_id,request_id,? FROM hive_request_state WHERE origin_id<>? AND status='active'`).bind(now,local).run();return changes(r);}
+  const pairs=[...new Set(ids)].map(id=>String(id).split('|')).filter(p=>p.length===2&&originValid(p[0])&&idValid(p[1])&&p[0]!==local);
+  if(!pairs.length)return 0;
+  const statements=pairs.map(([o,id])=>db.prepare(`INSERT OR IGNORE INTO hive_request_dismissals(origin_id,request_id,dismissed_at)
+    SELECT origin_id,request_id,? FROM hive_request_state WHERE origin_id=? AND request_id=? AND status='active'`).bind(now,o,id));
+  return (await db.batch(statements)).reduce((n,r)=>n+changes(r),0);
 }
 // Pull from every directly connected admin peer and approved user-published
 // server, eventually forwarding origin-tagged events through intermediate peers.

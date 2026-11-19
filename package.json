@@ -1,13 +1,15 @@
 {
   "name": "wasp-music",
-  "version": "17.0.7",
+  "version": "18.0.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm run build:docs && wrangler deploy",
     "docker": "npm run build:docs && docker compose up -d --build",
     "build:docs": "node scripts/build-docs.mjs",
-    "test:mobile": "node --test tests/v16_mobile_bridge.test.mjs"
+    "test:mobile": "node --test tests/v16_mobile_bridge.test.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:v18": "node --test tests/v18_features.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.50.0"

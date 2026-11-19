@@ -346,13 +346,32 @@ function localSourceRank(t) {
   if (primaryPeerOrigin && t.origin === primaryPeerOrigin) return 3;
   return t.origin ? 1 : 2;
 }
+let routeCatalogue=new Map(),routeRecordingIndex=new Map();
+const routeIdentity=t=>`${t.origin||''}|${t.remote_id||(t.origin&&String(t.id).startsWith(t.origin+'|')?String(t.id).slice(t.origin.length+1):t.id)}`;
+const routeNorm=s=>String(s||'').normalize('NFKC').trim().toLowerCase().replace(/\s+/g,' ');
+function routeRecordingKey(t){
+  const artist=routeNorm((t.artists||[])[0]||t.artist),title=routeNorm(t.title),album=routeNorm(t.album);
+  if(!artist||!title||!album||!Number(t.duration))return '';
+  return JSON.stringify([artist,title,album]);
+}
+function samePlayableRecording(a,b){
+  if(routeIdentity(a)===routeIdentity(b))return true;
+  // Metadata matching is conservative and never compares versions across albums.
+  const key=routeRecordingKey(a);if(!key||key!==routeRecordingKey(b))return false;
+  const ad=Number(a.duration),bd=Number(b.duration);
+  return ad>0&&bd>0&&Math.abs(ad-bd)<=2;
+}
 function dedupeCatalogue(items) {
-  const groups = new Map(), output=[];
+  routeCatalogue=new Map();routeRecordingIndex=new Map();
+  const groups = new Map(), members=new Map(), output=[];
   for (const t of items) {
+    const routeKey=routeRecordingKey(t);if(routeKey){if(!routeRecordingIndex.has(routeKey))routeRecordingIndex.set(routeKey,[]);routeRecordingIndex.get(routeKey).push(t);}
     const artist=normalizeRecording((t.artists&&t.artists[0])||t.artist), title=normalizeRecording(t.title);
     const duration=Math.round(Number(t.duration)||0);
     const version=/\b(live|remix|remaster|acoustic|instrumental|demo|edit)\b/i.test(t.title||"");
     const key=artist && title && duration>0 && !version ? `${artist}|${title}|${Math.round(duration/3)}` : `unique:${t.origin||"local"}:${t.id}`;
+    if(!members.has(key))members.set(key,[]);
+    members.get(key).push(t);
     const prior=groups.get(key);
     if (!prior) { t.alternates=[]; groups.set(key,t); output.push(t); }
     else if (localSourceRank(t)>localSourceRank(prior)) {
@@ -362,6 +381,7 @@ function dedupeCatalogue(items) {
       prior.alternates.push({origin:t.origin||null,id:t.id});
     }
   }
+  for(const group of members.values())for(const t of group)routeCatalogue.set(t.id,group);
   return output;
 }
 async function load() {
@@ -459,6 +479,7 @@ async function load() {
   if (remote.length) tracks = dedupeCatalogue(tracks.concat(remote));
   else tracks = dedupeCatalogue(tracks);
   byId = Object.fromEntries(tracks.map((x) => [x.id, x]));
+  for(const [id,group] of routeCatalogue)if(!byId[id])byId[id]=group.find(t=>t.id===id);
   // Keep peer playlist tracks addressable even when catalogue deduplication hides them.
   for(const [key,t] of peerTrackLookup) if(!byId[key]) byId[key]=t;
   // A public playlist can contain a song borrowed from a third RiffVault instance.
@@ -1028,6 +1049,7 @@ async function refreshRecentListens(){
         }catch{return null;}
       };
       const [events,liveRaw]=await Promise.all([get('/api/recent-listens'),get('/api/active-streams?summary=1')]);
+      
       // Older WASP peers still return the legacy array. Their count is only a
       // lower bound; mark the displayed total with a + until they upgrade.
       const legacy=Array.isArray(liveRaw);
@@ -1819,6 +1841,100 @@ function startQueue(ids, id, label, pl, kind = "") {
   queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id);
 }
 const mediaUrl = (t, path) => (t && t.origin ? peerResourceUrl(t.origin,path) : path);
+// HIVE Smart Routing: browser-observed health only; no music bytes are probed or cached.
+const routingHealth=new Map();
+const routeOrigin=t=>t.origin?(peerCanonicalOrigins.get(registeredPeerOrigin(t.origin))||registeredPeerOrigin(t.origin)): '';
+let playbackRoute=null,routeSerial=0,routeTimer=0,routingIntent=false;
+const routeClock=()=>Date.now();
+function routeHealth(origin){return routingHealth.get(origin)||{};}
+function routeScore(t,now=routeClock(),random=Math.random){
+  const h=routeHealth(routeOrigin(t));
+  const preferred=primaryPeerOrigin&&registeredPeerOrigin(t.origin)===primaryPeerOrigin?0:!t.origin?10:18;
+  return preferred+(t.peer_offline?450:0)+Math.min(100,(Number(h.latency)||0)/20)+Math.min(100,(Number(h.listeners)||0)*3)+(h.failedUntil>now?180:0)+random()*26;
+}
+function routeCandidates(t){
+  const group=routeRecordingIndex.get(routeRecordingKey(t))||routeCatalogue.get(t.id)||[t];
+  const unique=new Map();for(const source of [t,...group])if(samePlayableRecording(t,source))unique.set(routeIdentity(source),source);
+  // Canonical aliases of one peer must not masquerade as redundant origins.
+  const candidates=new Map();for(const source of unique.values()){
+    const origin=source.origin?(peerCanonicalOrigins.get(registeredPeerOrigin(source.origin))||registeredPeerOrigin(source.origin)):'';
+    const key=origin+'|'+(source.remote_id||source.id);
+    if(!candidates.has(key))candidates.set(key,source);
+  }
+  return [...candidates.values()].map(source=>({source,score:routeScore(source)})).sort((a,b)=>a.score-b.score).slice(0,6).map(x=>x.source);
+}
+let routeDemandLast=0,routeDemandBusy=false;
+async function refreshRouteDemand(sources){
+  if(sources.length<2||routeDemandBusy||routeClock()-routeDemandLast<60000)return;
+  routeDemandBusy=true;routeDemandLast=routeClock();
+  const origins=[...new Map(sources.filter(t=>t.origin).map(t=>[routeOrigin(t),t])).values()].slice(0,4);
+  const get=async base=>{try{const r=await fetch(base+'/api/active-streams?routing=1',{signal:AbortSignal.timeout(3500),cache:'no-store'});const d=r.ok?await r.json():null;return Array.isArray(d?.sources)?d.sources:null;}catch{return null;}};
+  try{
+    const values=await Promise.all([get(''),...origins.map(t=>get(peerResourceUrl(t.origin,'')))]);
+    const local=values[0];
+    if(local){for(const t of sources){const o=routeOrigin(t),demand=local.filter(r=>(r.origin?(peerCanonicalOrigins.get(registeredPeerOrigin(r.origin))||registeredPeerOrigin(r.origin)):'')===o).reduce((n,r)=>n+Math.max(0,Number(r.listeners)||0),0);routingHealth.set(o,{...routeHealth(o),localDemand:demand,listeners:demand});}}
+    origins.forEach((t,i)=>{const rows=values[i+1];if(!rows)return;const o=routeOrigin(t),h=routeHealth(o);const own=rows.filter(r=>!r.origin).reduce((n,r)=>n+Math.max(0,Number(r.listeners)||0),0);routingHealth.set(o,{...h,listeners:(h.localDemand||0)+own});});
+  }finally{routeDemandBusy=false;}
+}
+function clearRouteTimer(){clearTimeout(routeTimer);routeTimer=0;}
+function routeNotice(message){const el=$('#routeStatus');if(el)el.textContent=message;}
+function routeUrl(t){return mediaUrl(t,'/audio/'+enc(t.remote_id||(t.origin&&String(t.id).startsWith(t.origin+'|')?String(t.id).slice(t.origin.length+1):t.id)));}
+function armRouteTimer(route,delay=10000){
+  clearRouteTimer();if(!route||!routingIntent)return;
+  const serial=route.serial,attempt=route.attempt;
+  routeTimer=setTimeout(()=>{if(playbackRoute?.serial===serial&&playbackRoute.attempt===attempt&&routingIntent&&!audio.ended)recoverRoute('Stream timed out');},delay);
+}
+function startRouteSource(route,position){
+  if(playbackRoute!==route||!routingIntent)return;
+  clearRouteTimer();const source=route.sources[route.index];if(!source)return;
+  route.source=source;route.attempt++;route.measured=false;route.started=routeClock();route.resume=Math.max(0,Number(position)||0);route.lastTime=route.resume;
+  route.loading=true;route.switching=true;const attempt=route.attempt;
+  audio.src=routeUrl(source);
+  const completeMetadata=()=>{
+    if(playbackRoute!==route||route.attempt!==attempt||!route.loading||audio.readyState<1)return;
+    if(route.resume>0){try{audio.currentTime=Math.min(route.resume,Number.isFinite(audio.duration)?Math.max(0,audio.duration-.25):route.resume);}catch{}}
+    route.loading=false;
+  };
+  route.onMetadata=completeMetadata;
+  audio.play().catch(error=>{
+    if(playbackRoute!==route||route.attempt!==attempt)return;
+    if(error?.name==='NotAllowedError'){routingIntent=false;clearRouteTimer();routeNotice('Press play to continue.');return;}
+    if(error?.name!=='AbortError')recoverRoute('Playback source unavailable');
+  });
+  armRouteTimer(route);
+}
+function recoverRoute(reason){
+  const route=playbackRoute;if(!route||!routingIntent||route.exhausted)return;
+  const position=route.loading?route.resume:(audio.seeking?Number(audio.currentTime)||route.lastTime:route.lastTime);
+  const origin=routeOrigin(route.source),h=routeHealth(origin);
+  routingHealth.set(origin,{...h,failedUntil:routeClock()+120000});clearRouteTimer();
+  if(route.index+1<route.sources.length){route.index++;routeNotice('HIVE: switching source…');startRouteSource(route,position);return;}
+  // One bounded retry even if no mirror exists; never skip or loop endlessly.
+  if(!route.retried){route.retried=true;routeNotice('HIVE: reconnecting…');startRouteSource(route,position);return;}
+  route.exhausted=true;routingIntent=false;audio.pause();routeNotice(reason+'. Press play to retry.');
+}
+function beginRoute(t,position=0){
+  clearRouteTimer();routingIntent=true;routeNotice('');
+  playbackRoute={serial:++routeSerial,attempt:0,sources:routeCandidates(t),index:0,retried:false,exhausted:false,lastTime:position,source:null,loading:true};
+  startRouteSource(playbackRoute,position);
+  void refreshRouteDemand(playbackRoute.sources);
+}
+audio.addEventListener('loadedmetadata',()=>playbackRoute?.onMetadata?.());
+audio.addEventListener('playing',()=>{
+  const route=playbackRoute;if(!route||!routingIntent)return;
+  route.onMetadata?.();route.switching=false;clearRouteTimer();
+  const origin=routeOrigin(route.source),h=routeHealth(origin),latency=Math.max(0,routeClock()-route.started);
+  if(!route.measured){routingHealth.set(origin,{...h,latency:h.latency?(h.latency*.75+latency*.25):latency,failedUntil:0});route.measured=true;}routeNotice(route.index||route.retried?'HIVE: playback recovered.':'');
+});
+audio.addEventListener('waiting',()=>{if(playbackRoute&&routingIntent&&!routeTimer)armRouteTimer(playbackRoute);});
+audio.addEventListener('stalled',()=>{if(playbackRoute&&routingIntent&&!routeTimer)armRouteTimer(playbackRoute);});
+audio.addEventListener('error',()=>{if(audio.error&&playbackRoute&&routingIntent)recoverRoute('No available playback source');});
+audio.addEventListener('seeking',()=>{const route=playbackRoute;if(route&&!route.loading){route.lastTime=Number(audio.currentTime)||0;if(routingIntent&&!routeTimer)armRouteTimer(route);}});
+audio.addEventListener('seeked',()=>{if(playbackRoute&&routingIntent&&audio.readyState>=3)clearRouteTimer();});
+audio.addEventListener('timeupdate',()=>{const route=playbackRoute;if(route&&!route.loading&&Number.isFinite(audio.currentTime)){
+  if(!audio.seeking&&audio.currentTime>route.lastTime+.1)clearRouteTimer();route.lastTime=audio.currentTime;}});
+audio.addEventListener('play',()=>{if(playbackRoute){routingIntent=true;if(!playbackRoute.exhausted&&!routeTimer&&audio.readyState<3)armRouteTimer(playbackRoute);}});
+audio.addEventListener('pause',()=>{if(playbackRoute&&!playbackRoute.switching&&!audio.error&&!audio.ended){routingIntent=false;clearRouteTimer();}});
 function play(id) {
   const t = byId[id];
   if (!t) return;
@@ -1826,8 +1942,7 @@ function play(id) {
   if (qi < 0) { queue = [id]; qi = 0; }
   audio.dataset.id = id; counted = false; left = repeat ? repeat - 1 : 0;
   // Peer listens count on this WASP instance without altering the peer's files.
-  audio.src = mediaUrl(t, "/audio/" + enc(t.remote_id || (t.origin && String(id).startsWith(t.origin+"|") ? String(id).slice(t.origin.length+1) : id)));
-  audio.play().catch(() => {});
+  beginRoute(t);
   // Keep the earlier stream active only until the new audio begins playing.
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
   $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
@@ -2113,7 +2228,12 @@ window.addEventListener("hashchange", () => {
 });
 $("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); if (parse().a !== "request") render(); });
 $("#pp").addEventListener("click", () => {
-  if (audio.src) return audio.paused ? audio.play() : audio.pause();
+  if (audio.src) {
+    if(playbackRoute?.exhausted&&cur())return beginRoute(cur(),playbackRoute.lastTime);
+    if(routingIntent&&!audio.ended){routingIntent=false;if(playbackRoute)playbackRoute.switching=false;clearRouteTimer();return audio.pause();}
+    if(audio.paused){routingIntent=true;if(playbackRoute)armRouteTimer(playbackRoute);return audio.play().catch(()=>{});}
+    return audio.pause();
+  }
   if (view.ids.length) startQueue(view.ids, view.ids[0], view.label, view.pl); else shuffleIn("all");
 });
 $("#prev").addEventListener("click", () => { if (audio.currentTime > 3) audio.currentTime = 0; else step(-1); });
@@ -2231,7 +2351,7 @@ function streamPost(action,track){
   }).catch(()=>{}));
 }
 function syncLiveStream(force=false){
-  const t=cur();
+  const t=playbackRoute?.source||cur();
   const playing=!!(t&&audio.currentSrc&&!audio.paused&&!audio.ended&&audio.readyState>=2);
   const key=playing?listenKey({...streamPayload(t),source_server:location.origin}):'';
   const now=Date.now();
@@ -2262,18 +2382,23 @@ audio.addEventListener("timeupdate", () => {
   syncLyrics();
   if (audio.duration) $("#seek").value = (audio.currentTime / audio.duration) * 100;
   const t = cur();
-  if (t && !counted && audio.currentTime >= 10) {
+  if (t && !counted && !playbackRoute?.loading && audio.currentTime >= 10) {
     counted = true; t.plays++;
-    if(t.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(t.origin),remote_id:t.remote_id||String(t.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||"",duration:t.duration||0})}).catch(()=>{});
-    else fetch("/api/play/" + t.id, { method: "POST" }).catch(() => {});
+    const played=playbackRoute?.source||t;
+    if(played.origin) fetch("/api/play-peer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({origin:registeredPeerOrigin(played.origin),remote_id:played.remote_id||String(played.id).split("|").at(-1),title:t.title,artist:artistLine(t),album:albumName(t),cover_url:t.cover_url||"",duration:t.duration||0})}).catch(()=>{});
+    else fetch("/api/play/" + played.id, { method: "POST" }).catch(() => {});
   }
 });
 audio.addEventListener("play", () => { setTip("#pp", "Pause"); $("#ppi").innerHTML = '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'; });
 audio.addEventListener("pause", () => { setTip("#pp", "Play"); $("#ppi").innerHTML = '<path d="M7 4v16l13-8z"/>'; });
 audio.addEventListener("ended", () => {
+  const route=playbackRoute,expected=Number(cur()?.duration)||0;
+  if(route&&routingIntent&&expected>0&&Number(audio.duration)>0&&Number(audio.duration)<expected-5&&route.sources.length>1){recoverRoute('Source ended early');return;}
+  clearRouteTimer();
   if (left > 0) { left--; audio.currentTime = 0; audio.play(); } else step(1);
 });
 if ("mediaSession" in navigator) {
+  try{navigator.mediaSession.setActionHandler('pause',()=>{routingIntent=false;clearRouteTimer();if(playbackRoute)playbackRoute.switching=false;audio.pause();});navigator.mediaSession.setActionHandler('play',()=>{if(playbackRoute?.exhausted&&cur())beginRoute(cur(),playbackRoute.lastTime);else {routingIntent=true;audio.play().catch(()=>{});}});}catch{}
   navigator.mediaSession.setActionHandler("previoustrack", () => step(-1));
   navigator.mediaSession.setActionHandler("nexttrack", () => step(1));
 }

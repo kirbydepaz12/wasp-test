@@ -2,7 +2,7 @@ import {metadataAdmin, metadataFeed, runMetadata} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
-  hiveRequestFeed,hiveRequestsForDisplay} from "./hive-requests.js";
+  hiveRequestFeed,hiveRequestsForDisplay,dismissHiveRequests} from "./hive-requests.js";
 import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi, ensureTelemetrySchema as ensureTelemetrySchemaForMetadata} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "17.0.7";
-const BUILD_LABEL = "HIVE Metadata Coverage Enhancement";
+const BUILD_VERSION = "18.0.0";
+const BUILD_LABEL = "HIVE Smart Routing";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1490,6 +1490,7 @@ async function serveLyrics(env, url) {
   return json({ synced: rec.synced, plain: rec.plain, instrumental: rec.instrumental, source: rec.source }, 200, { "cache-control": "public, max-age=3600" });
 }
 
+const routingDemandCache=new WeakMap();
 const TRACK_COLS = `t.id, t.title, t.artist, t.artists, t.album, t.track_no, t.duration, t.plays, t.created_at,
   COALESCE(SUM(r.kind = 'heart'), 0) AS hearts, COALESCE(SUM(r.kind = 'like'), 0) AS likes, COALESCE(SUM(r.kind = 'dislike'), 0) AS dislikes`;
 
@@ -1502,7 +1503,7 @@ async function touchCatalogue(DB) {
 function changesCatalogue(path) {
   return path === "/api/internal/folder-index" || path === "/api/admin/upload" ||
     path === "/api/admin/clean" || path.startsWith("/api/admin/tracks/") ||
-    path.startsWith("/api/admin/playlists") || path.startsWith("/api/admin/requests/") ||
+    path.startsWith("/api/admin/playlists") || (path.startsWith("/api/admin/requests/") && path!=="/api/admin/requests/housekeeping") ||
     path.startsWith("/api/user/playlists");
 }
 async function catalogueVersion(DB) {
@@ -1639,7 +1640,8 @@ async function runCronJob(env,kind,progress=async()=>{}){
     const result=await syncTelemetryPeers(env,{force:true});
     await progress(55,"Syncing HIVE requests");
     const requests=await syncHiveRequests(env,{force:true});
-    await progress(100,"HIVE telemetry and requests synchronized");return {...result,requests};
+    const message=`Telemetry: ${result.imported||0} new events; ${result.checked||0} peer feeds read of ${result.totalPeers||0} eligible; ${result.errors||0} errors. Request sync: ${requests.imported||0} new events. ${result.totalPeers>10?'Bounded batch; repeat to rotate through remaining peers.':''}`;
+    await progress(100,message);return {...result,requests,message};
   }
   if(kind==="hash"){
     if(!env.SCANNER_SECRET)return {error:"Only supported on Docker with scanner enabled"};
@@ -1723,7 +1725,7 @@ async function executeManualCron(env,kind,runId){
     await progress(1,'Preparing '+kind);
     const result=await runCronJob(env,kind,progress);
     await setCronRunStatus(env.DB,runId,{kind,state:result?.queued?'queued':result?.error?'error':'complete',progress:result?.queued?10:100,
-      message:result?.error|| (result?.queued?'Waiting for Docker scanner':'Complete'),result,started});
+      message:result?.error||result?.message|| (result?.queued?'Waiting for Docker scanner':'Complete'),result,started});
   }catch(error){await setCronRunStatus(env.DB,runId,{kind,state:'error',progress:0,message:String(error.message).slice(0,160),started});}
 }
 async function telemetryScheduleTick(env,when=Date.now(),{skipTelemetry=false}={}){
@@ -1876,6 +1878,15 @@ async function api(req, env, url, ctx) {
   // use cookies, account data, network addresses or user identifiers here.
   if(path==="/api/active-streams" && m==="GET"){
     const now=Date.now();
+    if(url.searchParams.get('routing')==='1'){
+      let cached=routingDemandCache.get(DB);
+      if(!cached||cached.expires<=now){
+        const task=DB.prepare('SELECT origin,COUNT(*) AS listeners FROM active_streams WHERE expires_at>? GROUP BY origin ORDER BY listeners DESC LIMIT 120').bind(now).all().then(r=>({sources:r.results.map(x=>({origin:x.origin||'',listeners:Number(x.listeners)||0})),observed_at:now}));
+        cached={expires:now+30000,task};routingDemandCache.set(DB,cached);
+        task.catch(()=>{if(routingDemandCache.get(DB)===cached)routingDemandCache.delete(DB);});
+      }
+      return json(await cached.task);
+    }
     if(url.searchParams.get('summary')==='1'){
       // A separate aggregate provides a *complete* listener count, even when
       // the song list is capped. Never expose session IDs or account details.
@@ -1998,7 +2009,7 @@ async function api(req, env, url, ctx) {
   if(path==="/api/internal/fingerprint-prune" && m==="POST"){
     if(!env.SCANNER_SECRET || req.headers.get("x-scanner-secret")!==env.SCANNER_SECRET)return json({error:"Forbidden"},403);
     const b=await req.json().catch(()=>({}));
-    if(!Array.isArray(b.ids)||b.ids.length>100||b.ids.some(id=>!/^folder-[a-f0-9]{40}$/.test(id)))return json({error:"Invalid file identifiers"},400);
+    if(!Array.isArray(b.ids)||b.ids.length>8||b.ids.some(id=>!/^folder-[a-f0-9]{40}$/.test(id)))return json({error:"Invalid file identifiers"},400);
     if(b.ids.length)await DB.batch(b.ids.map(id=>DB.prepare("DELETE FROM file_fingerprints WHERE track_id=?").bind(id)));
     return json({ok:true,removed:b.ids.length});
   }
@@ -2937,8 +2948,7 @@ async function api(req, env, url, ctx) {
         source_status:mt.source_status||'unverified',matched:checked?mt.matched:null,
         matched_local:checked?mt.matched_local:null,matched_peer:checked?mt.matched_peer:null,missing:checked?mt.matched_missing:null,availability_checked_at:checked?mt.availability_checked_at:null});
     }
-    // Remote requests remain owned by their original server. A local admin
-    // may add music, but cannot delete or prematurely mark them complete.
+    // Remote requests retain origin ownership; local admins can dismiss copies.
     const remote=(await hiveRequestsForDisplay(env,{admin:true})).map(r=>({...r,total:null,missing:[]}));
     return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
   }
@@ -2987,10 +2997,29 @@ async function api(req, env, url, ctx) {
       source_total:reportedTotal,source_status:meta.source_status||'unverified',
       matched:matched.length,local:local_count,peer:peer_count,missing});
   }
+  if (path === '/api/admin/requests/housekeeping' && m === 'POST') {
+    const b=await req.json().catch(()=>null);
+    if(!b || !['selected','remote','all'].includes(b.mode) || b.confirm!==true ||
+      (b.mode==='selected' && (!Array.isArray(b.ids)||!b.ids.length||b.ids.length>8||b.ids.some(id=>typeof id!=='string'||id.length>192))))return json({error:'Invalid housekeeping selection or confirmation.'},400);
+    const ids=b.mode==='selected'?[...new Set(b.ids)]:[];
+    const remote=await dismissHiveRequests(env,{all:b.mode!=='selected',ids});
+    let local=0;
+    if(b.mode==='all'||b.mode==='selected'){
+      // Only explicitly selected or active local requests; never delete history or music.
+      const own=b.mode==='all'?(await DB.prepare("SELECT * FROM requests WHERE status='active' LIMIT 8").all()).results:
+        (await Promise.all(ids.filter(id=>/^[\w-]{8,100}$/.test(id)).map(id=>DB.prepare("SELECT * FROM requests WHERE id=? AND status='active'").bind(id).first()))).filter(Boolean);
+      for(const row of own){await publishHiveRequest(env,row,'cancelled');
+        const r=await DB.prepare("DELETE FROM requests WHERE id=? AND status='active'").bind(row.id).run();local+=Number(r.meta?.changes||0);}
+    }
+    const more=b.mode==='all'&&!!(await DB.prepare("SELECT 1 FROM requests WHERE status='active' LIMIT 1").first());
+    return json({ok:true,remote,local,more});
+  }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)$/)) && m === "DELETE") {
     const own=await DB.prepare("SELECT * FROM requests WHERE id=?").bind(x[1]).first();
-    if(own)await publishHiveRequest(env,own,'cancelled').catch(()=>{});
-    await DB.prepare("DELETE FROM requests WHERE id = ?").bind(x[1]).run();
+    if(own?.status==='active'){
+      await publishHiveRequest(env,own,'cancelled');
+      await DB.prepare("DELETE FROM requests WHERE id = ? AND status='active'").bind(x[1]).run();
+    }
     return json({ ok: true });
   }
   if ((x = path.match(/^\/api\/admin\/playlists\/([\w-]+)\/cover$/))) {

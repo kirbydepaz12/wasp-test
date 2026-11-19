@@ -396,11 +396,47 @@ $("#spotifyConfigDelete").addEventListener("click", async () => {
 
 // ---------- requests ----------
 const openReq = new Set();
+const selectedRequests=new Set();let housekeepingBusy=false;
+function paintRequestSelection(){
+  const list=window.__reqs||[];
+  $('#reqRemoveSelected').disabled=housekeepingBusy||!selectedRequests.size;
+  $('#reqRemoveSelected').textContent=`Remove selected${selectedRequests.size?' ('+selectedRequests.size+')':''}`;
+  $('#reqSelectAll').textContent=list.length&&list.every(r=>selectedRequests.has(r.id))?'Clear selection':'Select visible';
+  $('#reqSelectAll').disabled=housekeepingBusy||!list.length;
+  $('#reqRemoveRemote').disabled=housekeepingBusy||!list.some(r=>r.remote);
+  $('#reqRemoveAll').disabled=housekeepingBusy||!list.length;
+}
+async function requestHousekeeping(mode,ids=[]){
+  if(housekeepingBusy)return;
+  const local=mode==='all'||(mode==='selected'&&ids.some(id=>!id.includes('|')));
+  if(!confirm(`${mode==='remote'?'Remove all received HIVE requests':mode==='all'?'Remove all active requests':`Remove ${ids.length} selected request(s)`}? Remote requests are hidden only on this WASP.${local?' Local requests will be cancelled on HIVE.':''} Music and completed history are kept.`))return;
+  housekeepingBusy=true;paintRequestSelection();
+  try{
+    const batches=mode==='selected'?Array.from({length:Math.ceil(ids.length/8)},(_,i)=>ids.slice(i*8,i*8+8)):[[]];
+    let removed=0,more=false;
+    for(const batch of batches){
+      let rounds=0;do{
+        const res=await post('/api/admin/requests/housekeeping',{mode,ids:batch,confirm:true});
+        const j=await res.json();if(!res.ok)throw Error(j.error||'Unable to remove requests');
+        removed+=Number(j.local||0)+Number(j.remote||0);more=!!j.more;
+      }while(more&&++rounds<64);
+    }
+    selectedRequests.clear();openReq.clear();flashMsg('#reqMsg',`${removed} request(s) removed.${more?' More requests remain; repeat to finish.':''}`);
+  }catch(e){flashMsg('#reqMsg',e.message,true);}
+  finally{housekeepingBusy=false;await loadRequests();}
+}
+$('#reqSelectAll').onclick=()=>{const list=window.__reqs||[];const all=list.every(r=>selectedRequests.has(r.id));selectedRequests.clear();if(!all)list.forEach(r=>selectedRequests.add(r.id));document.querySelectorAll('#reqRows [data-request-select]').forEach(x=>x.checked=selectedRequests.has(x.dataset.requestSelect));paintRequestSelection();};
+$('#reqRemoveSelected').onclick=()=>requestHousekeeping('selected',[...selectedRequests]);
+$('#reqRemoveRemote').onclick=()=>requestHousekeeping('remote');
+$('#reqRemoveAll').onclick=()=>requestHousekeeping('all');
+$('#reqRows').addEventListener('change',e=>{const id=e.target.dataset.requestSelect;if(!id)return;e.target.checked?selectedRequests.add(id):selectedRequests.delete(id);paintRequestSelection();});
 async function loadRequests() {
   let list = [];
   try { const res=await fetch("/api/admin/requests");if(!res.ok)throw Error(`Request queue unavailable (HTTP ${res.status})`);list=await res.json(); } catch(e) { $("#reqRows").textContent=e.message;return; }
   if (!Array.isArray(list)) list = [];
   window.__reqs = list;
+  const visible=new Set(list.map(r=>r.id));for(const id of selectedRequests)if(!visible.has(id))selectedRequests.delete(id);
+  paintRequestSelection();
   $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => {
     const pl = r.kind === "playlist", has = pl && r.total != null && Array.isArray(r.missing);
     const miss = has ? r.missing.length : 0;
@@ -409,16 +445,16 @@ async function loadRequests() {
     const unverifiedBoundary=has && !!r.partial && !knownIncomplete;
     const progress = has ? `${r.matched}/${r.total}${knownIncomplete ? ` of ${sourceCount} reported` : unverifiedBoundary ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? (r.total!=null ? "Availability check pending — refresh or wait for scheduled matching" : "Song list not available") : "";
     const open = openReq.has(r.id);
-    return `<tr data-r="${r.id}">
-    <td style="width:56px">${mini(r.image, r.title)}</td>
+    return `<tr data-r="${esc(r.id)}">
+    <td style="width:76px"><label class="request-pick"><input type="checkbox" data-request-select="${esc(r.id)}" aria-label="Select ${esc(r.title)}" ${selectedRequests.has(r.id)?'checked':''}>${mini(r.image, r.title)}</label></td>
     <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${progress ? `<br><span class="muted">${esc(progress)}${r.availability_checked_at?` · Checked ${esc(new Date(r.availability_checked_at).toLocaleString())}`:""}</span>` : ""}</td>
-    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl && !r.remote ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}${r.remote?'<span class="muted">Managed by originating WASP</span>':`<button class="btn ghost" data-a="remove" ${small}>Remove</button>`}</td></tr>
+    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl && !r.remote ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}<button class="btn ghost" data-a="remove" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">Remove</button></td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
       ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
       ${knownIncomplete ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${sourceCount} songs, but only ${r.total} were retrieved. Fetch the full song list before completion; known missing Spotify songs cannot be skipped.</p>` :
         unverifiedBoundary ? `<p class="muted" style="margin:4px 0;font-size:13px">${r.total} Spotify songs retrieved; full playlist length unverified. More songs may exist beyond those retrieved.</p>` :
         r.source_status==='verified' ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${r.total} songs; all ${r.total} were retrieved.</p>` : ""}
-      ${miss ? `<span class="muted" style="font-size:13px">Waiting for ${miss} missing song${miss===1?'':'s'} before completion.</span>` :
+      ${r.remote ? `<span class="muted">Completion is managed by the originating WASP.</span>` : miss ? `<span class="muted" style="font-size:13px">Waiting for ${miss} missing song${miss===1?'':'s'} before completion.</span>` :
         knownIncomplete ? `<span class="muted" style="font-size:13px">Cannot finish: complete Spotify song list unavailable.</span>` :
         unverifiedBoundary ? `<button class="btn ghost" data-a="done-unverified" ${small}>Finalize ${r.total} retrieved songs…</button>` :
         `<button class="btn ghost" data-a="done" ${small}>Mark as done</button>`}</td></tr>` : ""}`;
@@ -454,7 +490,7 @@ $("#reqRows").addEventListener("click", async (e) => {
     finally { b.disabled = false; b.textContent = label; }
     return;
   }
-  await fetch("/api/admin/requests/" + id, { method: "DELETE" }); openReq.delete(id); loadRequests();
+  if(act==='remove')await requestHousekeeping('selected',[id]);
 });
 
 // ---------- add music, with an overall "10 out of 30" progress bar ----------
@@ -1007,6 +1043,7 @@ function showNetworkTab(section='peers'){
 $('#netTabPeers').onclick=()=>{location.hash='network';showNetworkTab('peers');};
 $('#netTabMobile').onclick=()=>{location.hash='network/mobile';showNetworkTab('mobile');};
 $('#netTabTelemetry').onclick=()=>{location.hash='network/telemetry';showNetworkTab('telemetry');};
+$('#telemetryPullShortcut').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');const button=$('[data-run-cron="telemetry"]');if(button&&!button.disabled)button.click();};
 const metadataFields={lastfm:'metadataLastfm',musicbrainz:'metadataMusicbrainz',enabled:'metadataEnabled',fallback:'metadataFallback',trustPeers:'metadataTrust',shareLastfm:'metadataShareLastfm',wikidata:'metadataWikidata',prioritizePlayed:'metadataPriority'};
 let metadataBusy=false,metadataDirty=false,metadataReady=false,metadataLoading=null;
 const metadataStatus=(text,error=false)=>{const el=$('#metadataStatus');el.textContent=text;el.classList.toggle('err',error);};

@@ -733,3 +733,8 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 @media(max-width:600px){.metadata-coverage{padding:16px 12px;gap:16px}.metadata-metrics{grid-template-columns:1fr}}
 
 .coverage-scan.btn{background:#2a2a29;color:#dededc;font-weight:650}.coverage-scan.btn:not(:disabled):hover,.coverage-scan.btn:focus-visible{background:var(--accent);color:#131211}.coverage-priority input{border-radius:50%}
+
+/* v18 request housekeeping */
+.request-housekeeping{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}.request-pick{display:flex;align-items:center;gap:8px}.request-pick input{flex:0 0 auto;accent-color:var(--accent)}
+
+#routeStatus:not(:empty){display:block;font-size:10px;color:var(--accent);white-space:normal}
