@@ -400,6 +400,8 @@ const selectedRequests=new Set();let housekeepingBusy=false;
 function paintRequestSelection(){
   const list=window.__reqs||[];
   $('#reqRemoveSelected').disabled=housekeepingBusy||!selectedRequests.size;
+  $('#reqRefreshSelected').disabled=housekeepingBusy||!selectedRequests.size;
+  $('#reqRefreshSelected').textContent=`Refresh selected${selectedRequests.size?' ('+selectedRequests.size+')':''}`;
   $('#reqRemoveSelected').textContent=`Remove selected${selectedRequests.size?' ('+selectedRequests.size+')':''}`;
   $('#reqSelectAll').textContent=list.length&&list.every(r=>selectedRequests.has(r.id))?'Clear selection':'Select visible';
   $('#reqSelectAll').disabled=housekeepingBusy||!list.length;
@@ -409,7 +411,7 @@ function paintRequestSelection(){
 async function requestHousekeeping(mode,ids=[]){
   if(housekeepingBusy)return;
   const local=mode==='all'||(mode==='selected'&&ids.some(id=>!id.includes('|')));
-  if(!confirm(`${mode==='remote'?'Remove all received HIVE requests':mode==='all'?'Remove all active requests':`Remove ${ids.length} selected request(s)`}? Remote requests are hidden only on this WASP.${local?' Local requests will be cancelled on HIVE.':''} Music and completed history are kept.`))return;
+  if(!confirm(`${mode==='remote'?'Remove all received HIVE requests':mode==='all'?'Remove all active requests':`Remove ${ids.length} selected request(s)`}? Remote requests are permanently dismissed only on this WASP (including offline origins). Use Remove until online for temporary offline removal.${local?' Local requests will be cancelled on HIVE.':''} Music and completed history are kept.`))return;
   housekeepingBusy=true;paintRequestSelection();
   try{
     const batches=mode==='selected'?Array.from({length:Math.ceil(ids.length/8)},(_,i)=>ids.slice(i*8,i*8+8)):[[]];
@@ -426,7 +428,19 @@ async function requestHousekeeping(mode,ids=[]){
   finally{housekeepingBusy=false;await loadRequests();}
 }
 $('#reqSelectAll').onclick=()=>{const list=window.__reqs||[];const all=list.every(r=>selectedRequests.has(r.id));selectedRequests.clear();if(!all)list.forEach(r=>selectedRequests.add(r.id));document.querySelectorAll('#reqRows [data-request-select]').forEach(x=>x.checked=selectedRequests.has(x.dataset.requestSelect));paintRequestSelection();};
-$('#reqRemoveSelected').onclick=()=>requestHousekeeping('selected',[...selectedRequests]);
+async function reviewRequests(action,ids,confirmDone=false){
+  if(housekeepingBusy||!ids.length)return;
+  housekeepingBusy=true;paintRequestSelection();
+  try{
+    let all=[];for(let i=0;i<ids.length;i+=8){const res=await post('/api/admin/requests/review',{action,ids:ids.slice(i,i+8),confirm:confirmDone,live:action==='locate'});const j=await res.json();if(!res.ok)throw Error(j.error||'Review failed');all.push(...j.results);}
+    const errors=all.filter(r=>r.error);const done=all.filter(r=>r.status==='done').length;
+    if(action==='locate'){const first=all[0];flashMsg('#reqMsg',first.origin_domain?`${first.origin_domain} · ${first.origin_status==='offline'?'Requestee is offline':first.origin_status}`:'Origin not verified from directly connected peers.',!!first.error);}
+    else flashMsg('#reqMsg',`${all.length-errors.length} request(s) ${action==='hide-offline'?'temporarily hidden':action==='complete'?'completed':'checked'}${done?` · ${done} moved to Previous requests`:''}${errors.length?' · '+errors.map(r=>r.error).join('; '):''}`,!!errors.length);
+    selectedRequests.clear();
+  }catch(e){flashMsg('#reqMsg',e.message,true);}finally{housekeepingBusy=false;await loadRequests();}
+}
+$('#reqRefreshSelected').onclick=()=>reviewRequests('refresh',[...selectedRequests]);
+$('#reqRemoveSelected').onclick=async()=>{const ids=[...selectedRequests],offline=ids.filter(id=>(window.__reqs||[]).some(r=>r.id===id&&r.remote&&r.origin_status==='offline')),other=ids.filter(id=>!offline.includes(id));if(offline.length&&confirm(`Temporarily remove ${offline.length} offline request(s) until their origin reconnects?`))await reviewRequests('hide-offline',offline);if(other.length)await requestHousekeeping('selected',other);};
 $('#reqRemoveRemote').onclick=()=>requestHousekeeping('remote');
 $('#reqRemoveAll').onclick=()=>requestHousekeeping('all');
 $('#reqRows').addEventListener('change',e=>{const id=e.target.dataset.requestSelect;if(!id)return;e.target.checked?selectedRequests.add(id):selectedRequests.delete(id);paintRequestSelection();});
@@ -443,12 +457,12 @@ async function loadRequests() {
     const sourceCount=Number.isSafeInteger(r.source_total)?r.source_total:null;
     const knownIncomplete=has && sourceCount!==null && sourceCount>r.total;
     const unverifiedBoundary=has && !!r.partial && !knownIncomplete;
-    const progress = has ? `${r.matched}/${r.total}${knownIncomplete ? ` of ${sourceCount} reported` : unverifiedBoundary ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? (r.total!=null ? "Availability check pending — refresh or wait for scheduled matching" : "Song list not available") : "";
+    const progress = has ? `${r.matched}/${r.total}${knownIncomplete ? ` of ${sourceCount} reported` : unverifiedBoundary ? "+" : ""} · ${r.matched_local??r.matched} local · ${r.matched_peer||0} in peers · ${miss} missing song${miss === 1 ? "" : "s"}` : pl ? (r.total!=null ? "Availability check pending — refresh or wait for scheduled matching" : "Song list not available") : r.matched_local!=null ? `${r.matched_local} local · ${r.matched_peer||0} on peers` : "";
     const open = openReq.has(r.id);
     return `<tr data-r="${esc(r.id)}">
     <td style="width:76px"><label class="request-pick"><input type="checkbox" data-request-select="${esc(r.id)}" aria-label="Select ${esc(r.title)}" ${selectedRequests.has(r.id)?'checked':''}>${mini(r.image, r.title)}</label></td>
-    <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${progress ? `<br><span class="muted">${esc(progress)}${r.availability_checked_at?` · Checked ${esc(new Date(r.availability_checked_at).toLocaleString())}`:""}</span>` : ""}</td>
-    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}${pl && !r.remote ? `<button class="btn ghost" data-a="refresh" ${small}>Refresh</button> ` : ""}<button class="btn ghost" data-a="remove" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">Remove</button></td></tr>
+    <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${r.remote&&r.origin_status==='offline'?'<br><span class="muted">Requestee is offline</span>':''}${r.remote&&r.origin_domain?`<br><span class="muted">Origin: ${esc(r.origin_domain)} · ${esc(r.origin_status||'unknown')}</span>`:''}${progress ? `<br><span class="muted">${esc(progress)}${r.availability_checked_at?` · Checked ${esc(new Date(r.availability_checked_at).toLocaleString())}`:""}</span>` : ""}</td>
+    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}<button class="btn ghost" data-a="${pl&&!r.remote?'refresh':'review-refresh'}" ${small}>Refresh</button> ${['artist','album'].includes(r.kind)?`<button class="btn ghost" data-a="review-done" ${small}>Mark as done</button> `:''}${r.remote?`<button class="btn ghost" data-a="locate" ${small}>Locate origin</button> `:''}<button class="btn ghost" data-a="${r.remote&&r.origin_status==='offline'?'hide-offline':'remove'}" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">${r.remote&&r.origin_status==='offline'?'Remove until online':'Remove'}</button></td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
       ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
       ${knownIncomplete ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${sourceCount} songs, but only ${r.total} were retrieved. Fetch the full song list before completion; known missing Spotify songs cannot be skipped.</p>` :
@@ -464,6 +478,11 @@ $("#reqRows").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
   const tr = b.closest("tr"), id = tr.dataset.r || tr.dataset.d, act = b.dataset.a;
   const r = (window.__reqs || []).find((x) => x.id === id) || {};
+  if(act==='review-refresh'||act==='locate'||act==='hide-offline'||act==='review-done'){
+    if(act==='review-done'&&!confirm(`Mark ${r.title} as done?${r.remote?' This completes it on this WASP only; the origin retains ownership.':''}`))return;
+    if(act==='hide-offline'&&!confirm('Hide until the verified origin reconnects?'))return;
+    await reviewRequests({'review-refresh':'refresh','review-done':'complete',locate:'locate','hide-offline':'hide-offline'}[act],[id],act==='review-done');return;
+  }
   if (act === "toggle") {
     const d = $(`tr[data-d="${id}"]`), show = d.classList.contains("hidden");
     d.classList.toggle("hidden", !show); show ? openReq.add(id) : openReq.delete(id);

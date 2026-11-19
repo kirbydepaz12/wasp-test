@@ -687,21 +687,36 @@ async function paintSpotifyImportStatus(playlistId){
     const r=await fetch('/api/user/spotify-imports',{cache:'no-store'});
     if(!r.ok)return;
     const imp=arr(await r.json()).find(x=>x.playlist_id===playlistId);
-    if(!imp||imp.state==='complete'){place.textContent='';return;}
+    if(!imp||(imp.state==='complete'&&!imp.completed_partial)){place.textContent='';return;}
+    const knownComplete=imp.state==='complete';
     place.innerHTML=`<section class="spotify-import-status" aria-label="Spotify recreation progress">
-      <b>Recreating your Spotify playlist</b>
-      <p class="muted">${imp.matched} of ${imp.total}${imp.partial?'+':''} songs found · <span class="spotify-local">${imp.local} local</span> · <span class="spotify-peer">${imp.peer} on peers</span> · ${imp.missing} missing.</p>
-      ${imp.partial?'<p class="muted">Spotify returned only part of this playlist. Full completion requires a complete list from Spotify.</p>':''}
-      <div class="spotify-import-progress"><progress max="${Math.max(1,imp.total)}" value="${imp.matched}"></progress></div>
+      <b>${knownComplete?'Playlist finalized · remaining songs':'Recreating your Spotify playlist'}</b>
+      <p class="muted">${imp.matched} of ${Math.max(imp.total,imp.source_total||0)}${imp.partial&&!imp.source_total?'+':''} songs found · <span class="spotify-local">${imp.local} local</span> · <span class="spotify-peer">${imp.peer} on peers</span> · ${imp.missing} known missing${imp.source_total>imp.total?` · ${imp.source_total-imp.total} titles not retrieved`:''}.</p>
+      ${imp.partial?`<p class="muted">${imp.user_supplied_count?`${imp.total} known titles (${imp.user_supplied_count} supplied by you).`:`Spotify returned ${imp.total} songs${imp.source_total?` of ${imp.source_total} reported`:""}.`} Full Spotify list is not verified.</p>`:''}
+      <div class="spotify-import-progress"><progress max="${Math.max(1,imp.total,imp.source_total||0)}" value="${imp.matched}"></progress></div>
       <div class="spotify-import-actions"><button class="btn ghost" type="button" data-spotify-import="refresh">Refresh matches</button>
-        <button class="btn" type="button" data-spotify-import="complete" ${imp.missing||imp.partial?'disabled':''}>Mark as done</button></div>
+        ${knownComplete?'':`<button class="btn" type="button" data-spotify-import="complete">${imp.missing||imp.partial?'Mark as done ANYWAYS':'Mark as done'}</button>`}</div>
+      ${imp.missing||imp.partial?'<p class="muted">You can add the remaining missing songs later.</p>':''}
+      ${imp.partial?'<details class="spotify-supplement"><summary>Add remaining song list manually</summary><p class="muted">Paste one song per line: title, a tab, then artist. You can copy two columns from a spreadsheet.</p><textarea rows="5" maxlength="500000" aria-label="Track list" data-track-list></textarea><button class="btn ghost" type="button" data-supplement>Add titles and match</button></details>':''}
+      ${imp.missing?'<details class="spotify-missing-list"><summary>Show songs not found in HIVE</summary><div data-missing-list class="muted">Loading…</div></details>':''}
       <p class="muted" id="spotifyImportStatusMsg" role="status"></p>
     </section>`;
+    const details=place.querySelector('.spotify-missing-list');if(details)details.addEventListener('toggle',async()=>{
+      if(!details.open||details.dataset.loaded)return;const target=details.querySelector('[data-missing-list]');
+      try{const r=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/missing`);if(!r.ok)throw Error('Unable to read missing songs');const j=await r.json();
+        target.innerHTML=arr(j.songs).map(t=>`<div class="spotify-missing-row"><span>${esc(t.t)} <small class="muted">· ${esc(t.a)}</small></span><button type="button" class="btn ghost" data-missing-action="search" data-title="${esc(t.t)}" data-artist="${esc(t.a)}">Search song</button><button type="button" class="btn ghost" data-missing-action="request" data-title="${esc(t.t)}" data-artist="${esc(t.a)}">Request</button></div>`).join('')||'No known missing songs.';details.dataset.loaded='1';
+        target.onclick=async e=>{const b=e.target.closest('[data-missing-action]');if(!b)return;const title=b.dataset.title,artist=b.dataset.artist;b.disabled=true;try{if(b.dataset.missingAction==='request'){const res=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/request`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,artist})});const j=await res.json();if(!res.ok)throw Error(j.error||'Request failed');popup(j.in_library?'Song found':j.requested?'Request added':'Already requested',j.in_library?'Refresh matches to add the song.':j.requested?'Added to the request queue.':'This song is already in the queue.');return;}let offset=0,checked=0,reachable=0,match=false;do{const res=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/search`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title,artist,offset})});const j=await res.json();if(!res.ok)throw Error(j.error||'Search failed');match=!!j.found;checked+=Number(j.refreshed||0);reachable+=Number(j.reachable||0);offset=j.nextOffset;b.textContent=`Searching ${checked}/${j.totalPeers||0}…`;}while(offset!=null&&checked<100&&b.isConnected);if(b.isConnected)popup(match?'Song found':'Search complete',`${match?'A matching song is in the catalogue. Refresh matches to add it.':'No matching song found. You can request it.'} Checked ${checked} connected peer(s); ${reachable} answered. Matches are catalogue-based.`);}catch(e){popup('Unable to complete action',e.message);}finally{b.disabled=false;b.textContent=b.dataset.missingAction==='search'?'Search song':'Request';}};
+      }catch(e){target.textContent=e.message;}
+    });
+    const supplement=place.querySelector('[data-supplement]');if(supplement)supplement.onclick=async()=>{
+      supplement.disabled=true;const message=place.querySelector('#spotifyImportStatusMsg');message.textContent='Matching supplied titles…';
+      try{const r=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/supplement`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:place.querySelector('[data-track-list]').value})});const j=await r.json();if(!r.ok)throw Error(j.error||'Unable to add song list');await load();render();}catch(e){message.textContent=e.message;supplement.disabled=false;}
+    };
     place.querySelectorAll('button[data-spotify-import]').forEach(button=>button.onclick=async()=>{
-      const action=button.dataset.spotifyImport;place.querySelectorAll('button').forEach(b=>b.disabled=true);
+      const action=button.dataset.spotifyImport;const partial=!!(imp.missing||imp.partial);if(action==='complete'&&partial&&!confirm('Mark as done ANYWAYS? You can add the remaining missing songs later.'))return;place.querySelectorAll('button').forEach(b=>b.disabled=true);
       const message=$('#spotifyImportStatusMsg');message.textContent=action==='refresh'?'Checking peer catalogues…':'Finishing…';
       try{
-        const response=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/${action}`,{method:'POST'});
+        const response=await fetch(`/api/user/spotify-imports/${enc(imp.id)}/${action}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({confirm_partial:action==='complete'&&partial})});
         const j=await response.json();if(!response.ok)throw Error(j.error||'Unable to update playlist');
         if(action==='complete'){message.textContent='Playlist completed. It remains private unless you publish it.';await load();render();}
         else {await load();render();}
@@ -774,6 +789,13 @@ function renderPage() {
     renderNav("user");renderSub("",null);const el=$("#list");el.innerHTML="Loading playlist…";
     (async()=>{const r=await fetch("/api/user/playlists");if(!r.ok){el.textContent="Sign in required.";return;}const ps=await r.json();for(const candidate of ps)ownedPlaylistIndex.set(candidate.id,candidate);const p=ps.find(x=>x.id===dec(arg));if(!p){el.textContent="Playlist not found.";return;}
       const ids=(p.tracks||[]).map(ref=>typeof ref==='object'?(ref.ref||ref.track_id||ref.id):ref);
+      let savedRefs=[];try{const rr=await fetch('/api/user/peer-tracks');if(rr.ok)savedRefs=arr(await rr.json());}catch{}
+      if(parse().a!=='userplaylist'||dec(parse().arg)!==p.id)return;
+      const savedMap=new Map(savedRefs.map(t=>[t.id,t]));for(const id of ids){const t=savedMap.get(id);if(!t)continue;
+        const direct=peerTrackLookup.get(registeredPeerOrigin(t.origin)+'|'+t.remote_id)||peerTrackLookup.get(t.origin+'|'+t.remote_id);
+        const cached={...t,id,artists:[t.artist],peer_offline:true};
+        if(direct&&!direct.peer_offline)byId[id]={...direct,id};else byId[id]=cached;
+      }
       view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p};
       el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div id="spotifyImportStatus"></div><div class="playlist-track-list" id="ownedTrackList"></div>`;
       el.querySelector('#playlistCog').onclick=()=>openEditPlaylist(p);
@@ -1433,13 +1455,27 @@ function initOwnedTrackEditor(el,p,original){
   const changed=()=>draft.length!==original.length||draft.some((id,i)=>id!==original[i]);
   function paint(){
     list.innerHTML=draft.map((id,i)=>{
-      const t=byId[id];
-      return `<div class="owned-track-line"><button type="button" class="owned-remove" data-remove-index="${i}" title="Remove ${esc(t?.title||'track')}" aria-label="Remove ${esc(t?.title||'track')} from playlist">×</button>${t?row(t,i+1):`<div class="owned-missing-track muted">${i+1}. Unavailable track (${esc(id)})</div>`}</div>`;
+      const t=byId[id],available=t&&!t.peer_offline;
+      return `<div class="owned-track-line"><button type="button" class="owned-remove" data-remove-index="${i}" title="Remove ${esc(t?.title||'track')}" aria-label="Remove ${esc(t?.title||'track')} from playlist">×</button>${available?row(t,i+1):`<div class="owned-missing-track"><span class="muted">${i+1}.</span> <span><b>${esc(t?.title||'Unavailable track')}</b>${t?.artist?`<small class="muted"> · ${esc(t.artist)}</small>`:''}${t?.album?`<small class="muted"> · ${esc(t.album)}</small>`:''} <small class="muted">Unavailable</small></span>${!t?.title||!t?.artist?`<span class="owned-recovery-inputs"><input data-recovery-title placeholder="Song title" aria-label="Song title" maxlength="200"><input data-recovery-artist placeholder="Artist" aria-label="Artist" maxlength="200"></span>`:""}<span class="owned-recovery-actions"><button type="button" class="btn ghost" data-recover="search" data-ref="${esc(id)}">Search song</button><button type="button" class="btn ghost" data-recover="request" data-ref="${esc(id)}">Request</button></span><div data-recover-result="${esc(id)}" class="muted"></div></div>`}</div>`;
     }).join('')||empty('This playlist is empty. Add music using + in the player.');
     toolbar.hidden=!changed();count.textContent=`${original.length-draft.length} removal${original.length-draft.length===1?'':'s'} pending`;
-    undo.disabled=!history.length;view.ids=draft.filter(id=>byId[id]);markRows();
+    undo.disabled=!history.length;view.ids=draft.filter(id=>byId[id]&&!byId[id].peer_offline);markRows();
   }
-  list.onclick=e=>{
+  list.onclick=async e=>{
+    const action=e.target.closest('[data-recover]');if(action){e.preventDefault();e.stopPropagation();if(changed()){popup('Save or undo changes','Save or undo pending track removals before searching for replacements.');return;}
+      const ref=action.dataset.ref,t=byId[ref],mode=action.dataset.recover;const target=action.closest('.owned-missing-track').querySelector('[data-recover-result]');
+      const missingRow=action.closest('.owned-missing-track'),title=missingRow.querySelector('[data-recovery-title]')?.value.trim(),artist=missingRow.querySelector('[data-recovery-artist]')?.value.trim();if((!t?.title||!t?.artist)&&(!title||!artist)&&mode!=='reload'){target.textContent='Enter the song title and artist first. This older playlist reference has no saved metadata.';return;}
+      action.disabled=true;target.textContent=mode==='search'?'Searching connected peers…':'Submitting request…';
+      try{
+        if(mode==='reload'){await load();render();return;}
+        const call=async(payload)=>{const res=await fetch('/api/user/playlist-track-search',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({playlist_id:p.id,ref,title,artist,...payload})});const j=await res.json();if(!res.ok)throw Error(j.error||'Unable to search');return j;};
+        if(mode==='replace'){await call({replace:action.dataset.candidate});await load();render();return;}
+        if(mode==='request'){const j=await call({request:true});target.textContent=j.in_library?'Song found in the catalogue. Use Search song.':j.requested?'Request added.':'Already requested.';return;}
+        let offset=0,checked=0,reachable=0,j={candidates:[]};do{j=await call({deep:true,offset});checked+=Number(j.refreshed||0);reachable+=Number(j.reachable||0);offset=j.nextOffset;target.textContent=`Searching connected peers… ${checked}/${j.totalPeers||0}`;}while(offset!=null&&checked<100&&target.isConnected);
+        if(!target.isConnected)return;
+        const candidates=arr(j.candidates);target.innerHTML=`<small>Checked ${checked} connected peer(s); ${reachable} answered. Matches use catalogue metadata, not audio playback checks.</small>`+(candidates.length?candidates.map(c=>`<div>${esc(c.title)} · ${esc(c.artist)} · ${c.peer?'Peer':'Local'} <button type="button" class="btn ghost" data-recover="${c.existing?'reload':'replace'}" data-ref="${esc(ref)}" data-candidate="${esc(c.id)}">${c.existing?'Reload playlist':'Use this song'}</button></div>`).join(''):`<div>No alternate catalogue match found. Try again later or request the song.</div>`);
+      }catch(e){target.textContent=e.message;}finally{action.disabled=false;}return;
+    }
     const b=e.target.closest('[data-remove-index]');if(!b)return;
     e.preventDefault();e.stopPropagation();const index=Number(b.dataset.removeIndex);
     if(!Number.isInteger(index)||index<0||index>=draft.length)return;
@@ -1660,7 +1696,7 @@ async function requestQueue(el) {
   if (cur.a !== "request" || cur.arg.split("/")[0] !== "") return;
   const note = flash ? `<p class="msg" role="status">${esc(flash)}</p>` : ""; flash = "";
   const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist
-    : r.kind === "playlist" ? (r.total ? `Spotify playlist · ${r.total}${r.partial ? "+" : ""} songs${r.matched != null ? ` · ${r.matched_local??r.matched} already here${r.matched_peer?` · ${r.matched_peer} found in peer servers`:''}` : ""}` : "Spotify playlist") : "";
+    : r.kind === "artist" && r.matched_local!=null ? `${r.matched_local} local · ${r.matched_peer||0} on peers` : r.kind === "playlist" ? (r.total ? `Spotify playlist · ${r.total}${r.partial ? "+" : ""} songs${r.matched != null ? ` · ${r.matched_local??r.matched} already here${r.matched_peer?` · ${r.matched_peer} found in peer servers`:''}` : ""}` : "Spotify playlist") : "";
   el.innerHTML = note + (list.length ? list.map((r, i) =>
     `<div class="qline"><span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}${r.remote?' · <span title="Requested on a connected WASP server">HIVE peer</span>':''}</small></span><span class="chip">${KIND[r.kind]}</span></div>`).join("")
     : empty(`The queue is empty. <a href="#request/new">Request something</a>.`));
@@ -1688,7 +1724,7 @@ async function requestPrevious(el, third) {
   const sub = (r) => r.kind === "song" ? [r.artist, r.album].filter(Boolean).join(" · ") : r.kind === "album" ? r.artist : "";
   const body = rows.length ? rows.map((r, i) => {
     const when = new Date(r.done_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-    const inner = `<span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">Added ${esc(when)}</span>`;
+    const inner = `<span class="n muted">${i + 1}</span>${art(r.image, r.title, "lg")}<span class="t">${esc(r.title)}<small>${esc(sub(r))}</small></span><span class="chip">${r.local_completion?'Completed locally':'Completed'} ${esc(when)}</span>`;
     const href = link(r);
     return href ? `<a class="qline" href="${href}" style="color:inherit;text-decoration:none">${inner}</a>` : `<div class="qline">${inner}</div>`;
   }).join("") : empty(`No ${names[key].toLowerCase()} have been added from requests yet.`);

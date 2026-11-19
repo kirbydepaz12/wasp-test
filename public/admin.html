@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.0">
+<link rel="stylesheet" href="/style.css?v=18.0.1">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -121,18 +121,20 @@
       <h1>Requests</h1>
       <div class="tabs sub" role="tablist" aria-label="Request administration">
         <button class="tab" id="reqTabQueue" type="button" role="tab" aria-controls="reqQueuePanel" aria-selected="true">Request queue</button>
+        <a class="tab" href="/#request/previous" target="_blank" rel="noopener">Previous requests</a>
         <button class="tab" id="reqTabSpotify" type="button" role="tab" aria-controls="reqSpotifyPanel" aria-selected="false">Spotify settings</button>
       </div>
       <div id="reqQueuePanel" role="tabpanel" aria-labelledby="reqTabQueue">
         <div class="card">
-          <p class="muted" style="margin-top:0">Songs, albums and artists leave the queue by themselves when a matching song is uploaded, and move to Previous requests. For a Spotify playlist, Refresh reads the playlist again and checks which of its songs are already in the library; when all of them are, the playlist is added to the Playlists tab with Spotify's picture and leaves the queue. Open the arrow to see what is still missing.</p>
+          <p class="muted" style="margin-top:0">Individual songs are automatically completed when found in the local or connected peer catalogue. Refresh artists or albums to see song counts; mark them done manually. Refresh playlist requests to see matching and missing songs. Completed requests appear in Previous requests.</p>
           <p class="msg" id="reqMsg" role="status"></p>
           <div class="request-housekeeping" id="reqHousekeeping">
             <button class="btn ghost" type="button" id="reqSelectAll">Select visible</button>
+            <button class="btn ghost" type="button" id="reqRefreshSelected" disabled>Refresh selected</button>
             <button class="btn ghost" type="button" id="reqRemoveSelected" disabled>Remove selected</button>
             <button class="btn ghost" type="button" id="reqRemoveRemote">Remove all HIVE requests</button>
             <button class="btn ghost" type="button" id="reqRemoveAll">Remove all requests</button>
-          </div><p class="muted">HIVE removals are local only. Removing local requests cancels them across HIVE. Completed requests and music are preserved.</p>
+          </div><p class="muted">HIVE removals are local only. Hide offline temporarily removes a verified offline origin’s request until it reconnects. Removing local requests cancels them across HIVE. Completed requests and music are preserved.</p>
           <div id="reqRows" class="muted">The queue is empty.</div>
         </div>
       </div>
@@ -480,6 +482,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.0.0"></script>
+<script type="module" src="/admin.js?v=18.0.1"></script>
 </body>
 </html>

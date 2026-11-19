@@ -2,7 +2,7 @@ import {metadataAdmin, metadataFeed, runMetadata} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
-  hiveRequestFeed,hiveRequestsForDisplay,dismissHiveRequests} from "./hive-requests.js";
+  hiveRequestFeed,hiveRequestsForDisplay,dismissHiveRequests,originStatus,reviewRemoteRequest,remoteRequestRow} from "./hive-requests.js";
 import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, telemetryApi, ensureTelemetrySchema as ensureTelemetrySchemaForMetadata} from "./telemetry.js";
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.0";
-const BUILD_LABEL = "HIVE Smart Routing";
+const BUILD_VERSION = "18.0.1";
+const BUILD_LABEL = "HIVE Request & Playlist Recovery";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -532,7 +532,7 @@ function artistsFromInput(str) {
   return splitArtists(str);
 }
 function artistsOfRow(r) {
-  if (r.artists) { try { const a = JSON.parse(r.artists); if (Array.isArray(a) && a.length) return a; } catch {} }
+  if (r.artists) { try { const a = Array.isArray(r.artists)?r.artists:JSON.parse(r.artists); if (Array.isArray(a) && a.length) return a; } catch {} }
   return splitArtists(r.artist);
 }
 function artistIndexStatements(DB, row) {
@@ -805,7 +805,7 @@ async function spotifyEmbed(id) {
   const data = JSON.parse(m[1]);
   const list = findKey(data, "trackList");
   if (!Array.isArray(list)) throw new Error("spotify page changed");
-  const tracks = list.map((x) => ({ t: clean(x.title, 200), a: clean(String(x.subtitle || "").replace(/\u00a0/g, " "), 200) })).filter((x) => x.t).slice(0, 100);
+  const tracks = list.map((x) => ({ t: clean(x.title, 200), a: clean(String(x.subtitle || "").replace(/\u00a0/g, " "), 200) })).filter((x) => x.t).slice(0, 1500);
   const sources = (findKey(data, "coverArt") || {}).sources || [];
   const best = [...sources].sort((p, q) => (q.width || 0) - (p.width || 0))[0];
   const entity = findKey(data, "entity") || {};
@@ -862,18 +862,18 @@ const SPOTIFY_IMPORT_SCHEMA = [
 const spotifyImportReady=new WeakMap();
 async function ensureSpotifyImportSchema(DB){
   if(spotifyImportReady.has(DB))return spotifyImportReady.get(DB);
-  const pending=(async()=>{for(const sql of SPOTIFY_IMPORT_SCHEMA)await DB.prepare(sql).run();})()
+  const pending=(async()=>{for(const sql of SPOTIFY_IMPORT_SCHEMA)await DB.prepare(sql).run(); for(const col of ['missing_json TEXT','source_total INTEGER','completed_partial INTEGER NOT NULL DEFAULT 0','user_supplied_count INTEGER NOT NULL DEFAULT 0']){try{await DB.prepare('ALTER TABLE spotify_user_imports ADD COLUMN '+col).run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}}})()
     .catch(e=>{spotifyImportReady.delete(DB);throw e;});
   spotifyImportReady.set(DB,pending);return pending;
 }
 // Include both admin peers and approved user-submitted peers; only saved
 // catalogue snapshots are trusted for adding peer-backed entries.
 async function spotifyImportCatalogue(DB){
-  const local=(await DB.prepare('SELECT id,title,artist,artists FROM tracks').all()).results
+  const local=(await DB.prepare('SELECT id,title,artist,artists,album,duration FROM tracks').all()).results
     .map(t=>({...t,origin:''}));
   let shards=[];
   try{shards=(await DB.prepare(`SELECT p.url AS origin,c.body FROM peer_catalogue_chunks c
-    JOIN peers p ON p.id=c.peer_id WHERE c.kind='tracks'
+    JOIN peers p ON p.id=c.peer_id WHERE c.kind='tracks' AND p.last_error IS NULL
     UNION ALL SELECT u.url AS origin,c.body FROM peer_catalogue_chunks c
     JOIN user_published_peers u ON u.id=c.peer_id
     LEFT JOIN user_peer_permissions a ON a.user_id=u.user_id
@@ -890,7 +890,7 @@ async function spotifyImportCatalogue(DB){
   }
   return {local,remote};
 }
-async function refreshSpotifyPeerCatalogue(env,{max=4}={}){
+async function refreshSpotifyPeerCatalogue(env,{max=4,offset=null}={}){
   const DB=env.DB;
   let approved=[];
   try{approved=(await DB.prepare(`SELECT l.id,l.url FROM user_published_peers l
@@ -899,34 +899,38 @@ async function refreshSpotifyPeerCatalogue(env,{max=4}={}){
       AND l.last_ok IS NOT NULL AND l.last_error IS NULL ORDER BY l.created_at LIMIT 50`).all()).results;}catch{}
   const admin=(await DB.prepare('SELECT id,url FROM peers ORDER BY added_at LIMIT 50').all()).results;
   const candidates=[...admin,...approved].filter(row=>row.url);
-  const pos=Number((await DB.prepare("SELECT value FROM settings WHERE key='spotify_peer_cursor'").first())?.value)||0;
-  let checked=0,updated=0;
-  for(let i=0;i<Math.min(max,candidates.length);i++){
+  const pos=offset===null?(Number((await DB.prepare("SELECT value FROM settings WHERE key='spotify_peer_cursor'").first())?.value)||0):Math.max(0,offset);
+  let checked=0,updated=0,reachable=0;
+  for(let i=0;i<Math.min(max,offset===null?candidates.length:Math.max(0,candidates.length-pos));i++){
     const peer=candidates[(pos+i)%candidates.length];checked++;
     try{
       if(approved.some(p=>p.id===peer.id) && !(await publicPeerDNS(new URL(peer.url).hostname)))continue;
       const version=requireNoRedirect(await fetch(peer.url+'/api/catalog-version',{signal:AbortSignal.timeout(6000),redirect:'manual'}));
       if(!version.ok)continue;
+      reachable++;
       const rev=clean((await version.json()).revision,80);
       const cached=await DB.prepare('SELECT revision,synced_at FROM peer_catalogue_cache WHERE peer_id=?').bind(peer.id).first();
-      if(cached?.synced_at && cached.revision===rev)continue;
+      if(cached?.synced_at && cached.revision===rev){await DB.prepare('UPDATE peers SET last_ok=?,last_error=NULL WHERE id=? AND last_error IS NOT NULL').bind(Date.now(),peer.id).run();continue;}
       await syncPeerPhase(env,peer,'tracks');
       if(rev)await DB.prepare('UPDATE peer_catalogue_cache SET revision=? WHERE peer_id=?').bind(rev,peer.id).run();
       updated++;
     }catch{/* Disconnected peer is retried next run without deleting data. */}
   }
-  if(candidates.length)await DB.prepare("INSERT INTO settings(key,value) VALUES('spotify_peer_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+  if(offset===null&&candidates.length)await DB.prepare("INSERT INTO settings(key,value) VALUES('spotify_peer_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .bind(String((pos+checked)%candidates.length)).run();
-  return {checked,updated};
+  return {checked,updated,reachable,totalPeers:candidates.length,nextOffset:offset===null?null:(pos+checked<candidates.length?pos+checked:null)};
 }
 function sourceMatch(song,want){
   const sought=splitArtists(want.a);
-  return core(song.title)===core(want.t) && artistsOfRow(song).some(a=>sought.some(b=>sameName(a,b)));
+  const version=s=>norm(fold(String(s||'')));
+  return !!version(want.t)&&version(song.title)===version(want.t) && artistsOfRow(song).some(a=>sought.some(b=>normArtist(a)===normArtist(b)));
 }
-async function createMissingSongRequests(env,requests,ownerId){
+async function createMissingSongRequests(env,requests,ownerId,{limit=4}={}){
   const DB=env.DB;let requested=0;
   const voter=await sha256('spotify-import:'+ownerId);
-  for(const item of requests.slice(0,100)){
+  const quota=await DB.prepare("SELECT SUM(CASE WHEN voter=? AND created_at>? THEN 1 ELSE 0 END) AS daily,SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active FROM requests").bind(voter,Date.now()-86400000).first();
+  limit=Math.max(0,Math.min(limit,10-Number(quota?.daily||0),500-Number(quota?.active||0)));
+  for(const item of requests.slice(0,limit)){
     const title=clean(item.t,200),artist=clean(item.a,160);
     if(!title||!artist)continue;
     const key='song|'+core(title)+'|'+norm(artist);
@@ -944,43 +948,68 @@ async function createMissingSongRequests(env,requests,ownerId){
   }
   return requested;
 }
+async function requestStoredSong(env,song,userId){
+  const db=env.DB,voter=await sha256('spotify-import:'+userId);
+  const key='song|'+core(song.t)+'|'+norm(song.a);
+  if(await db.prepare("SELECT 1 FROM requests WHERE dedupe=? AND status='active'").bind(key).first())return {ok:true,requested:0,already_requested:true};
+  const count=await db.prepare("SELECT SUM(CASE WHEN voter=? AND created_at>? THEN 1 ELSE 0 END) AS daily,SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active FROM requests").bind(voter,Date.now()-86400000).first();
+  if(Number(count?.daily||0)>=10||Number(count?.active||0)>=500)return {error:'Request limit reached. Try again later.'};
+  const cat=await spotifyImportCatalogue(db);if([...cat.local,...cat.remote].some(t=>sourceMatch(t,song)))return {ok:true,requested:0,in_library:true};
+  const requested=await createMissingSongRequests(env,[song],userId,{limit:1});return {ok:true,requested,already_requested:!requested};
+}
+async function insertRowsInChunks(DB,table,cols,values){
+  // Internal constants only: JSON is a bound value, never SQL interpolation.
+  for(let i=0;i<values.length;i+=200){const part=values.slice(i,i+200);const extract=cols.map((_,j)=>`json_extract(value,'$[${j}]')`).join(',');
+    await DB.prepare(`INSERT OR IGNORE INTO ${table}(${cols.join(',')}) SELECT ${extract} FROM json_each(?)`).bind(JSON.stringify(part)).run();}
+}
 async function refreshSpotifyUserImport(env,imp,{fetchPeers=false,requestMissing=true}={}){
   const DB=env.DB;
   if(fetchPeers)await refreshSpotifyPeerCatalogue(env,{max:8});
   const songs=JSON.parse(imp.tracks_json||'[]');
   const {local,remote}=await spotifyImportCatalogue(DB);
   const add=[],missing=[];let own=0,others=0;const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
-  for(const target of songs){
+  for(const [index,target] of songs.entries()){
     const key=core(target.t);let hit=(localIndex.get(key)||[]).find(row=>sourceMatch(row,target)),source='local';
     if(!hit){hit=(remoteIndex.get(key)||[]).find(row=>sourceMatch(row,target));source='peer';}
     if(!hit){missing.push(target);continue;}
     const reference=source==='local'?hit.id:'peer:'+await sha256(hit.origin+'\n'+hit.remote_id);
     if(source==='local')own++;else others++;
-    add.push({ref:reference,hit,source});
+    add.push({ref:reference,hit,source,index,target});
   }
   // Preserve Spotify ordering through monotonically increasing added_at values,
   // and never overwrite the user's own manual playlist modifications.
-  const now=Date.now(),sql=[];
-  for(const [index,item] of add.entries()){
-    if(item.source==='peer'){
-      const t=item.hit;
-      sql.push(DB.prepare(`INSERT OR IGNORE INTO peer_track_refs
-        (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES (?,?,?,?,?,?,?,?)`)
-        .bind(item.ref,t.origin,t.remote_id,clean(t.title,200),clean(t.artist,200),clean(t.album,200),
-          Number(t.duration)||0,clean(t.cover_url,500)));
-    }
-    sql.push(DB.prepare('INSERT OR IGNORE INTO user_playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)')
-      .bind(imp.playlist_id,item.ref,Number(imp.created_at)+index));
+  const now=Date.now(),refs=[],links=[];
+  const songKey=t=>norm(t.t)+'|'+norm(t.a);
+  let remaining=null;if(imp.state==='complete'){
+    let previous=[];try{previous=JSON.parse(imp.missing_json||'[]');}catch{}
+    remaining=new Set([...previous,...(imp.newly_discovered||[])].map(songKey));
   }
-  if(sql.length)for(let i=0;i<sql.length;i+=40)await DB.batch(sql.slice(i,i+40));
-  if(requestMissing)await createMissingSongRequests(env,missing,imp.user_id);
+  for(const item of add){
+    if(remaining&&!remaining.has(songKey(item.target)))continue;
+    if(item.source==='peer'){
+      const t=item.hit;refs.push([item.ref,t.origin,t.remote_id,clean(t.title,200),clean(t.artist,200),clean(t.album,200),Number(t.duration)||0,clean(t.cover_url,500)]);
+    }
+    links.push([imp.playlist_id,item.ref,Number(imp.created_at)+item.index]);
+  }
+  await insertRowsInChunks(DB,'peer_track_refs',['ref','origin','remote_id','title','artist','album','duration','cover_url'],refs);
+  await insertRowsInChunks(DB,'user_playlist_tracks',['playlist_id','track_id','added_at'],links);
+  const pendingMissing=remaining?missing.filter(t=>remaining.has(songKey(t))):missing;
+  if(requestMissing&&imp.state==='draft'&&pendingMissing.length)await createMissingSongRequests(env,pendingMissing,imp.user_id);
   await DB.prepare(`UPDATE spotify_user_imports
-    SET matched=?,local_count=?,peer_count=?,missing=?,updated_at=? WHERE id=?`)
-    .bind(add.length,own,others,missing.length,now,imp.id).run();
-  // Exact local/peer catalogue matches satisfy per-song requests, but do not
-  // mark the imported playlist itself completed; only the owner can do that.
+    SET matched=?,local_count=?,peer_count=?,missing=?,missing_json=?,updated_at=? WHERE id=?`)
+    .bind(add.length,own,others,pendingMissing.length,JSON.stringify(pendingMissing),now,imp.id).run();
   return {id:imp.id,playlist_id:imp.playlist_id,matched:add.length,local:own,peer:others,
-    missing:missing.length,total:imp.total,partial:!!imp.partial,state:imp.state};
+    missing:pendingMissing.length,missing_songs:pendingMissing,total:imp.total,source_total:imp.source_total??null,partial:!!imp.partial,state:imp.state};
+}
+async function extendSpotifyImport(env,imp){
+  const id=String(imp.spotify_url).match(/^https:\/\/open\.spotify\.com\/playlist\/([A-Za-z0-9]{10,40})$/)?.[1];
+  if(!id)return imp;
+  try{const e=await spotifyEmbed(id);const m=playlistMeta(e.tracks,e.sourceTotal??imp.source_total);const old=JSON.parse(imp.tracks_json||'[]');
+    if(m.tracks.length<old.length || !old.every((v,i)=>core(v.t)===core(m.tracks[i].t)&&norm(v.a)===norm(m.tracks[i].a)))return imp;
+    const next={...imp,tracks_json:JSON.stringify(m.tracks),total:m.total,partial:m.partial?1:0,source_total:m.source_total??imp.source_total,newly_discovered:m.tracks.slice(old.length)};
+    let missing=JSON.parse(imp.missing_json||'[]');if(imp.state==='complete')missing.push(...next.newly_discovered);next.missing_json=JSON.stringify(missing);
+    await env.DB.prepare('UPDATE spotify_user_imports SET tracks_json=?,total=?,partial=?,source_total=?,missing_json=? WHERE id=?').bind(next.tracks_json,next.total,next.partial,next.source_total,next.missing_json,imp.id).run();return next;
+  }catch{return imp;}
 }
 async function refreshActiveSpotifyImports(env,{max=6,fetchPeers=false}={}){
   await ensureSpotifyImportSchema(env.DB);
@@ -1100,7 +1129,7 @@ function titleIndex(list){const out=new Map();for(const row of list){const key=c
 async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null}={}){
   const {local,remote}=catalogue||await spotifyImportCatalogue(env.DB);
   const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
-  const matched=[],missing=[];let localCount=0,peerCount=0;
+  const matched=[],missing=[],refs=[];let localCount=0,peerCount=0;
   for(const song of requested){
     const key=core(song.t);let hit=(localIndex.get(key)||[]).find(r=>sourceMatch(r,song)),isRemote=false;
     if(!hit){hit=(remoteIndex.get(key)||[]).find(r=>sourceMatch(r,song));isRemote=true;}
@@ -1108,12 +1137,11 @@ async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null}={
     if(isRemote){
       peerCount++;
       const ref=register?'peer:'+await sha256(hit.origin+'\n'+hit.remote_id):'peer-match:'+hit.remote_id;
-      if(register)await env.DB.prepare(`INSERT OR IGNORE INTO peer_track_refs
-        (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)`)
-        .bind(ref,hit.origin,hit.remote_id,clean(hit.title),clean(hit.artist),clean(hit.album),Number(hit.duration)||0,clean(hit.cover_url,500)).run();
+      if(register)refs.push([ref,hit.origin,hit.remote_id,clean(hit.title),clean(hit.artist),clean(hit.album),Number(hit.duration)||0,clean(hit.cover_url,500)]);
       matched.push(ref);
     }else {localCount++;matched.push(hit.id);}
   }
+  if(register)await insertRowsInChunks(env.DB,'peer_track_refs',['ref','origin','remote_id','title','artist','album','duration','cover_url'],refs);
   return {matched,missing,local_count:localCount,peer_count:peerCount};
 }
 async function reconcileHIVERequests(env){
@@ -1164,8 +1192,7 @@ async function completePlaylistRequest(env, r, ids) {
   const DB = env.DB, now = Date.now();
   let pl = await DB.prepare("SELECT id FROM playlists WHERE name = ?").bind(r.title).first();
   if (!pl) { pl = { id: crypto.randomUUID() }; await DB.prepare("INSERT INTO playlists (id, name, created_at) VALUES (?,?,?)").bind(pl.id, r.title, now).run(); }
-  for (let i = 0; i < ids.length; i += 40)
-    await DB.batch(ids.slice(i, i + 40).map((tid, k) => DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pl.id, tid, now + i + k)));
+  await insertRowsInChunks(DB,'playlist_tracks',['playlist_id','track_id','added_at'],ids.map((tid,i)=>[pl.id,tid,now+i]));
   await coverFromRequest(env, pl.id, r.image).catch(() => {});
   await markDone(DB, r.id, pl.id);
   await publishHiveRequest(env,r,'done').catch(()=>{});
@@ -1181,16 +1208,16 @@ async function rematchPlaylists(env) {
 async function inLibrary(DB, it) {
   if (it.kind === "playlist") return (await DB.prepare("SELECT name FROM playlists").all()).results.some((p) => norm(p.name) === norm(it.title));
   const lib = (await DB.prepare("SELECT artist, artists, title, album FROM tracks").all()).results;
+  if(it.kind==='song')return lib.some(t=>sourceMatch(t,{t:it.title,a:it.artist}));
   const by = (t, name) => artistsOfRow(t).some((a) => sameName(a, name));
   return lib.some((t) => it.kind === "song" ? same(t.title, it.title) && by(t, it.artist)
     : it.kind === "album" ? t.album && same(t.album, it.title) && by(t, it.artist) : by(t, it.title));
 }
 // A newly added song takes any matching requests (song, its album, its artist) out of the queue.
 async function fulfil(env, t) {
-  const { results } = await env.DB.prepare("SELECT id, kind, title, artist FROM requests WHERE kind != 'playlist' AND status = 'active'").all();
+  const { results } = await env.DB.prepare("SELECT * FROM requests WHERE kind = 'song' AND status = 'active'").all();
   const by = (name) => t.artists.some((a) => sameName(a, name));
-  const done = results.filter((r) => r.kind === "song" ? same(r.title, t.title) && by(r.artist)
-    : r.kind === "album" ? t.album && same(r.title, t.album) && by(r.artist) : by(r.title));
+  const done = results.filter((r) => r.kind === 'song' && sourceMatch({title:t.title,artist:t.artist,artists:t.artists},{t:r.title,a:r.artist}));
   for (const r of done){ await markDone(env.DB, r.id);await publishHiveRequest(env,r,'done').catch(()=>{}); }
   await rematchPlaylists(env); // a requested playlist may now be complete
   await refreshActiveSpotifyImports(env,{max:1}).catch(()=>{});
@@ -1503,7 +1530,7 @@ async function touchCatalogue(DB) {
 function changesCatalogue(path) {
   return path === "/api/internal/folder-index" || path === "/api/admin/upload" ||
     path === "/api/admin/clean" || path.startsWith("/api/admin/tracks/") ||
-    path.startsWith("/api/admin/playlists") || (path.startsWith("/api/admin/requests/") && path!=="/api/admin/requests/housekeeping") ||
+    path.startsWith("/api/admin/playlists") || (path.startsWith("/api/admin/requests/") && ! ["/api/admin/requests/housekeeping","/api/admin/requests/review"].includes(path)) ||
     path.startsWith("/api/user/playlists");
 }
 async function catalogueVersion(DB) {
@@ -1573,7 +1600,7 @@ async function syncPeerPhase(env,peer,phase){
   const spec=SYNC_PHASES[phase];if(!spec)throw Error("Invalid sync stage");
   // A unique query string opts out of v14 edge-cached catalogue responses.
   const target=peer.url+spec[0]+"?sync="+crypto.randomUUID();
-  const response=await fetch(target,{headers:{accept:"application/json","cache-control":"no-cache"},signal:AbortSignal.timeout(25000)});
+  const response=requireNoRedirect(await fetch(target,{redirect:"manual",headers:{accept:"application/json","cache-control":"no-cache"},signal:AbortSignal.timeout(25000)}));
   if(!response.ok)throw Error("Peer " + phase + " returned HTTP " + response.status);
   const raw=await response.text();
   if(raw.length>8000000)throw Error("Peer metadata exceeds the sync size limit");
@@ -2209,7 +2236,7 @@ async function api(req, env, url, ctx) {
     const { results } = await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, meta FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all();
     const local=results.map(({ meta, ...r }) => {
       let m = null; try { m = meta ? JSON.parse(meta) : null; } catch {}
-      return m ? { ...r, total: m.total, partial: !!m.partial, matched: m.matched ?? null, matched_local:m.matched_local??null,matched_peer:m.matched_peer??null,availability_checked_at:m.availability_checked_at??null } : r;
+      return m ? { ...r, total: m.total, partial: !!m.partial, matched: m.matched ?? null, matched_local:m.matched_local??m.review?.matched_local??null,matched_peer:m.matched_peer??m.review?.matched_peer??null,availability_checked_at:m.availability_checked_at??m.review?.availability_checked_at??null } : r;
     });
     const remote=await hiveRequestsForDisplay(env);
     return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
@@ -2236,7 +2263,7 @@ async function api(req, env, url, ctx) {
     if (item.error) return json({ error: item.error }, 400);
     if (await DB.prepare("SELECT 1 FROM requests WHERE dedupe = ?").bind(item.dedupe).first())
       return json({ error: "That's already in the queue.", code: "in_queue" }, 409);
-    if (await inLibrary(DB, item)) return json({ error: "That's already in the library.", code: "in_library" }, 409);
+    if (['song','playlist'].includes(item.kind) && await inLibrary(DB, item)) return json({ error: "That's already in the library.", code: "in_library" }, 409);
     try {
       if(item.meta){
         const matched=await matchPlaylistHIVE(env,item.meta.tracks);
@@ -2498,37 +2525,78 @@ async function api(req, env, url, ctx) {
         DB.prepare("INSERT INTO user_playlists(id,user_id,name,is_public,created_at,cover_mode) VALUES(?,?,?,0,?,'copied')")
           .bind(playlistId,auth.user_id,unique,now),
         DB.prepare(`INSERT INTO spotify_user_imports
-          (id,user_id,playlist_id,spotify_url,cover_url,tracks_json,total,partial,missing,updated_at,created_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+          (id,user_id,playlist_id,spotify_url,cover_url,tracks_json,total,partial,missing,updated_at,created_at,source_total)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
           .bind(importId,auth.user_id,playlistId,item.url,item.image||'',JSON.stringify(item.meta.tracks),
-            item.meta.total,item.meta.partial?1:0,item.meta.total,now,now)
+            item.meta.total,item.meta.partial?1:0,item.meta.total,now,now,item.meta.source_total)
       ]);
       await saveSpotifyImportedCover(env,playlistId,item.image).catch(()=>{});
       const info=await refreshSpotifyUserImport(env,{id:importId,playlist_id:playlistId,user_id:auth.user_id,
         tracks_json:JSON.stringify(item.meta.tracks),total:item.meta.total,partial:item.meta.partial,
-        created_at:now,state:'draft'},{fetchPeers:true});
+        created_at:now,state:'draft',source_total:item.meta.source_total},{fetchPeers:true});
       return json({ok:true,...info,name:unique,source_url:item.url},201);
     }
     if(path==='/api/user/spotify-imports' && m==='GET'){
       await ensureSpotifyImportSchema(DB);
       const items=(await DB.prepare(`SELECT id,playlist_id,spotify_url,total,partial,matched,
-        local_count AS local,peer_count AS peer,missing,state,updated_at FROM spotify_user_imports
+        local_count AS local,peer_count AS peer,missing,state,updated_at,source_total,completed_partial,user_supplied_count FROM spotify_user_imports
         WHERE user_id=? ORDER BY created_at DESC LIMIT 50`).bind(auth.user_id).all()).results;
       return json(items);
     }
-    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/(refresh|complete)$/))&&m==='POST'){
+    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/missing$/))&&m==='GET'){
       await ensureSpotifyImportSchema(DB);
       const imp=await DB.prepare('SELECT * FROM spotify_user_imports WHERE id=? AND user_id=?').bind(x[1],auth.user_id).first();
       if(!imp)return json({error:'Spotify import not found.'},404);
-      if(imp.state!=='draft')return json({error:'Spotify import already completed.'},409);
+      const known=imp.missing_json?JSON.parse(imp.missing_json):(await matchPlaylistHIVE(env,JSON.parse(imp.tracks_json))).missing;
+      return json({songs:known,source_total:imp.source_total,partial:!!imp.partial});
+    }
+    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/supplement$/))&&m==='POST'){
+      await ensureSpotifyImportSchema(DB);const b=await req.json().catch(()=>({}));
+      const imp=await DB.prepare('SELECT * FROM spotify_user_imports WHERE id=? AND user_id=?').bind(x[1],auth.user_id).first();
+      if(!imp)return json({error:'Spotify import not found.'},404);
+      if(!imp.partial&&!imp.completed_partial)return json({error:'Only incomplete imports can be supplemented.'},409);
+      if(typeof b.text!=='string'||b.text.length>500000)return json({error:'Paste a tab-separated list of title and artist.'},400);
+      const old=JSON.parse(imp.tracks_json),seen=new Set(old.map(t=>norm(t.t)+'|'+norm(t.a))),added=[];
+      for(const line of b.text.split(/\r?\n/).filter(a=>a.trim())){
+        const parts=line.split('\t');if(parts.length!==2)return json({error:'Each row must contain title, a tab, then artist.'},400);
+        const t=clean(parts[0],200),a=clean(parts[1],200);if(!t||!a)return json({error:'Title and artist are required.'},400);
+        if(/^title$/i.test(t)&&/^artist$/i.test(a))continue;
+        const key=norm(t)+'|'+norm(a);if(!seen.has(key)){seen.add(key);added.push({t,a});}
+      }
+      if(!added.length)return json({error:'No new songs found in the supplied list.'},400);
+      if(old.length+added.length>1500)return json({error:'Maximum 1,500 known source entries per import.'},400);
+      const pending=[...JSON.parse(imp.missing_json||'[]'),...added],next={...imp,tracks_json:JSON.stringify([...old,...added]),total:old.length+added.length,partial:1,missing_json:JSON.stringify(pending),newly_discovered:added};
+      await DB.prepare('UPDATE spotify_user_imports SET tracks_json=?,total=?,partial=1,missing_json=?,user_supplied_count=user_supplied_count+? WHERE id=?').bind(next.tracks_json,next.total,next.missing_json,added.length,imp.id).run();
+      const info=await refreshSpotifyUserImport(env,next,{requestMissing:false});return json({ok:true,added:added.length,...info});
+    }
+    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/(request|search)$/))&&m==='POST'){
+      await ensureSpotifyImportSchema(DB);const b=await req.json().catch(()=>({}));
+      const imp=await DB.prepare('SELECT * FROM spotify_user_imports WHERE id=? AND user_id=?').bind(x[1],auth.user_id).first();
+      if(!imp)return json({error:'Spotify import not found.'},404);
+      const song=JSON.parse(imp.tracks_json||'[]').find(t=>t.t===b.title&&t.a===b.artist);
+      if(!song)return json({error:'Song is not in this import.'},404);
+      if(x[2]==='search'){
+        const offset=Number.isSafeInteger(b.offset)&&b.offset>=0&&b.offset<=100?b.offset:0;
+        const refresh=await refreshSpotifyPeerCatalogue(env,{max:4,offset}),cat=await spotifyImportCatalogue(DB);
+        return json({ok:true,found:[...cat.local,...cat.remote].some(t=>sourceMatch(t,song)),refreshed:refresh.checked,reachable:refresh.reachable,nextOffset:refresh.nextOffset,totalPeers:refresh.totalPeers});
+      }
+      const result=await requestStoredSong(env,song,auth.user_id);return json(result,result.error?429:200);
+    }
+    if((x=path.match(/^\/api\/user\/spotify-imports\/([\w-]+)\/(refresh|complete)$/))&&m==='POST'){
+      await ensureSpotifyImportSchema(DB);
+      let imp=await DB.prepare('SELECT * FROM spotify_user_imports WHERE id=? AND user_id=?').bind(x[1],auth.user_id).first();
+      if(!imp)return json({error:'Spotify import not found.'},404);
+      if(imp.state!=='draft'&&!(x[2]==='refresh'&&imp.completed_partial))return json({error:'Spotify import already completed.'},409);
+      if(x[2]==='refresh')imp=await extendSpotifyImport(env,imp);
       const info=await refreshSpotifyUserImport(env,imp,{fetchPeers:x[2]==='refresh'});
-      if(x[2]==='refresh')return json({ok:true,...info});
-      if(info.missing>0)return json({error:`${info.missing} songs are still missing. Refresh later; only the owner can finish when the songs are available.`,...info},409);
+      if(x[2]==='refresh'){if(imp.state==='complete'&&!info.missing&&!info.partial)await DB.prepare('UPDATE spotify_user_imports SET completed_partial=0 WHERE id=?').bind(imp.id).run();return json({ok:true,...info});}
+      const forced=(await req.json().catch(()=>({}))).confirm_partial===true;
+      if(info.missing>0&&!forced)return json({error:`${info.missing} songs are still missing. Refresh later; only the owner can finish when the songs are available.`,...info},409);
       // Public Spotify embed may contain only the first 50 or 100 tracks.
       // Never claim the entire Spotify playlist is complete when truncated.
-      if(info.partial)return json({error:'Spotify exposed only part of this playlist. Completion is blocked until a complete song list can be retrieved.',...info},409);
-      await DB.prepare("UPDATE spotify_user_imports SET state='complete',updated_at=? WHERE id=?")
-        .bind(Date.now(),imp.id).run();
+      if(info.partial&&!forced)return json({error:'Spotify exposed only part of this playlist. Completion is blocked until a complete song list can be retrieved.',...info},409);
+      await DB.prepare("UPDATE spotify_user_imports SET state='complete',updated_at=?,completed_partial=? WHERE id=?")
+        .bind(Date.now(),forced&&(info.missing>0||info.partial)?1:0,imp.id).run();
       return json({ok:true,...info,state:'complete'});
     }
     if (path === "/api/user/mobile-keys" || /^\/api\/user\/mobile-keys\/[\w-]+$/.test(path))
@@ -2588,6 +2656,25 @@ async function api(req, env, url, ctx) {
       const salt=hex(crypto.getRandomValues(new Uint8Array(16)));
       await DB.prepare("UPDATE user_accounts SET salt = ?, hash = ? WHERE id = ?").bind(salt,await pbkdf2(password,salt),auth.user_id).run();
       return json({ok:true});
+    }
+    if(path==='/api/user/playlist-track-search' && m==='POST'){
+      const b=await req.json().catch(()=>({}));const pid=clean(b.playlist_id,100),ref=clean(b.ref,220);
+      const owned=await DB.prepare('SELECT 1 FROM user_playlists p JOIN user_playlist_tracks l ON l.playlist_id=p.id WHERE p.id=? AND p.user_id=? AND l.track_id=?').bind(pid,auth.user_id,ref).first();
+      if(!owned)return json({error:'Playlist track not found.'},404);
+      const saved=await DB.prepare('SELECT title,artist,album FROM peer_track_refs WHERE ref=?').bind(ref).first()||await DB.prepare('SELECT title,artist,album FROM tracks WHERE id=?').bind(ref).first();
+      const want=saved||{title:clean(b.title,200),artist:clean(b.artist,200),album:''};
+      if(!want?.title||!want.artist)return json({error:'Track metadata is missing. Search or request by song name instead.'},404);
+      if(b.request===true){const result=await requestStoredSong(env,{t:want.title,a:want.artist},auth.user_id);return json(result,result.error?429:200);}
+      const offset=Number.isSafeInteger(b.offset)&&b.offset>=0&&b.offset<=100?b.offset:0;
+      const refresh=b.deep===true?await refreshSpotifyPeerCatalogue(env,{max:4,offset}):null;
+      const cat=await spotifyImportCatalogue(DB),matches=[...cat.local,...cat.remote].filter(t=>sourceMatch(t,{t:want.title,a:want.artist})&&(!want.album||!t.album||same(t.album,want.album))).slice(0,30);
+      const candidates=[];for(const t of matches){const id=t.origin?'peer:'+await sha256(t.origin+'\n'+t.remote_id):t.id;if(t.origin&&b.replace===id&&id!==ref)await DB.prepare('INSERT OR IGNORE INTO peer_track_refs (ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)').bind(id,t.origin,t.remote_id,clean(t.title),clean(t.artist),clean(t.album),Number(t.duration)||0,clean(t.cover_url,500)).run();
+        candidates.push({id,title:t.title,artist:t.artist,album:t.album||'',peer:!!t.origin,existing:id===ref});}
+      if(b.replace){if(b.replace===ref||!candidates.some(t=>t.id===b.replace))return json({error:'Replacement is not a current catalogue match.'},409);
+        const found=await DB.prepare('SELECT added_at FROM user_playlist_tracks WHERE playlist_id=? AND track_id=?').bind(pid,ref).first();if(!found)return json({error:'Playlist changed. Reload and retry.'},409);
+        // Replacing an unavailable entry never deletes the underlying track or affects other playlists.
+        await DB.batch([DB.prepare('INSERT OR IGNORE INTO user_playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)').bind(pid,b.replace,found.added_at),DB.prepare('DELETE FROM user_playlist_tracks WHERE playlist_id=? AND track_id=?').bind(pid,ref)]);return json({ok:true,replaced:true});}
+      return json({ok:true,title:want.title,artist:want.artist,candidates,refreshed:refresh?.checked??0,reachable:refresh?.reachable??0,nextOffset:refresh?.nextOffset??null,totalPeers:refresh?.totalPeers??0});
     }
     if(path==="/api/user/playlists/copy" && m==="POST"){
       const b=await req.json().catch(()=>({})), name=clean(b.name,80);
@@ -2941,7 +3028,7 @@ async function api(req, env, url, ctx) {
     const local=[];
     for(const {meta,has_tracks,...r} of rows){
       let mt=null;try{mt=meta?JSON.parse(meta):null;}catch{}
-      if(!mt||!has_tracks){local.push(r);continue;}
+      if(!mt||!has_tracks){local.push({...r,...(mt?.review?mt.review:{})});continue;}
       const checked=Array.isArray(mt.matched_missing)&&Number.isFinite(mt.availability_checked_at);
       local.push({...r,total:mt.total,partial:!!mt.partial,
         source_total:Number.isSafeInteger(mt.source_total)?mt.source_total:null,
@@ -2949,18 +3036,66 @@ async function api(req, env, url, ctx) {
         matched_local:checked?mt.matched_local:null,matched_peer:checked?mt.matched_peer:null,missing:checked?mt.matched_missing:null,availability_checked_at:checked?mt.availability_checked_at:null});
     }
     // Remote requests retain origin ownership; local admins can dismiss copies.
-    const remote=(await hiveRequestsForDisplay(env,{admin:true})).map(r=>({...r,total:null,missing:[]}));
+    const remote=await hiveRequestsForDisplay(env,{admin:true});
     return json([...local,...remote].sort((a,b)=>a.created_at-b.created_at));
+  }
+  if(path==='/api/admin/requests/review' && m==='POST'){
+    const b=await req.json().catch(()=>({}));
+    if(!Array.isArray(b.ids)||!b.ids.length||b.ids.length>8||b.ids.some(id=>typeof id!=='string'||id.length>192)||!['refresh','complete','locate','hide-offline'].includes(b.action))return json({error:'Invalid review selection.'},400);
+    const unique=[...new Set(b.ids)],result=[];
+    const refreshed=b.action==='refresh'&&b.cached_only!==true?await refreshSpotifyPeerCatalogue(env,{max:4}):null;
+    const catalogue=b.action==='refresh'?await spotifyImportCatalogue(DB):null;
+    for(const id of unique){
+      const remote=id.includes('|');const row=remote?await remoteRequestRow(env,id):await DB.prepare("SELECT * FROM requests WHERE id=? AND status='active'").bind(id).first();
+      if(!row){result.push({id,error:'Request not found'});continue;}
+      if(b.action==='locate'){
+        if(!remote){result.push({id,origin_status:'local'});continue;}
+        // Direct approved origin only; run the ordinary pull to refresh health.
+        if(b.live===true)await syncHiveRequests(env,{force:true,targetOrigin:row.origin_id});
+        result.push({id,...await originStatus(env,row.origin_id)});continue;
+      }
+      if(b.action==='hide-offline'){
+        if(!remote||!await reviewRemoteRequest(env,id,{hide:true}))result.push({id,error:'Origin is not verified offline.'});else result.push({id,status:'hidden'});continue;
+      }
+      if(b.action==='complete'){
+        if(!['artist','album'].includes(row.kind)||b.confirm!==true){result.push({id,error:'Only confirmed artist or album completion is allowed here.'});continue;}
+        if(remote)await reviewRemoteRequest(env,id,{done:true});else{await markDone(DB,id);await publishHiveRequest(env,row,'done').catch(()=>{});}
+        result.push({id,status:'done',local_only:remote});continue;
+      }
+      let stats={},done=false,meta={};try{meta=JSON.parse(row.meta||'{}')||{};}catch{}
+      if(row.kind==='song'){
+        const wanted={t:row.title,a:row.artist};const own=catalogue.local.some(t=>sourceMatch(t,wanted)),peer=catalogue.remote.some(t=>sourceMatch(t,wanted));
+        stats={matched_local:own?1:0,matched_peer:peer?1:0,availability_checked_at:Date.now()};done=own||peer;
+      }else if(['artist','album'].includes(row.kind)){
+        const match=t=>artistsOfRow(t).some(a=>normArtist(a)===normArtist(row.kind==='artist'?row.title:row.artist))&&(row.kind==='artist'||same(t.album,row.title));
+        const key=t=>core(t.title)+'|'+norm(t.artist)+'|'+norm(t.album);
+        const own=new Set(catalogue.local.filter(match).map(key)),other=new Set(catalogue.remote.filter(match).map(key));
+        stats={matched_local:own.size,matched_peer:other.size,availability_checked_at:Date.now()};
+      }else if(row.kind==='playlist'){
+        const sid=String(row.url||'').match(/^https:\/\/open\.spotify\.com\/playlist\/([A-Za-z0-9]{10,40})$/)?.[1];
+        if(sid)try{const embed=await spotifyEmbed(sid);if(embed.tracks.length>=(meta.tracks||[]).length)meta=playlistMeta(embed.tracks,embed.sourceTotal);}catch{}
+        if(!meta.tracks?.length){result.push({id,error:'Spotify song list unavailable.'});continue;}
+        const found=await matchPlaylistHIVE(env,meta.tracks,{catalogue});stats={total:meta.total,partial:!!meta.partial,source_total:meta.source_total??null,source_status:meta.source_status,matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,missing:found.missing,availability_checked_at:Date.now()};
+        Object.assign(meta,{matched:stats.matched,matched_local:stats.matched_local,matched_peer:stats.matched_peer,matched_missing:stats.missing,availability_checked_at:stats.availability_checked_at});
+      }
+      if(remote)await reviewRemoteRequest(env,id,{stats,done});else{
+        await DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify({...meta,review:stats}),id).run();
+        if(done){await markDone(DB,id);await publishHiveRequest(env,row,'done').catch(()=>{});}
+      }
+      result.push({id,...stats,status:done?'done':'progress',local_only:remote});
+    }
+    return json({ok:true,results:result,refresh:refreshed});
   }
   if ((x = path.match(/^\/api\/admin\/requests\/([\w-]+)\/(refresh|complete)$/)) && m === "POST") {
     const r = await DB.prepare("SELECT * FROM requests WHERE id = ? AND kind = 'playlist' AND status = 'active'").bind(x[1]).first();
     if (!r) return json({ error: "Playlist request not found." }, 404);
     let meta = null; try { meta = r.meta ? JSON.parse(r.meta) : null; } catch {}
-    if (x[2] === "refresh") { // read the playlist from Spotify again, then compare it with the library
+    if (x[2] === "refresh") { // refresh bounded peer snapshots, then compare Spotify source list
+      await refreshSpotifyPeerCatalogue(env,{max:4});
       try {
         const e = await spotifyEmbed(String(r.dedupe).split("|")[1]);
         if (!e.tracks.length) throw new Error("empty");
-        meta = playlistMeta(e.tracks, e.sourceTotal);
+        if(!meta?.tracks||e.tracks.length>=meta.tracks.length)meta = playlistMeta(e.tracks, e.sourceTotal??meta?.source_total);
         if (!r.image && e.image) r.image = e.image;
       } catch { if (!meta) return json({ error: "Couldn't read the playlist from Spotify right now." }, 502); }
     }

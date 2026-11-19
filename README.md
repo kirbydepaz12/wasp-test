@@ -1,3 +1,7 @@
+## WASP v18.0.1 — HIVE Request & Playlist Recovery (staging)
+
+Selected request refresh, administrator-only origin checks and temporary offline hiding, Spotify partial playlist finalization, and missing-song recovery across eligible HIVE peers. Upgrade from exact v18.0.0; see the [v18.0.1 rollout and validation guide](docs/V18-0-1-HIVE-REQUEST-PLAYLIST-RECOVERY.md).
+
 ## WASP v18.0.0 — HIVE Smart Routing (staging)
 
 Adaptive browser audio-source selection and bounded failover, local HIVE request housekeeping, a manual peer telemetry shortcut, and interactive country and decade listening details. Existing storage, accounts and peer settings are preserved. Upgrade only from v17.0.7; review the [v18 rollout and validation guide](docs/V18-0-0-HIVE-SMART-ROUTING.md) before staging.
