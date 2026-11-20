@@ -4,7 +4,8 @@ const root=document.getElementById('telemetryRoot');
 const safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n=v=>Number(v||0).toLocaleString();
 const clip=s=>String(s||'').slice(0,190);
-const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'year',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:new Date().toISOString().slice(0,10),request:0};
+function localToday(){const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
+const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0};
 const names={top:'Most listened',hearts:'Most hearted',likes:'Most liked',dislikes:'Most disliked'};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const tagColors=['#c8f169','#49d8be','#7ba7ff','#a88bff','#ffba67','#ec86b6','#62bfed','#89b8a0'];
@@ -37,7 +38,7 @@ root.addEventListener('error',async e=>{const img=e.target;if(!img.classList?.co
 },true);
 function rankList(rows,type){
   const noun=type==='artists'?'artist':type==='albums'?'album':'track';
-  return `<div class="ranking-card"><h3>Top ${safe(type)}</h3>${rows?.length?rows.map((r,i)=>{
+  return `<div class="ranking-card" data-tile-card="${safe(type)}"><div class="chart-head"><h3>Top ${safe(type)}</h3>${tileControls(type)}</div>${rows?.length?rows.map((r,i)=>{
     const target=type==='artists'?'#artist/'+encodeURIComponent(r.name):
       type==='albums'?'#album/'+encodeURIComponent(r.artist||'')+'/'+encodeURIComponent(r.name):'';
     return `<button class="rank-row" type="button" ${target?`data-href="${safe(target)}"`:'data-noaction="true"'}>
@@ -45,11 +46,12 @@ function rankList(rows,type){
       <span class="count">${n(r.plays)}</span></button>`;
   }).join(''):'<p class="message">No confirmed listens yet.</p>'}</div>`;
 }
+function dateLabel(v){return /^\d{4}-\d{2}$/.test(v)?v.slice(5)+'/'+v.slice(2,4):v.slice(-5);}
 function bars(rows,weekly=false){
   const values=weekly?Array.from({length:7},(_,i)=>({label:['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i],plays:Number(rows.find(x=>Number(x.weekday)===i)?.plays)||0})):
     rows.map(x=>({label:x.label,plays:Number(x.plays)||0}));
   const max=Math.max(1,...values.map(x=>x.plays));
-  return `<div class="chart" role="img" aria-label="Listening activity bars">${values.length?values.map(v=>`<div class="bar-slot" tabindex="0" data-tip="${safe(v.label)}: ${n(v.plays)} confirmed plays"><i class="bar" style="height:${Math.max(1,100*v.plays/max)}%"></i><small>${safe(v.label.slice(-5))}</small></div>`).join(''):'<p class="message">No recorded activity for this period.</p>'}</div>`;
+  return `<div class="chart" role="img" aria-label="Listening activity bars">${values.length?values.map(v=>`<div class="bar-slot" tabindex="0" data-tip="${safe(v.label)}: ${n(v.plays)} confirmed plays"><i class="bar" style="height:${100*v.plays/max}%"></i><small>${safe(dateLabel(v.label))}</small></div>`).join(''):'<p class="message">No recorded activity for this period.</p>'}</div>`;
 }
 function anglePoint(cx,cy,r,angle){const q=angle*Math.PI/180;return [cx+r*Math.cos(q),cy+r*Math.sin(q)];}
 function annularPath(cx,cy,inside,outside,start,end){
@@ -92,14 +94,14 @@ function tagStream(tags,series){
   const layers=rows.map((t,j)=>{
     const lower=t.values.map((_,i)=>baseline[i]-rows.slice(0,j).reduce((s,r)=>s+r.values[i],0)*scale);
     const upper=t.values.map((v,i)=>lower[i]-v*scale);
-    const points=upper.map((y,i)=>[xpos(i),y]).concat(lower.map((y,i)=>[xpos(i),y]).reverse());
+    const points=labels.length===1?[[W/2-28,upper[0]],[W/2+28,upper[0]],[W/2+28,lower[0]],[W/2-28,lower[0]]]:upper.map((y,i)=>[xpos(i),y]).concat(lower.map((y,i)=>[xpos(i),y]).reverse());
     const d=points.map(([x,y],i)=>`${i?'L':'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ')+' Z';
     const peak=t.periods?.reduce((a,b)=>Number(b.plays)>Number(a?.plays||0)?b:a,null);
     const tip=`${t.name}: ${n(t.plays)} tagged plays${peak?' · Peak '+peak.label+': '+n(peak.plays):''}`;
     return `<path class="genre-layer" tabindex="0" role="img" data-genre="${safe(t.name)}" data-tip="${safe(tip)}" d="${d}" fill="${t.color}" />`;
   }).join('');
-  const ticks=labels.filter((_,i)=>i%Math.max(1,Math.ceil(labels.length/8))===0);
-  const tickLabels=ticks.map(label=>{const i=labels.indexOf(label);return `<text x="${xpos(i)}" y="216" text-anchor="middle" fill="#aaa299" font-size="11">${safe(label.slice(-7))}</text>`;}).join('');
+  const ticks=labels.filter((_,i)=>i===labels.length-1||i%Math.max(1,Math.ceil(labels.length/12))===0);
+  const tickLabels=ticks.map(label=>{const i=labels.indexOf(label);return `<text x="${xpos(i)}" y="216" text-anchor="middle" fill="#aaa299" font-size="11">${safe(dateLabel(label))}</text>`;}).join('');
   return `<div class="stream-wrap"><svg class="genre-chart" viewBox="0 0 640 230" aria-label="Genre listening activity over time" role="group">
      <line x1="18" y1="100" x2="622" y2="100" stroke="#55534d" stroke-dasharray="2,4" opacity=".45" />
      ${layers}${tickLabels}</svg><div class="tag-legend">${rows.map(t=>`<button type="button" class="tag-key" data-genre="${safe(t.name)}" data-tip="${safe(t.name)}: ${n(t.plays)} tagged plays"><i style="background:${t.color}"></i><span>${safe(t.name)}</span><b>${n(t.plays)}</b></button>`).join('')}</div>
@@ -168,42 +170,68 @@ function fingerprint(data){
   return `<svg viewBox="0 0 300 228" width="100%" role="img" aria-label="Five-axis listening fingerprint">${[30,55,82].map(r=>`<polygon points="${labels.map((_,i)=>point(i,r)).join(' ')}" fill="none" stroke="#524e45"/>`).join('')}${axis}<polygon points="${poly}" fill="rgba(200,241,105,.27)" stroke="#c8f169" stroke-width="2"/></svg>`;
 }
 function metric(label,value,extra=''){return `<div class="metric"><span class="lab">${safe(label)}</span><strong>${n(value)}</strong><small>${safe(extra||'This period')}</small></div>`;}
+const tileNames=['history','clock','artists','albums','tracks','weekdays','fingerprint','genres','decades'];
+const periods=[['week','Week'],['month','Month'],['year','Year'],['all','All time']];
+let overrides={},summaryMemo=new Map();
+function tileControls(id){const current=overrides[id]||state.period;return `<div class="tile-filters" role="group" aria-label="${id} date range">${periods.map(([v,l])=>`<button type="button" data-tile="${id}" data-tile-period="${v}" class="chip${v===current?' active':''}" aria-pressed="${v===current}">${l}</button>`).join('')}</div>`;}
+function getSummary(period,force=false){const params=new URLSearchParams({scope:state.scope,period,year:String(state.year),month:'all',offset:String(-new Date().getTimezoneOffset())});if(period==='week'||period==='month')params.set('start',state.start);const key=params.toString();const old=summaryMemo.get(key);if(!force&&old&&old.until>Date.now())return old.promise;const promise=fetch('/api/telemetry?'+key,{cache:'no-store'}).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||'Statistics are temporarily unavailable');const current=summaryMemo.get(key);if(current?.promise===promise)current.until=Date.now()+Math.max(60000,Number(data.refreshMs)||300000);return data;}).catch(e=>{if(summaryMemo.get(key)?.promise===promise)summaryMemo.delete(key);throw e;});summaryMemo.set(key,{promise,until:Date.now()+60000});if(summaryMemo.size>24)summaryMemo.delete(summaryMemo.keys().next().value);return promise;}
 function controls(){return `<div class="controls" role="group" aria-label="Telemetry date filters">
   <div class="switches">${[['week','Week'],['month','Month'],['year','Year'],['all','All time']].map(([v,l])=>`<button type="button" data-period="${v}" class="chip${state.period===v?' active':''}" aria-pressed="${state.period===v}">${l}</button>`).join('')}</div>
   <label class="control">Year<select id="year">${Array.from({length:12},(_,i)=>new Date().getFullYear()-i).map(y=>`<option value="${y}" ${state.year===y?'selected':''}>${y}</option>`).join('')}</select></label>
-  ${state.period==='month'?`<label class="control">Month<select id="month">${months.map((v,i)=>`<option value="${i+1}" ${state.month===i+1?'selected':''}>${v}</option>`).join('')}</select></label>`:''}
+
   <label class="control">Listening scope<select id="scope"><option value="hive" ${state.scope==='hive'?'selected':''}>Entire HIVE</option><option value="local" ${state.scope==='local'?'selected':''}>This server</option></select></label>
   <button type="button" class="chip" data-refresh-telemetry>Refresh telemetry</button><div class="period-nav"><button type="button" data-step="-1" title="Previous period" aria-label="Previous period">‹</button><button type="button" data-step="1" title="Next period" aria-label="Next period">›</button></div>
   </div>`;}
+// A card change updates just that card. Other cards, the map, player, and
+// global totals stay mounted and keep their current range.
+const tileVersions=new Map();
+async function changeTile(id,period){
+ if(!tileNames.includes(id)||!periods.some(([v])=>v===period))return;
+ const card=root.querySelector(`[data-tile-card="${id}"]`);if(!card)return;
+ const version=(tileVersions.get(id)||0)+1;tileVersions.set(id,version);const globalRequest=state.request;
+ card.setAttribute('aria-busy','true');
+ try{const d=await getSummary(period);if(state.request!==globalRequest||tileVersions.get(id)!==version||!card.isConnected)return;
+ overrides[id]=period;
+ if(['artists','albums','tracks'].includes(id)){card.outerHTML=rankList(d['top'+id[0].toUpperCase()+id.slice(1)],id);}
+ else{const f=card.querySelector('.tile-filters');if(f)f.outerHTML=tileControls(id);
+ const el=card.querySelector('.tile-body');if(id==='history'){el.innerHTML=bars(d.series||[]);const label=card.querySelector('.chart-head small');if(label)label.textContent=['year','all'].includes(period)?'By month':'By day';}
+ if(id==='clock')el.innerHTML=hourChart(d.hours||[]);
+ if(id==='weekdays')el.innerHTML=bars(d.weekdays||[],true);
+ if(id==='fingerprint')el.innerHTML=fingerprint(d);
+ if(id==='genres')el.innerHTML=tagStream(d.topTags||[],d.series||[]);
+ if(id==='decades')el.innerHTML=decadesChart(d.decades||[],Number(d.plays)||0,Number(d.yearMetadataPlays)||0);
+ card.querySelector('.tile-error')?.remove();}
+ resized();
+ }catch(e){if(state.request===globalRequest&&tileVersions.get(id)===version&&card.isConnected){let err=card.querySelector('.tile-error');if(!err){err=document.createElement('p');err.className='note tile-error';card.append(err);}err.textContent='Could not load this range. Previous statistics retained.';}}
+ finally{if(tileVersions.get(id)===version&&card.isConnected)card.removeAttribute('aria-busy');}
+}
 function syncLabel(data){return data.lastSynced?'Synced '+new Date(data.lastSynced).toLocaleString():'Local cache · peer sync pending';}
 let telemetryRefreshAt=0,telemetryBusy=false;
-async function showHive({quiet=false}={}){
-  if(quiet&&telemetryBusy)return;
+async function showHive({quiet=false,keep=false}={}){
+  if(quiet&&(telemetryBusy||root.querySelector('[aria-busy="true"]')))return;
   const request=++state.request;telemetryBusy=true;
-  if(!quiet)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">Loading historical data…</span></div>${controls()}<p class="loading">Reading cached telemetry…</p>`;
+  if(!quiet&&!keep)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">Loading historical data…</span></div>${controls()}<p class="loading">Reading cached telemetry…</p>`;
   resized();
-  const params=new URLSearchParams({scope:state.scope,period:state.period,year:String(state.year),month:String(state.period==='month'?state.month:'all'),offset:String(-new Date().getTimezoneOffset())});
-  if(state.period==='week')params.set('start',state.start);
   try{
-    const response=await fetch('/api/telemetry?'+params,{cache:'no-store'});
-    const data=await response.json();
+    if(quiet)summaryMemo.clear();
+    const requested=[...new Set([state.period,...Object.values(overrides)])];const reports=new Map(await Promise.all(requested.map(async p=>[p,await getSummary(p)])));
     if(request!==state.request)return;
+    const data=reports.get(state.period),tile=id=>reports.get(overrides[id]||state.period)||data;
     artOrigins=Array.isArray(data.artworkOrigins)?data.artworkOrigins:[];
-    if(!response.ok)throw Error(data.error||'Statistics are temporarily unavailable');
     telemetryRefreshAt=Date.now()+Math.max(60000,Number(data.refreshMs)||300000);
     const growth=data.previousPlays>0?`${Math.round((data.plays-data.previousPlays)*100/data.previousPlays)}% vs previous period`:'No comparable previous period';
     root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">${safe(syncLabel(data))}${data.generatedAt?` · Updated ${safe(new Date(data.generatedAt).toLocaleTimeString())}`:''}</span></div>
       ${controls()}
       <div class="metric-grid">${metric('Confirmed plays',data.plays,growth)}${metric('Unique artists',data.artists)}${metric('Unique albums',data.albums)}${metric('Unique tracks',data.tracks)}</div>
-      <div class="two-col section"><div class="panel"><div class="chart-head"><h2>Listening history</h2><small>${safe(state.period==='year'?'By month':'By day')}</small></div>${bars(data.series||[])}</div>
-      <div class="panel"><div class="chart-head"><h2>Listening clock</h2><small>By hour · your timezone</small></div>${hourChart(data.hours||[])}</div></div>
-      <div class="section"><h2>Most played music</h2><div class="three-col">${rankList(data.topArtists,'artists')}${rankList(data.topAlbums,'albums')}${rankList(data.topTracks,'tracks')}</div></div>
-      <div class="two-col section"><div class="panel"><h2>Days of the week</h2>${bars(data.weekdays||[],true)}</div>
+      <div class="two-col section"><div class="panel" data-tile-card="history"><div class="chart-head"><h2>Listening history</h2>${tileControls('history')}<small>${safe(['year','all'].includes(overrides.history||state.period)?'By month':'By day')}</small></div><div class="tile-body">${bars(tile('history').series||[])}</div></div>
+      <div class="panel" data-tile-card="clock"><div class="chart-head"><h2>Listening clock</h2>${tileControls('clock')}<small>By hour · your timezone</small></div><div class="tile-body">${hourChart(tile('clock').hours||[])}</div></div></div>
+      <div class="section"><h2>Most played music</h2><div class="three-col">${rankList(tile('artists').topArtists,'artists')}${rankList(tile('albums').topAlbums,'albums')}${rankList(tile('tracks').topTracks,'tracks')}</div></div>
+      <div class="two-col section"><div class="panel" data-tile-card="weekdays"><h2>Days of the week</h2>${tileControls('weekdays')}<div class="tile-body">${bars(tile('weekdays').weekdays||[],true)}</div></div>
       <div class="info-card"><h3>Across the HIVE</h3><p><b>${n(data.nodes)}</b> contributing origin servers in this period.</p>
       <p><b>${n(data.connectedCaches)}</b> peer cursors synchronized to this server.</p><p>Each server keeps its own cached copy. Events carry unique origin identifiers so relayed plays can be counted once.</p></div></div>
       <div class="section"><h2>Listening fingerprint & quick facts</h2><div class="two-col">
-        <div class="panel"><div class="chart-head"><h2>Music fingerprint</h2><small>Recorded activity, not personal profiling</small></div>
-          <div class="fingerprint">${fingerprint(data)}</div>
+        <div class="panel" data-tile-card="fingerprint"><div class="chart-head"><h2>Music fingerprint</h2>${tileControls('fingerprint')}<small>Recorded activity, not personal profiling</small></div>
+          <div class="tile-body fingerprint">${fingerprint(tile('fingerprint'))}</div>
           <p class="note">Repeat rate: replayed tracks / total plays. Concentration: top artist's share. Consistency: active days / days in range.</p></div>
         <div class="panel"><div class="fact-grid">
           <div><span>Longest recorded streak</span><b>${n(data.longestStreak)} days</b></div>
@@ -211,15 +239,15 @@ async function showHive({quiet=false}={}){
           <div><span>Busiest listening hour</span><b>${data.busiestHour==null?'—':String(data.busiestHour).padStart(2,'0')+':00'}</b><small>${n(data.busiestHourPlays)} plays</small></div>
           <div><span>Active days in selected period</span><b>${n(data.activeDays)}</b></div>
         </div></div></div></div>
-      <div class="section"><div class="panel"><div class="chart-head"><h2>Top tags · genre trends</h2><small>Hover to highlight a genre</small></div>${tagStream(data.topTags||[],data.series||[])}</div></div>
+      <div class="section"><div class="panel" data-tile-card="genres"><div class="chart-head"><h2>Top tags · genre trends</h2>${tileControls('genres')}<small>Hover to highlight a genre</small></div><div class="tile-body">${tagStream(tile('genres').topTags||[],tile('genres').series||[])}</div></div></div>
       <div class="two-col section"><div class="panel"><div class="chart-head"><h2>Artist origin heat map</h2><small>Verified country metadata only</small></div>
         <div id="worldMap" class="world-map"><p class="message">Preparing country map…</p></div><div id="countryDetail" class="chart-detail" aria-live="polite">Select a country to see its top artist and album.</div>
         <div class="world-legend"><span>Lower activity</span><i></i><strong>Higher activity</strong></div>
         <p class="note">${n(data.unknownCountryPlays)} plays have unknown artist origin. Artist geography is not inferred from IP addresses or user locations.</p>
-      </div><div class="panel"><div class="chart-head"><h2>Music by decade</h2><small>Album / track release years</small></div>
-        ${decadesChart(data.decades||[],Number(data.plays)||0,Number(data.yearMetadataPlays)||0)}</div></div>
+      </div><div class="panel" data-tile-card="decades"><div class="chart-head"><h2>Music by decade</h2>${tileControls('decades')}<small>Album / track release years</small></div>
+        <div class="tile-body">${decadesChart(tile('decades').decades||[],Number(tile('decades').plays)||0,Number(tile('decades').yearMetadataPlays)||0)}</div></div></div>
       <div class="info-card section"><h3>Listening privacy</h3><p>The HIVE view shows aggregate activity. Personal listening profiles and named-user leaderboards are not shared with peers.</p></div>
-      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources: <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>, <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
+      <p class="history-note">${safe(data.historicalCoverage)} Figures represent confirmed WASP play events, not audio bytes transferred or the length of entire songs. Metadata sources include embedded audio tags and <a href="https://musicbrainz.org" target="_blank" rel="noopener">MusicBrainz</a>, <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> and <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.</p>`;
     void mountWorldMap(request,data.countries||[],data.unknownCountryPlays||0);
   }catch(e){if(request!==state.request)return;telemetryRefreshAt=Date.now()+300000;if(quiet){const status=root.querySelector('.status');if(status)status.textContent='Refresh failed; showing previous statistics.';}else if(request===state.request)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP HIVE</span><h1>Telemetry</h1></div></div>${controls()}<p class="message">${safe(e.message)}</p>`;}
   finally{if(request===state.request)telemetryBusy=false;}
@@ -233,8 +261,8 @@ function showRanking(){++state.request;telemetryBusy=false;const rows=state.item
 }
 function resized(){requestAnimationFrame(()=>tell('wasp:telemetry-height',{height:Math.ceil(document.body.scrollHeight)}));}
 function movePeriod(delta){
-  if(state.period==='month'){state.month+=delta;if(state.month<1){state.month=12;state.year--;}if(state.month>12){state.month=1;state.year++;}}
-  else if(state.period==='week'){const d=new Date(state.start+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+delta*7);state.start=d.toISOString().slice(0,10);}
+  if(state.period==='all')return;
+  if(state.period==='week'||state.period==='month'){const d=new Date(state.start+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+delta*(state.period==='week'?7:30));state.start=d.toISOString().slice(0,10);}
   else state.year+=delta;
   state.year=int(state.year,2000,2100);
 }
@@ -268,7 +296,8 @@ root.addEventListener('click',e=>{
   if(e.target.closest('[data-refresh-telemetry]')){void showHive({quiet:true});return;}
   const c=e.target.closest('[data-chart-country]');if(c){setChartSelection('country',c.dataset.chartCountry);return;}
   const d=e.target.closest('[data-chart-decade]');if(d){setChartSelection('decade',d.dataset.chartDecade);return;}
-  const period=e.target.closest('[data-period]');if(period){state.period=period.dataset.period;void showHive();return;}
+  const tile=e.target.closest('[data-tile-period]');if(tile){void changeTile(tile.dataset.tile,tile.dataset.tilePeriod);return;}
+  const period=e.target.closest('[data-period]');if(period){state.period=period.dataset.period;overrides={};state.start=localToday();void showHive();return;}
   const step=e.target.closest('[data-step]');if(step){movePeriod(Number(step.dataset.step));void showHive();return;}
   const link=e.target.closest('[data-href]');if(link){tell('wasp:telemetry-navigate',{href:link.dataset.href});return;}
   const row=e.target.closest('[data-kind][data-id]');if(!row)return;
@@ -280,11 +309,12 @@ root.addEventListener('click',e=>{
 window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='wasp:telemetry-data')return;
   const data=event.data;
+  const wasTelemetry=state.mode==='top'&&state.sub==='telemetry';
   state.mode=['top','hearts','likes','dislikes'].includes(data.mode)?data.mode:'top';
   state.sub=typeof data.sub==='string'?data.sub:'ranked';
   state.items=Array.isArray(data.items)?data.items.slice(0,100):[];
   state.query=String(data.query||'');
-  if(state.mode==='top'&&state.sub==='telemetry')void showHive();else showRanking();
+  if(state.mode==='top'&&state.sub==='telemetry'){if(!wasTelemetry||!state.opened){state.period='week';state.start=localToday();state.year=new Date().getFullYear();overrides={};state.opened=true;}void showHive();}else{state.opened=false;showRanking();}
 });
 const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(resized):null;
 if(observer)observer.observe(root);

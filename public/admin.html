@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.2">
+<link rel="stylesheet" href="/style.css?v=18.0.3">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -344,7 +344,7 @@
                 <label class="metadata-check coverage-priority"><span>Prioritize frequently played music</span><input type="checkbox" id="metadataPriority" checked></label>
                 <button type="button" class="btn coverage-scan" id="metadataScan">Scan missing metadata</button>
                 <div id="metadataScanControls" class="metadata-actions hidden"><button class="btn ghost" type="button" id="metadataPause">Pause scan</button><button class="btn ghost" type="button" id="metadataStop">Stop scan</button></div>
-                <div id="metadataScanProgress" class="metadata-progress hidden"><label for="metadataScanBar">Scan progress · processed jobs, not coverage</label><progress id="metadataScanBar" max="100"></progress><span id="metadataScanText" class="muted" role="status"></span></div>
+                <div id="metadataFileProgress" class="metadata-progress hidden"><label for="metadataFileBar">Local file metadata · read-only</label><progress id="metadataFileBar" max="100"></progress><span id="metadataFileText" class="muted" role="status"></span><button type="button" class="btn ghost" id="metadataRescanFiles">Full file rescan</button></div><div id="metadataScanProgress" class="metadata-progress hidden"><label for="metadataScanBar">Scan progress · processed jobs, not coverage</label><progress id="metadataScanBar" max="100"></progress><span id="metadataScanText" class="muted" role="status"></span></div>
                 <div id="metadataProgressWrap" class="metadata-progress hidden"><label for="metadataProgress">Current batch</label><progress id="metadataProgress" max="100"></progress><span id="metadataProgressText" class="muted"></span></div>
                 <p id="metadataCoverageStatus" class="muted" role="status" aria-live="polite">Runs one bounded batch using saved settings. Enable scheduled enrichment for continuous scanning.</p>
               </div>
@@ -375,6 +375,7 @@
               <label class="metadata-check"><input type="checkbox" id="metadataFallback"><span>Use the other enabled provider for missing fields</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataWikidata" checked><span>Use Wikidata factual fallback (requires a valid contact and fallback enabled)</span></label>
               <label class="metadata-check"><input type="checkbox" id="metadataTrust"><span>Trust verified metadata from administrator-connected peers (not community peers)</span></label>
+              <label class="metadata-check hidden" id="metadataPeerTagsRow"><input type="checkbox" id="metadataPeerTags"><span>Read missing MP3 tags from trusted admin peers (Docker only; bounded byte ranges)</span></label>
               <label class="metadata-field">Preferred metadata peer<select id="metadataPreferredPeer"><option value="">Rotate trusted admin peers</option></select></label>
               <button class="btn ghost" type="button" id="metadataPull">Pull metadata from HIVE</button>
               <label class="metadata-check"><input type="checkbox" id="metadataShareLastfm"><span>I have Last.fm redistribution permission; allow Last.fm metadata exchange</span></label>
@@ -488,6 +489,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.0.2"></script>
+<script type="module" src="/admin.js?v=18.0.3"></script>
 </body>
 </html>

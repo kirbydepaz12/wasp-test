@@ -1,4 +1,4 @@
-import {metadataAdmin, metadataFeed, runMetadata} from './hive-metadata.js';
+import {metadataAdmin, metadataFeed, runMetadata, rememberFileFacts} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.2";
-const BUILD_LABEL = "HIVE Telemetry Intelligence";
+const BUILD_VERSION = "18.0.3";
+const BUILD_LABEL = "HIVE Metadata & Telemetry Refinement";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1785,7 +1785,7 @@ async function api(req, env, url, ctx) {
   const DB = env.DB;
   let x;
   if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
-  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull))?$/.test(path)){
+  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull|rescan-files))?$/.test(path)){
     const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
     await ensureTelemetrySchemaForMetadata(env);return metadataAdmin(req,env,url);
   }
@@ -1992,6 +1992,10 @@ async function api(req, env, url, ctx) {
     else await telemetryScheduleTick(env);
     return json({ok:true,runs},200,{"cache-control":"no-store"});
   }
+  if(path==='/api/internal/folder-rescan-token'&&m==='GET'){
+    if(env.WASP_RUNTIME!=='docker'||!env.SCANNER_SECRET||req.headers.get('x-scanner-secret')!==env.SCANNER_SECRET)return json({error:'Forbidden'},403);
+    return json({token:(await DB.prepare("SELECT value FROM settings WHERE key='hive_folder_rescan_token'").first())?.value||''});
+  }
   if (path === "/api/internal/folder-index" && m === "POST") {
     if (!env.SCANNER_SECRET || req.headers.get("x-scanner-secret") !== env.SCANNER_SECRET) return json({error:"Forbidden"},403);
     const body = await req.json().catch(() => ({}));
@@ -2008,7 +2012,7 @@ async function api(req, env, url, ctx) {
           .bind(track.title,track.artist,track.album,track.track_no,track.duration,track.size,track.id),
         ...artistIndexStatements(DB,track),
       ]);
-      if(t.release_year||t.genre)await rememberTrackMetadata(env,track.id,{release_year:t.release_year,genre:t.genre}).catch(()=>{});
+      if(t.release_year||t.genre){await rememberTrackMetadata(env,track.id,{release_year:t.release_year,genre:t.genre}).catch(()=>{});await rememberFileFacts(env,track,{release_year:t.release_year,genre:t.genre}).catch(()=>{});}
     }
     return json({ok:true,indexed:body.tracks.length});
   }
@@ -3268,7 +3272,7 @@ async function api(req, env, url, ctx) {
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
     stmts.push(...artistIndexStatements(DB,t));
     await DB.batch(stmts);
-    if(meta.year||meta.genre)await rememberTrackMetadata(env,t.id,{release_year:meta.year,genre:meta.genre}).catch(()=>{});
+    if(meta.year||meta.genre){await rememberTrackMetadata(env,t.id,{release_year:meta.year,genre:meta.genre}).catch(()=>{});await rememberFileFacts(env,t,{release_year:meta.year,genre:meta.genre}).catch(()=>{});}
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
     // Automatically warm biography and artwork for new artists/albums. Never
     // fail an upload because a third-party artwork service is unavailable.

@@ -100,25 +100,20 @@ function readDateWindow(params) {
   const monthRaw=params.get('month')||'all';
   let month=monthRaw==='all'?0:Number(monthRaw);
   if(!Number.isInteger(month)||month<0||month>12)throw Error('Invalid month');
-  const mode=params.get('period')||'year';
+  const mode=params.get('period')||'week';
   if(!['year','month','week','all'].includes(mode))throw Error('Invalid period');
   if(mode==='year'||mode==='all'||mode==='week')month=0;
   const offset=Math.max(-720,Math.min(840,Math.trunc(Number(params.get('offset'))||0)));
   const offsetMs=offset*MINUTE;
   let start,end;
-  if(mode==='all') {start=Date.UTC(2000,0,1);end=Math.floor(Date.now()/86400000)*86400000+86400000;}
-  else if(mode==='week') {
-    const input=params.get('start');
-    const ref=input && /^\d{4}-\d{2}-\d{2}$/.test(input)?new Date(input+'T00:00:00Z'):now;
-    if(!Number.isFinite(ref.getTime()))throw Error('Invalid week');
-    const day=(ref.getUTCDay()+6)%7;
-    start=Date.UTC(ref.getUTCFullYear(),ref.getUTCMonth(),ref.getUTCDate()-day)-offsetMs;
-    end=start+7*86400000;
-  } else if(mode==='month') {
-    if(!month)throw Error('Choose a month');
-    start=Date.UTC(year,month-1,1)-offsetMs;
-    end=Date.UTC(year,month,1)-offsetMs;
-  } else {start=Date.UTC(year,0,1)-offsetMs;end=Date.UTC(year+1,0,1)-offsetMs;}
+  const dayMs=86400000, today=Math.floor((Date.now()+offsetMs)/dayMs)*dayMs;
+  const input=params.get('start'); // inclusive ending day for rolling windows
+  const anchor=input&&/^\d{4}-\d{2}-\d{2}$/.test(input)?Date.parse(input+'T00:00:00Z'):today;
+  if(!Number.isFinite(anchor))throw Error('Invalid date');
+  if(mode==='all'){start=Date.UTC(2000,0,1);end=today+dayMs-offsetMs;}
+  else if(mode==='week'||(mode==='month'&&(input||!month))){end=anchor+dayMs-offsetMs;start=end-(mode==='week'?7:30)*dayMs;}
+  else if(mode==='month'){start=Date.UTC(year,month-1,1)-offsetMs;end=Date.UTC(year,month,1)-offsetMs;}
+  else {start=Date.UTC(year,0,1)-offsetMs;end=Date.UTC(year+1,0,1)-offsetMs;}
   const span=end-start;
   return {year,month,mode,offset,offsetMs,start,end,span};
 }
@@ -136,9 +131,15 @@ export async function telemetrySummary(env,url) {
   const d=readDateWindow(url.searchParams),scope=url.searchParams.get('scope')||'hive';
   const local=(await db.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
   const f=scopeSql(scope,local);
-  const key=`v182:${scope}:${d.start}:${d.end}:${d.offset}`;
+  const key=`v183:${scope}:${d.mode}:${d.start}:${d.end}:${d.offset}`;
   const cached=await db.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
   if(cached?.body) {try {return JSON.parse(cached.body);} catch { /* rebuild */ }}
+  if(d.mode==='all'){
+    const first=await db.prepare(`SELECT MIN(played_at) AS earliest FROM telemetry_events WHERE played_at<?${f.where}`).bind(d.end,...f.extra).first();
+    const earliest=Number(first?.earliest)||d.end-86400000;
+    const dt=new Date(earliest+d.offsetMs);
+    d.start=Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate())-d.offsetMs;d.span=d.end-d.start;
+  }
   const clause=`played_at>=? AND played_at<?${f.where}`;
   const bind=[d.start,d.end,...f.extra];
   const q=(sql,values=bind)=>db.prepare(sql).bind(...values).all().then(toRows);
@@ -155,8 +156,13 @@ export async function telemetrySummary(env,url) {
     AND title<>'' GROUP BY LOWER(title),LOWER(artist) ORDER BY plays DESC,name LIMIT 10`);
   const shifted='(played_at + '+d.offsetMs+')';
   const unit=d.mode==='week'||d.mode==='month'||d.month?'%Y-%m-%d':'%Y-%m';
-  const series=await q(`SELECT strftime('${unit}',${shifted}/1000,'unixepoch') AS label,COUNT(*) AS plays
+  const rawSeries=await q(`SELECT strftime('${unit}',${shifted}/1000,'unixepoch') AS label,COUNT(*) AS plays
     FROM telemetry_events WHERE ${clause} GROUP BY label ORDER BY label`);
+  const series=[];const counts=new Map(rawSeries.map(r=>[r.label,Number(r.plays)||0]));
+  const cursor=new Date(d.start+d.offsetMs);if(unit==='%Y-%m')cursor.setUTCDate(1);
+  for(;cursor.getTime()<d.end+d.offsetMs;unit==='%Y-%m'?cursor.setUTCMonth(cursor.getUTCMonth()+1):cursor.setUTCDate(cursor.getUTCDate()+1)){
+    const label=cursor.toISOString().slice(0,unit==='%Y-%m'?7:10);series.push({label,plays:counts.get(label)||0});
+  }
   const weekdays=await q(`SELECT CAST(strftime('%w',${shifted}/1000,'unixepoch') AS INTEGER) AS weekday,
     COUNT(*) AS plays FROM telemetry_events WHERE ${clause} GROUP BY weekday ORDER BY weekday`);
   const hours=await q(`SELECT CAST(strftime('%H',${shifted}/1000,'unixepoch') AS INTEGER) AS hour,
@@ -176,13 +182,13 @@ export async function telemetrySummary(env,url) {
     WHERE played_at>=? AND played_at<?${f.where}`).bind(previousStart,d.start,...f.extra).first();
   // v17.0.1 visual enrichment: aggregate by artist/period before reading JS metadata.
   // These queries reuse the time index and never poll public metadata APIs on dashboard loads.
-  const periodUnit=d.mode==='year'&&!d.month?'%Y-%m':'%Y-%m-%d';
+  const periodUnit=unit;
   const genreSource=await q(`SELECT LOWER(e.artist) AS artist_key,
     strftime('${periodUnit}',(e.played_at+${d.offsetMs})/1000,'unixepoch') AS bucket,
     COUNT(*) AS plays, COALESCE(NULLIF(verified.value,''),NULLIF(e.genre,''),NULLIF(m.genre,''),'') AS event_genre
     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON m.track_id=e.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='genre'
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-      AND e.artist<>'' GROUP BY artist_key,bucket,event_genre ORDER BY plays DESC LIMIT 2400`);
+      AND e.artist<>'' GROUP BY artist_key,bucket,event_genre ORDER BY bucket,artist_key,event_genre`);
   const artistInfo=await db.prepare("SELECT name, genres FROM artist_info WHERE genres IS NOT NULL AND genres!='[]'").all().then(toRows).catch(()=>[]);
   const knownGenres=new Map();
   for(const row of artistInfo){
@@ -206,19 +212,19 @@ export async function telemetrySummary(env,url) {
     periods:[...(tagByMonth.get(name)||new Map())].map(([label,plays])=>({label,plays})).sort((a,b)=>a.label.localeCompare(b.label))}));
   // Release years are taken from explicit event metadata, or known local ID3 tags.
   // No year is inferred from a song name, upload date, or guessed artist era.
-  const decades=await q(`SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 END AS decade,
+  const decades=await q(`SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)/10 AS INTEGER)*10 END AS decade,
        COUNT(*) AS plays,COUNT(DISTINCT LOWER(e.artist)) AS artists,
        COUNT(DISTINCT LOWER(e.album)||'~'||LOWER(e.artist)) AS albums,
        COUNT(DISTINCT LOWER(e.title)||'~'||LOWER(e.artist)) AS tracks
-     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year' LEFT JOIN hive_metadata albumYear ON albumYear.artist=LOWER(TRIM(e.artist)) AND albumYear.title='' AND albumYear.album=LOWER(TRIM(e.album)) AND albumYear.field='release_year' AND e.album<>''
+     FROM telemetry_events e LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year' LEFT JOIN hive_metadata albumYear ON albumYear.artist=LOWER(TRIM(e.artist)) AND albumYear.title='' AND albumYear.album=LOWER(TRIM(e.album)) AND albumYear.field='release_year' AND e.album<>'' LEFT JOIN hive_file_album_years fileAlbum ON fileAlbum.artist=LOWER(TRIM(e.artist)) AND fileAlbum.album=LOWER(TRIM(e.album))
      WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-       AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850
+       AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)>=1850
      GROUP BY decade ORDER BY decade`);
-  const decadesTop=await q(`WITH album_counts AS (SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)/10 AS INTEGER)*10 END AS decade,
+  const decadesTop=await q(`WITH album_counts AS (SELECT CASE WHEN CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)/10 AS INTEGER)*10<1960 THEN 1950 ELSE CAST(COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)/10 AS INTEGER)*10 END AS decade,
     MIN(e.album) AS album,MIN(e.artist) AS artist,MIN(e.origin_id) AS origin_id,COUNT(*) AS plays FROM telemetry_events e
-    LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year' LEFT JOIN hive_metadata albumYear ON albumYear.artist=LOWER(TRIM(e.artist)) AND albumYear.title='' AND albumYear.album=LOWER(TRIM(e.album)) AND albumYear.field='release_year' AND e.album<>''
+    LEFT JOIN telemetry_track_metadata m ON e.track_id=m.track_id LEFT JOIN hive_metadata verified ON verified.artist=LOWER(TRIM(e.artist)) AND verified.title=LOWER(TRIM(e.title)) AND verified.album=LOWER(TRIM(e.album)) AND verified.field='release_year' LEFT JOIN hive_metadata albumYear ON albumYear.artist=LOWER(TRIM(e.artist)) AND albumYear.title='' AND albumYear.album=LOWER(TRIM(e.album)) AND albumYear.field='release_year' AND e.album<>'' LEFT JOIN hive_file_album_years fileAlbum ON fileAlbum.artist=LOWER(TRIM(e.artist)) AND fileAlbum.album=LOWER(TRIM(e.album))
     WHERE e.played_at>=? AND e.played_at<?${f.where.replace(/origin_id/g,'e.origin_id')}
-    AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),m.release_year,0)>=1850 AND e.album<>''
+    AND COALESCE(CAST(albumYear.value AS INTEGER),CAST(verified.value AS INTEGER),NULLIF(e.release_year,0),NULLIF(m.release_year,0),NULLIF(fileAlbum.year,0),0)>=1850 AND e.album<>''
     GROUP BY decade,LOWER(TRIM(e.album)),LOWER(TRIM(e.artist))), ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY decade ORDER BY plays DESC,LOWER(album),LOWER(artist)) AS rn FROM album_counts) SELECT * FROM ranked WHERE rn=1`);
   for(const drow of decades){const best=decadesTop.find(r=>Number(r.decade)===Number(drow.decade));
     drow.topAlbum=best?.album||'';drow.topArtist=best?.artist||'';drow.topAlbumOrigin=best?.origin_id||'';drow.topAlbumPlays=Number(best?.plays||0);}
@@ -252,7 +258,7 @@ export async function telemetrySummary(env,url) {
     // Catalogued song duration is not playback duration. Do not claim listening hours.
     indexedDuration:Number(totalRow?.indexed_duration||0),
     topArtists,topAlbums,topTracks,series,weekdays,hours,
-    topTags,taggedPlays:topTagKnown,metadataAttribution:['MusicBrainz','Last.fm','Wikidata'],decades,countries:verifiedCountries,
+    topTags,taggedPlays:topTagKnown,metadataAttribution:['Embedded audio tags','MusicBrainz','Last.fm','Wikidata'],decades,countries:verifiedCountries,
     yearMetadataPlays:yearsKnown,unknownCountryPlays,
     activeDays:daily.length,longestStreak,mostActiveDay:mostActive?.day||null,
     mostActiveDayPlays:Number(mostActive?.plays||0),busiestHour:busiestHour?Number(busiestHour.hour):null,
