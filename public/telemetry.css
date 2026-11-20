@@ -60,3 +60,11 @@
 .map-country{cursor:pointer}.map-country.selected{fill:#fff;stroke:#e3f6ba;stroke-width:1.2}.decade-row{width:100%;background:transparent;border:0;text-align:left;cursor:pointer;font:inherit;font-size:12px}.decade-fill{display:block;height:100%}.decade-row.selected{background:#282e24;color:var(--text)}.decade-row.selected .decade-fill{background:repeating-linear-gradient(90deg,#a5e96c 0px,#a5e96c 4px,#242725 4px,#242725 5px)}.chart-detail{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;min-height:70px}.chart-detail-label{font-size:12px;color:var(--muted);margin:8px 0 4px}.chart-detail-item{display:flex;align-items:center;text-align:left;gap:10px;width:100%;background:none;border:0;color:var(--text);padding:4px 0;cursor:pointer}.chart-detail-item .cover{width:48px;height:48px;flex:0 0 48px}.chart-detail-item span:not(.cover){min-width:0;overflow-wrap:anywhere}.chart-detail-item b,.chart-detail-item small{display:block}.chart-detail-item small{color:var(--muted);margin-top:3px}
 
 .tile-filters{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0 10px}.tile-filters .chip{padding:4px 8px;font-size:10px;min-height:26px}.chart-head{flex-wrap:wrap}.chart{overflow-x:auto}.bar-slot{min-width:22px}.ranking-card .chart-head{align-items:flex-start}.ranking-card .tile-filters{margin:0 0 8px}.genre-chart{overflow:visible}
+/* v18.0.5: Center each card's period selector without moving the card title. */
+.chart-head{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:8px}
+.chart-head>h2,.chart-head>h3{grid-column:1;min-width:0;margin:0}
+.chart-head>.tile-filters{grid-column:2;justify-self:center;justify-content:center;align-items:center;margin:0}
+.chart-head>small{grid-column:3;text-align:right;justify-self:end}
+.ranking-card .chart-head{align-items:center}
+.ranking-card .chart-head>h3{padding:12px 14px}
+@media(max-width:660px){.chart-head{grid-template-columns:1fr;justify-items:center;text-align:center}.chart-head>h2,.chart-head>h3,.chart-head>.tile-filters,.chart-head>small{grid-column:1;justify-self:center;text-align:center}.ranking-card .chart-head>h3{padding:12px 10px 0}}

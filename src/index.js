@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.4";
-const BUILD_LABEL = "HIVE Offline Metadata Engine";
+const BUILD_VERSION = "18.0.5";
+const BUILD_LABEL = "HIVE Radio & Playlist Refinement";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2058,9 +2058,42 @@ async function api(req, env, url, ctx) {
     const id=(await DB.prepare("SELECT value FROM settings WHERE key='hash_scan_request'").first())?.value||"";
     return json({request:id});
   }
+  if (path === "/api/radio/top" && m === "GET") {
+    // Public, anonymous, all-time aggregate: no visitor identifiers or user
+    // listening history. Cache grouped results on-server to avoid repeat D1 scans.
+    await ensureTelemetrySchemaForMetadata(env);
+    const key='radio_top_all_v185',now=Date.now();
+    const cached=await DB.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,now).first();
+    if(cached?.body){try{return json(JSON.parse(cached.body),200,{'cache-control':'public, max-age=180'});}catch{}}
+    const rows=(await DB.prepare(`SELECT MIN(title) AS name, MIN(artist) AS artist,COUNT(*) AS plays
+      FROM telemetry_events WHERE title<>'' AND artist<>''
+      GROUP BY LOWER(TRIM(title)),LOWER(TRIM(artist)) ORDER BY plays DESC,name LIMIT 100`).all()).results;
+    await DB.prepare(`INSERT INTO telemetry_summary_cache(key,body,expires_at) VALUES(?,?,?)
+      ON CONFLICT(key) DO UPDATE SET body=excluded.body,expires_at=excluded.expires_at`)
+      .bind(key,JSON.stringify(rows),now+300000).run();
+    return json(rows,200,{'cache-control':'public, max-age=180'});
+  }
   if (path === "/api/tracks" && m === "GET") {
-    const { results } = await DB.prepare(
-      `SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id = t.id GROUP BY t.id ORDER BY t.created_at DESC`).all();
+    // Provide verified file/HIVE metadata with the catalogue so the browser can
+    // display years and genres and build decade radios without guessing them.
+    // Older databases may not have telemetry tables yet: fall back to the exact
+    // original query rather than blocking music browsing during migration.
+    let results;
+    try {
+      results=(await DB.prepare(`SELECT ${TRACK_COLS},
+        COALESCE(NULLIF(tm.release_year,0),NULLIF(fa.year,0),
+          CAST(am.value AS INTEGER),CAST(yt.value AS INTEGER),0) AS release_year,
+        COALESCE(NULLIF(tm.genre,''),ag.value,'') AS genre
+        FROM tracks t LEFT JOIN reactions r ON r.track_id=t.id
+        LEFT JOIN telemetry_track_metadata tm ON tm.track_id=t.id
+        LEFT JOIN hive_file_album_years fa ON fa.artist=LOWER(TRIM(t.artist)) AND fa.album=LOWER(TRIM(t.album))
+        LEFT JOIN hive_metadata am ON am.artist=LOWER(TRIM(t.artist)) AND am.title='' AND am.album=LOWER(TRIM(t.album)) AND am.field='release_year' AND t.album<>''
+        LEFT JOIN hive_metadata yt ON yt.artist=LOWER(TRIM(t.artist)) AND yt.title=LOWER(TRIM(t.title)) AND yt.album=LOWER(TRIM(t.album)) AND yt.field='release_year'
+        LEFT JOIN hive_metadata ag ON ag.artist=LOWER(TRIM(t.artist)) AND ag.title='' AND ag.album='' AND ag.field='genre'
+        GROUP BY t.id ORDER BY t.created_at DESC`).all()).results;
+    } catch {
+      results=(await DB.prepare(`SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id=t.id GROUP BY t.id ORDER BY t.created_at DESC`).all()).results;
+    }
     return json(results.map((t) => { let artists; try { artists = artistsOfRow(t); } catch { artists = [t.artist || "Unknown Artist"]; } return { ...t, artists }; }));
   }
   if (path === "/api/track-reaction-counts" && m === "GET") {

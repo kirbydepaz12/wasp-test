@@ -1,4 +1,5 @@
 import { radioIds } from "/radio.js";
+import { createRadioSelection, duplicateCandidates, artistSearchTokens, trackYear, trackGenres, normal } from "/radio-builder.js";
 import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
 import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
 // v13: Docker injects same-origin relay_base in the local peer registry.
@@ -43,7 +44,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
+const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", radio: "Radio", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
 // Icon assets are the original user-supplied images; dark glyphs get a light CSS treatment.
 const NAV_ICONS = Object.fromEntries(Object.keys(TABS).map((key) => [key, `/nav-icons/${key}.png`]));
 let sidebarCollapsed = store.get('sidebarCollapsed', false) === true;
@@ -636,10 +637,17 @@ function artistSources(name){
 const sourceTitle=(text,src)=>`${sourceIcons(src)}${esc(text)}`;
 
 function row(t, num, extra = "", cover = false) {
-  return `<button class="row" data-id="${esc(t.id)}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
-    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small>${esc(artistLine(t))}</small></span>
-    <span class="al muted">${esc(extra || albumName(t) || "Single")}</span><span class="muted">${fmt(t.duration)}</span></button>`;
+  // Metadata is shown only when verified/available; never infer a release year.
+  const year=trackYear(t),tags=trackGenres(t);
+  return `<button class="row track-detail-row" data-id="${esc(t.id)}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
+    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small class="compact-artist">${esc(artistLine(t))}</small></span>
+    <span class="al muted" title="Album">${esc(extra || albumName(t) || "Single")}</span>
+    <span class="row-artists muted" title="Artists">${esc(artistLine(t))}</span>
+    <span class="row-year muted" title="Release year">${year||'—'}</span>
+    <span class="row-genre muted" title="Genre">${esc(tags.join(', ') || '—')}</span>
+    <span class="row-duration muted" title="Duration">${fmt(t.duration)}</span></button>`;
 }
+function rowHeading(){return `<div class="track-column-head" aria-hidden="true"><span>#</span><span>Title</span><span>Album</span><span>Artists</span><span>Year</span><span>Genre</span><span>Duration</span></div>`;}
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
   `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${sourceTitle(t.title,sourcesForTrack(t))}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
@@ -797,7 +805,7 @@ function renderPage() {
         if(direct&&!direct.peer_offline)byId[id]={...direct,id};else byId[id]=cached;
       }
       view={ids:ids.filter(id=>byId[id]),label:p.name,pl:p};
-      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div></div><p role="alert" class="msg err" id="playlistDraftError"></p><div id="spotifyImportStatus"></div><div class="playlist-track-list" id="ownedTrackList"></div>`;
+      el.innerHTML=`<a class="back" href="#user/${p.is_public?'public':'private'}">← My playlists</a><div class="owned-playlist-header"><div class="playlist-detail-hero"><div class="playlist-detail-cover">${ownedPlaylistCover(p)}</div><h1>${esc(p.name)}</h1><p class="muted">${p.is_public?'Public playlist':'Private playlist'}</p><div class="playlist-detail-actions">${playlistReactControls(p)}</div></div><button type="button" class="playlist-cog" id="playlistCog" aria-label="Edit playlist settings" title="Edit playlist">⚙</button><button type="button" class="btn ghost playlist-duplicate-trigger" id="playlistDuplicateScan">Find duplicates</button></div><div id="playlistDuplicatePanel" class="playlist-duplicate-panel" hidden></div><p role="alert" class="msg err" id="playlistDraftError"></p><div id="spotifyImportStatus"></div><div class="playlist-draft-toolbar" id="playlistDraftToolbar" hidden><button class="btn ghost" type="button" id="playlistUndo" title="Undo the last five removals">↶ Undo</button><button class="btn" type="button" id="playlistCommit">Save changes</button><span class="muted" id="playlistDraftCount"></span></div><div class="playlist-track-list" id="ownedTrackList"></div>`;
       el.querySelector('#playlistCog').onclick=()=>openEditPlaylist(p);
       void paintSpotifyImportStatus(p.id);
       initOwnedTrackEditor(el,p,ids);
@@ -818,6 +826,7 @@ function renderPage() {
     return;
   }
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
+  if (tab === "radio") { radioPage(el);return; }
   // Reaction charts may contain locally cached peer songs even if the remote
   // catalogue is temporarily offline (and this installation has no uploads).
   const hasChartData = (tab === "listened") || RX.includes(tab) && (
@@ -957,7 +966,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.4';
+  frame.src='/telemetry.html?v=18.0.5';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1189,8 +1198,9 @@ window.addEventListener('resize',()=>{if(parse().a==='listened' && parse().arg!=
 // A song with several artists is listed under each of them.
 function artistGrid(el, recent) {
   const by = dict();
-  tracks.filter(match).forEach((t) => artistsOf(t).forEach((n) => (by[n] ??= []).push(t)));
-  const names = Object.keys(by).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
+  tracks.filter(t=>recent||parse().a!=='artists'?match(t):true).forEach((t) => artistsOf(t).forEach((n) => (by[n] ??= []).push(t)));
+  const searchTokens=!recent&&parse().a==='artists' ? artistSearchTokens(query).map(normal) : [];
+  const names = Object.keys(by).filter(n=>!searchTokens.length||searchTokens.some(token=>normal(n).includes(token))).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
   noView();
   el.innerHTML = names.length ? `<div class="grid">${names.map((n) =>
     `<a class="tile" href="#artist/${enc(n)}">${art(artistArt(n), n)}<b>${sourceTitle(n,artistSources(n))}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
@@ -1278,7 +1288,7 @@ function artistPage(el, name) {
   const body = names.map((g) => {
     const l = groups[g].sort(byTrack);
     l.forEach((t) => ids.push(t.id));
-    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist">＋</button></h2>${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
+    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist">＋</button></h2>${rowHeading()}${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
   }).join("");
   view = { ids, label: name, pl: null };
   const albums = names.filter((g) => g).length;
@@ -1445,6 +1455,97 @@ window.addEventListener("message", (e) => { // the slider (a sandboxed frame) as
   if (f && e.source === f.contentWindow && e.data && (e.data.type === "ad:shuffle" || e.data.type === "wasp:featured-shuffle")) surpriseMe();
 });
 
+// v18.0.5: Public, anonymous HIVE Radio. Generates an ephemeral player queue,
+// never writes a playlist until an authenticated user explicitly saves it.
+let radioMode='artist',radioSession=null,radioKnownGenres={},radioGenresLoaded=false,radioGenresLoading=false;
+let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set();
+async function fetchRadioGenres(){
+  if(radioGenresLoaded||radioGenresLoading)return;
+  radioGenresLoading=true;
+  try{const r=await fetch('/api/genres');if(r.ok){const g=await r.json();if(g&&typeof g==='object')radioKnownGenres=g;}}
+  catch{}finally{radioGenresLoaded=true;radioGenresLoading=false;if(parse().a==='radio')radioPage($('#list'));}
+}
+function radioGenreOptions(){
+  const genres=new Set();for(const t of tracks)trackGenres(t,radioKnownGenres).forEach(g=>genres.add(g));
+  return [...genres].sort((a,b)=>a.localeCompare(b));
+}
+function radioOptions(){
+  if(radioMode==='artist'){
+    const names=[...new Set(tracks.flatMap(artistsOf))].sort((a,b)=>a.localeCompare(b));
+    return `<label class="radio-field">Artist<input id="radioArtist" type="search" list="radioArtistNames" maxlength="160" value="${esc(radioArtist)}" placeholder="Search an artist" required></label><datalist id="radioArtistNames">${names.slice(0,3000).map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist><p class="muted radio-hint">Starts with this artist, then includes available songs from related artists where supported by HIVE metadata.</p>`;
+  }
+  if(radioMode==='decade')return `<label class="radio-field">Decade<select id="radioDecade"><option value="pre" ${radioDecade==='pre'?'selected':''}>Pre-1960</option>${Array.from({length:Math.floor(new Date().getFullYear()/10)*10/10-1960/10+1},(_,i)=>1960+i*10).map(y=>`<option value="${y}" ${radioDecade===String(y)?'selected':''}>${y}s</option>`).join('')}</select></label><p class="muted radio-hint">Only songs with verified release years are eligible.</p>`;
+  if(radioMode==='genre'){
+    const options=radioGenreOptions();return `<fieldset class="radio-genres"><legend>Choose one or more genres</legend>${options.length?options.map(g=>`<label><input type="checkbox" name="radioGenre" value="${esc(g)}" ${radioSelections.has(g)?'checked':''}>${esc(g)}</label>`).join(''):'<p class="muted">No tagged genres found. Try another mode or refresh the music catalogue.</p>'}</fieldset>`;
+  }
+  return `<p class="muted radio-hint">All-time most-played tracks from the HIVE's confirmed, deduplicated telemetry. Unavailable catalogue tracks are excluded.</p>`;
+}
+function radioPage(el){
+  if(!el)return;
+  void fetchRadioGenres();
+  renderNav('radio');renderSub('',null);
+  const options=[['artist','Artist'],['genre','Genre'],['decade','Decade'],['top','Top songs']];
+  const ids=radioSession?.ids.filter(id=>byId[id]&&!byId[id].peer_offline)||[];
+  if(ids.length)view={ids,label:radioSession.label,pl:null};else noView();
+  el.innerHTML=`<section class="radio-page"><div class="radio-heading"><img src="/nav-icons/radio.png" alt="" class="radio-logo"><div><span class="eyebrow">WASP · HIVE listening</span><h1>HIVE Radio</h1><p class="muted">Build a music mix from songs currently available across your connected HIVE.</p></div></div>
+    <form id="radioBuilder" class="radio-builder">
+      <div class="radio-modes" role="group" aria-label="Radio selection">${options.map(([key,title])=>`<button class="radio-mode${radioMode===key?' on':''}" type="button" data-radio-mode="${key}" aria-pressed="${radioMode===key}">${title}</button>`).join('')}</div>
+      <div class="radio-options" id="radioOptions">${radioOptions()}</div>
+      <label class="radio-field radio-count">Songs in radio<select id="radioCount"><option value="20" ${radioCount==='20'?'selected':''}>20 songs</option><option value="30" ${radioCount==='30'?'selected':''}>30 songs</option><option value="50" ${radioCount==='50'?'selected':''}>50 songs</option><option value="custom" ${radioCount==='custom'?'selected':''}>Custom (up to 100)</option></select></label>
+      <label class="radio-field" id="radioCustomLabel" ${radioCount==='custom'?'':'hidden'}>Custom number<input id="radioCustom" type="number" min="1" max="100" value="${esc(radioCustomCount)}"></label>
+      <button class="btn" type="submit" id="radioGenerate">Generate radio</button>
+      <p class="msg" id="radioError" role="status" aria-live="polite"></p>
+    </form>
+    <div class="radio-output" id="radioOutput">${radioSession?`<div class="radio-result-head"><div><h2>${esc(radioSession.label)}</h2><p class="muted">${ids.length} available songs in this temporary radio queue · ${radioSession.requested} requested</p></div><div class="radio-actions"><button class="btn" type="button" id="radioPlay" ${!ids.length?'disabled':''}>▶ Play</button><button class="btn ghost" type="button" id="radioSave" ${!ids.length?'disabled':''}>+ Save as playlist</button></div></div>${ids.length?rowHeading()+ids.map((id,i)=>row(byId[id],i+1)).join(''):empty('No available songs for this radio.')}`:''}</div>
+  </section>`;
+  el.querySelectorAll('[data-radio-mode]').forEach(b=>b.onclick=()=>{
+    const f=el.querySelector('#radioBuilder');if(f){radioArtist=f.querySelector('#radioArtist')?.value.trim()||radioArtist;radioDecade=f.querySelector('#radioDecade')?.value||radioDecade;radioSelections=new Set([...f.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));}
+    radioMode=b.dataset.radioMode;radioPage(el);
+  });
+  el.querySelector('#radioCount').onchange=e=>{radioCount=e.target.value;el.querySelector('#radioCustomLabel').hidden=radioCount!=='custom';};
+  el.querySelector('#radioBuilder').onsubmit=async e=>{
+    e.preventDefault();const btn=el.querySelector('#radioGenerate'),message=el.querySelector('#radioError');
+    const count=radioCount==='custom'?Number(el.querySelector('#radioCustom').value):Number(radioCount);
+    if(!Number.isInteger(count)||count<1||count>100){message.textContent='Custom radio size must be between 1 and 100.';return;}
+    radioCustomCount=String(count);radioArtist=el.querySelector('#radioArtist')?.value.trim()||radioArtist;
+    radioDecade=el.querySelector('#radioDecade')?.value||radioDecade;
+    radioSelections=new Set([...el.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));
+    if(radioMode==='artist'&&!radioArtist){message.textContent='Choose an artist.';return;}
+    if(radioMode==='genre'&&!radioSelections.size){message.textContent='Choose at least one genre.';return;}
+    btn.disabled=true;message.textContent='Selecting eligible songs from HIVE…';
+    try{
+      let similar=[],top=[];
+      if(radioMode==='artist')similar=(await fetchSimilarArtists(radioArtist)).map(x=>x.name);
+      if(radioMode==='top'){
+        const response=await fetch('/api/radio/top',{cache:'no-store'});
+        if(!response.ok)throw Error('All-time HIVE telemetry is unavailable. Try again later.');top=arr(await response.json());
+      }
+      const selection=createRadioSelection({tracks,mode:radioMode,artist:radioArtist,decade:radioDecade==='pre'?'pre':Number(radioDecade),selectedGenres:[...radioSelections],knownGenres:radioKnownGenres,similarArtists:similar,topTracks:top,count});
+      const selected=radioMode==='artist'?radioArtist:radioMode==='decade'?(radioDecade==='pre'?'Pre-1960':radioDecade+'s'):radioMode==='genre'?[...radioSelections].join(' + '):'All-time top songs';
+      radioSession={...selection,label:'HIVE Radio · '+selected,created:Date.now()};
+      if(!selection.ids.length){radioPage(el);popup('No matching songs','No currently available HIVE tracks match this selection. Try a different artist, genre or decade.');return;}
+      startQueue(selection.ids,selection.ids[0],radioSession.label,null,'radio');
+      radioPage(el);
+      if(selection.limited)popup('Limited HIVE availability',`You requested ${count} songs, but only ${selection.available} matching songs are available right now. You can expand HIVE by connecting more WASP servers. If you own a server, sign in and check Account Settings → Publish for contributing a server link.`);
+    }catch(error){message.textContent=error.message||'Unable to generate radio.';}finally{if(btn.isConnected)btn.disabled=false;}
+  };
+  const play=el.querySelector('#radioPlay');if(play)play.onclick=()=>{
+    const playable=radioSession?.ids.filter(id=>byId[id]&&!byId[id].peer_offline)||[];
+    if(playable.length)startQueue(playable,playable[0],radioSession.label,null,'radio');
+  };
+  const save=el.querySelector('#radioSave');if(save)save.onclick=async()=>{
+    if(requireUserForPlaylist())return;
+    const p={name:('Radio · '+radioSession.label.replace(/^HIVE Radio · /,'').slice(0,42)+' · '+new Date().toLocaleDateString()+' '+makeId().slice(0,4)).slice(0,80),tracks:radioSession.ids};
+    save.disabled=true;save.textContent='Saving songs…';
+    try{
+      const refs=await registerPlaylistTracks(p);
+      const response=await postJSON('/api/user/playlists/copy',{name:p.name,tracks:refs});const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw Error(data.error||'Could not save your radio as a playlist.');
+      await load();location.hash='#userplaylist/'+enc(data.id);popup('Playlist saved',`Saved ${refs.length} radio songs to your account. Audio files have not been copied or deleted.`);
+    }catch(error){popup('Could not save radio',error.message||'Please retry.');}finally{save.disabled=false;save.textContent='+ Save as playlist';}
+  };
+}
+
 // Owned playlists share one cover rendering path for details, cards, and the editor.
 // A missing cover is rendered as a 3 x 3 grid of nine album artworks.
 // Track removals are in-memory until Save. Navigating away or refreshing discards them.
@@ -1452,14 +1553,26 @@ function initOwnedTrackEditor(el,p,original){
   let draft=[...original], history=[];const toolbar=el.querySelector('#playlistDraftToolbar');
   const list=el.querySelector('#ownedTrackList'),count=el.querySelector('#playlistDraftCount');
   const undo=el.querySelector('#playlistUndo'),save=el.querySelector('#playlistCommit'),error=el.querySelector('#playlistDraftError');
+  const dupButton=el.querySelector('#playlistDuplicateScan'),dupPanel=el.querySelector('#playlistDuplicatePanel');
   const changed=()=>draft.length!==original.length||draft.some((id,i)=>id!==original[i]);
+  const duplicates=()=>duplicateCandidates(draft,byId);
+  function paintDuplicates(){
+    const groups=duplicates();dupButton.textContent=groups.length?`Possible duplicates (${groups.length})`:'Find duplicates';
+    if(dupPanel.hidden)return;
+    dupPanel.innerHTML=`<div class="playlist-dup-title"><h3>Possible duplicate tracks</h3><p class="muted">Suggestions only. Similar titles by overlapping artists can be different recordings. Review each before removal.</p></div>`+
+      (groups.length?groups.map((g,index)=>`<div class="playlist-dup-group"><b>Group ${index+1}</b><p class="muted">${g.map(i=>`#${i+1}: ${esc(byId[draft[i]]?.title||'Unavailable')} — ${esc(artistLine(byId[draft[i]]||{}))}`).join(' · ')}</p><div class="playlist-dup-controls"><label>Candidate to remove <select aria-label="Duplicate candidate to remove">${g.map(i=>`<option value="${i}">#${i+1} ${esc(byId[draft[i]]?.title||'Track')}</option>`).join('')}</select></label><button class="btn ghost" type="button" data-dup-remove>Stage removal</button><button class="btn ghost" type="button" data-dup-undo ${history.length?'':'disabled'}>↶ Undo</button></div></div>`).join(''):'<p class="muted">No possible duplicates found in this playlist.</p>');
+  }
+  function stageRemoval(index){if(!Number.isInteger(index)||index<0||index>=draft.length)return;history.push({index,ref:draft[index]});if(history.length>5)history.shift();draft.splice(index,1);error.textContent='';paint();}
+  function undoRemoval(){const last=history.pop();if(!last)return;draft.splice(last.index,0,last.ref);error.textContent='';paint();}
+  dupButton.onclick=()=>{dupPanel.hidden=!dupPanel.hidden;dupButton.setAttribute('aria-expanded',String(!dupPanel.hidden));paintDuplicates();};
+  dupPanel.onclick=e=>{if(e.target.closest('[data-dup-undo]'))return undoRemoval();if(e.target.closest('[data-dup-remove]')){const group=e.target.closest('.playlist-dup-group');stageRemoval(Number(group.querySelector('select').value));}};
   function paint(){
     list.innerHTML=draft.map((id,i)=>{
       const t=byId[id],available=t&&!t.peer_offline;
       return `<div class="owned-track-line"><button type="button" class="owned-remove" data-remove-index="${i}" title="Remove ${esc(t?.title||'track')}" aria-label="Remove ${esc(t?.title||'track')} from playlist">×</button>${available?row(t,i+1):`<div class="owned-missing-track"><span class="muted">${i+1}.</span> <span><b>${esc(t?.title||'Unavailable track')}</b>${t?.artist?`<small class="muted"> · ${esc(t.artist)}</small>`:''}${t?.album?`<small class="muted"> · ${esc(t.album)}</small>`:''} <small class="muted">Unavailable</small></span>${!t?.title||!t?.artist?`<span class="owned-recovery-inputs"><input data-recovery-title placeholder="Song title" aria-label="Song title" maxlength="200"><input data-recovery-artist placeholder="Artist" aria-label="Artist" maxlength="200"></span>`:""}<span class="owned-recovery-actions"><button type="button" class="btn ghost" data-recover="search" data-ref="${esc(id)}">Search song</button><button type="button" class="btn ghost" data-recover="request" data-ref="${esc(id)}">Request</button></span><div data-recover-result="${esc(id)}" class="muted"></div></div>`}</div>`;
     }).join('')||empty('This playlist is empty. Add music using + in the player.');
     toolbar.hidden=!changed();count.textContent=`${original.length-draft.length} removal${original.length-draft.length===1?'':'s'} pending`;
-    undo.disabled=!history.length;view.ids=draft.filter(id=>byId[id]&&!byId[id].peer_offline);markRows();
+    undo.disabled=!history.length;view.ids=draft.filter(id=>byId[id]&&!byId[id].peer_offline);paintDuplicates();markRows();
   }
   list.onclick=async e=>{
     const action=e.target.closest('[data-recover]');if(action){e.preventDefault();e.stopPropagation();if(changed()){popup('Save or undo changes','Save or undo pending track removals before searching for replacements.');return;}
@@ -1479,10 +1592,9 @@ function initOwnedTrackEditor(el,p,original){
     const b=e.target.closest('[data-remove-index]');if(!b)return;
     e.preventDefault();e.stopPropagation();const index=Number(b.dataset.removeIndex);
     if(!Number.isInteger(index)||index<0||index>=draft.length)return;
-    history.push({index,ref:draft[index]});if(history.length>5)history.shift();
-    draft.splice(index,1);error.textContent='';paint();
+    stageRemoval(index);
   };
-  undo.onclick=()=>{const last=history.pop();if(!last)return;draft.splice(last.index,0,last.ref);error.textContent='';paint();};
+  undo.onclick=undoRemoval;
   save.onclick=async()=>{
     if(!changed())return;save.disabled=true;error.textContent='';
     try{
@@ -1981,7 +2093,11 @@ function play(id) {
   beginRoute(t);
   // Keep the earlier stream active only until the new audio begins playing.
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
-  $("#pt").textContent = t.title; $("#pa").textContent = artistLine(t) + (albumName(t) ? " · " + albumName(t) : "");
+  $("#pt").textContent = t.title;
+  $("#pa").textContent = artistLine(t);
+  const names=[...new Set(artistsOf(t).flatMap(n=>String(n).split(',').map(x=>x.trim())).filter(Boolean))];$("#pa").href=names.length===1?'#artist/'+enc(names[0]):'#artists';
+  $("#pa").dataset.artists=names.join(', ');
+  $("#pa").title=names.length>1?'Browse all contributing artists':'Open artist page';
   if (navigator.mediaSession && typeof MediaMetadata === "function") {
     // Broken artwork URLs must never interrupt queue updates or playback controls.
     try {
@@ -2261,6 +2377,12 @@ window.addEventListener("hashchange", () => {
   lastBrowseHash = location.hash || "#home";
   if($("#accountSettingsDialog")?.open)$("#accountSettingsDialog").close();
   render();window.scrollTo(0, 0);
+});
+$("#pa").addEventListener('click',e=>{
+  const names=artistSearchTokens(e.currentTarget.dataset.artists);
+  if(names.length<2)return;
+  e.preventDefault();$("#q").value=names.join(', ');query=names.join(', ').toLowerCase();
+  if(parse().a==='artists')render();else location.hash='#artists';
 });
 $("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); if (parse().a !== "request") render(); });
 $("#pp").addEventListener("click", () => {

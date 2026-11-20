@@ -748,3 +748,70 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .spotify-supplement{margin-top:12px}.spotify-supplement summary{cursor:pointer}.spotify-supplement textarea{display:block;width:100%;margin:8px 0;resize:vertical;font:inherit}
 
 .owned-recovery-inputs{display:flex;flex-wrap:wrap;gap:6px}.owned-recovery-inputs input{max-width:160px;min-width:0}
+
+/* v18.0.5 — metadata-rich track rows share available horizontal space. */
+.row.track-detail-row,.track-column-head{display:grid;grid-template-columns:44px minmax(180px,2.4fr) minmax(105px,1.4fr) minmax(130px,1.6fr) minmax(45px,.55fr) minmax(100px,1.25fr) 60px;gap:12px;align-items:center;width:100%;}
+.row.track-detail-row{min-height:55px}
+.track-column-head{padding:6px 12px;color:var(--muted);font-size:11px;font-weight:650;border-bottom:1px solid var(--line);margin-bottom:5px}
+.row.track-detail-row .al,.row-artists,.row-genre,.row-year{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.row.track-detail-row .compact-artist{display:none}
+.row.track-detail-row .row-duration{text-align:right;white-space:nowrap}
+@media(max-width:1200px){
+ .row.track-detail-row,.track-column-head{grid-template-columns:38px minmax(125px,2fr) minmax(80px,1fr) minmax(115px,1.3fr) 50px;gap:8px}
+ .row.track-detail-row .row-year,.row.track-detail-row .row-genre{display:none}
+ .track-column-head span:nth-child(5),.track-column-head span:nth-child(6){display:none}
+}
+@media(max-width:760px){
+ .row.track-detail-row,.track-column-head{grid-template-columns:30px minmax(0,1fr) 48px;gap:7px;padding:7px 5px}
+ .row.track-detail-row .al,.row.track-detail-row .row-artists{display:none}
+ .row.track-detail-row .compact-artist{display:block;font-size:11px;overflow:hidden;text-overflow:ellipsis}
+ .track-column-head span:nth-child(3),.track-column-head span:nth-child(4){display:none}
+ .owned-track-line>.row.track-detail-row{grid-template-columns:30px minmax(0,1fr) 48px}
+}
+.playing-artists{display:block;color:var(--muted);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;font-size:12px}
+.playing-artists:hover,.playing-artists:focus-visible{color:var(--accent);text-decoration:underline}
+
+/* Playlist action controls now sit above the list, not beside the album art. */
+.owned-playlist-header .playlist-detail-hero{margin-bottom:20px}
+.playlist-draft-toolbar{position:sticky;top:92px;z-index:6;padding:12px 8px;margin-top:12px;background:var(--bg);border-block:1px solid var(--line)}
+.owned-playlist-header .playlist-draft-toolbar{position:static}
+.playlist-draft-toolbar .muted{margin-right:auto;order:-1}
+.playlist-duplicate-trigger{position:absolute;top:58px;left:calc(min(250px,60vw) + 12px);max-width:min(250px,calc(100vw - 325px));padding:0 12px;white-space:normal;line-height:1.2}
+.playlist-duplicate-panel{border:1px solid var(--line2);border-radius:13px;background:var(--panel);padding:16px;max-width:960px;margin:10px 0}
+.playlist-duplicate-panel[hidden]{display:none!important}
+.playlist-dup-title h3{margin:0}
+.playlist-dup-title p{margin:5px 0 12px}
+.playlist-dup-group{border-top:1px solid var(--line2);padding:12px 0;overflow-wrap:anywhere}
+.playlist-dup-group p{margin:5px 0 12px;font-size:12px}
+.playlist-dup-controls{display:flex;gap:8px;align-items:end;flex-wrap:wrap}
+.playlist-dup-controls label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:12px;min-width:min(320px,100%)}
+.playlist-dup-controls select{padding:8px 12px;border:1px solid var(--line2);border-radius:10px;background:var(--bg);color:var(--text);max-width:100%}
+@media(max-width:580px){.playlist-duplicate-trigger{position:static;display:block;max-width:100%;margin:8px 0 18px}.playlist-draft-toolbar{top:72px}.playlist-draft-toolbar .muted{flex-basis:100%}}
+
+/* Public HIVE Radio — virtual queue, never silently persisted. */
+.radio-page{width:100%;min-width:0;padding-bottom:26px}
+.radio-heading{display:flex;align-items:center;gap:24px;margin:4px 0 22px}
+.radio-logo{flex:0 0 110px;width:110px;height:110px;object-fit:contain;background:var(--panel);border-radius:16px;padding:12px}
+.radio-heading h1{font-size:clamp(24px,3vw,44px);margin:4px 0}
+.radio-heading p{margin:4px 0}
+.radio-builder{background:var(--panel);border:1px solid var(--line2);border-radius:18px;padding:20px;display:flex;flex-wrap:wrap;align-items:end;gap:15px;margin-bottom:22px}
+.radio-modes{display:flex;gap:7px;flex-wrap:wrap;flex:0 0 100%}
+.radio-mode{min-height:40px;border:1px solid var(--line2);border-radius:25px;background:transparent;color:var(--text);padding:0 16px;cursor:pointer}
+.radio-mode.on{background:var(--accent);border-color:var(--accent);color:#131211;font-weight:800}
+.radio-options{flex:1 1 300px;min-width:230px}
+.radio-field{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:650;color:var(--text);min-width:160px}
+.radio-field input,.radio-field select{border-radius:10px;background:var(--bg);border:1px solid var(--line2);color:var(--text);min-height:44px;padding:8px 12px;width:100%;max-width:100%}
+.radio-field[hidden]{display:none}
+.radio-count{flex:0 0 160px}
+.radio-hint{font-weight:400;margin:9px 0 0;font-size:12px}
+.radio-genres{border:0;padding:0;display:flex;gap:6px;flex-wrap:wrap;max-height:180px;overflow:auto;align-content:flex-start}
+.radio-genres legend{font-size:13px;font-weight:650;margin-bottom:8px}
+.radio-genres label{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--line2);border-radius:18px;padding:7px 10px;font-size:12px;cursor:pointer}
+.radio-genres input{accent-color:var(--accent)}
+.radio-builder .msg{flex-basis:100%;margin:0;min-height:0}
+.radio-result-head{display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.radio-result-head h2{margin:0}
+.radio-result-head p{margin:4px 0 0}
+.radio-actions{display:flex;gap:8px;flex-wrap:wrap}
+.radio-output>.track-column-head{margin-top:10px}
+@media(max-width:700px){.radio-heading{gap:13px}.radio-logo{width:68px;height:68px;flex-basis:68px;padding:7px}.radio-builder{padding:14px}.radio-count{flex:1 1 140px}.radio-actions{width:100%}.radio-actions .btn{flex:1}}
