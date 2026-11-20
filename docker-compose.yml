@@ -26,6 +26,8 @@ services:
       # Persistent 32-byte random secret used to encrypt admin-saved Spotify credentials.
       # When unset Docker can reuse the existing persistent SCANNER_SECRET.
       SPOTIFY_SETTINGS_KEY: ${SPOTIFY_SETTINGS_KEY:-}
+      # Opt-in weekly MusicBrainz index updates; first download is manual.
+      WASP_OFFLINE_AUTO_UPDATE: ${WASP_OFFLINE_AUTO_UPDATE:-0}
       METADATA_SETTINGS_KEY: ${METADATA_SETTINGS_KEY:-}
       LASTFM_API_KEY: ${LASTFM_API_KEY:-}
       LASTFM_SHARED_SECRET: ${LASTFM_SHARED_SECRET:-}

@@ -1,3 +1,7 @@
+## WASP v18.0.4 — HIVE Offline Metadata Engine (staging)
+
+Optional Docker-only MusicBrainz artist and release-group index, local factual matching before online lookups, persistent incremental cursor and existing HIVE metadata synchronization. See the [v18.0.4 setup, storage and validation guide](docs/V18-0-4-HIVE-OFFLINE-METADATA-ENGINE.md). Upgrade from exact v18.0.3.
+
 ## WASP v18.0.2 — HIVE Telemetry Intelligence (staging)
 
 Docker-first persistent metadata scanning and progress, Cloudflare peer-only verified metadata pulls, full-year telemetry and duplicate-safe playback retries, and atomic HIVE request synchronization with legacy ledger repair. See the [v18.0.2 setup and validation guide](docs/V18-0-2-HIVE-TELEMETRY-INTELLIGENCE.md). Upgrade from exact v18.0.1.

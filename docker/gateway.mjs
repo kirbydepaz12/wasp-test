@@ -7,10 +7,13 @@ import {proxyToWorker} from './proxy.mjs';
 import {createPeerRelay} from './peer-relay.mjs';
 import {folderFallbackCover} from './folder-art.mjs';
 import {unchanged,loadFileIndex,saveFileIndex} from './file-index-cache.mjs';
+import {createOfflineMetadata} from './offline-metadata.mjs';
 
 const roots=(process.env.MUSIC_SCAN_PATHS||'/music').split(',').map(x=>x.trim()).filter(Boolean);
 const port=Number(process.env.GATEWAY_PORT||8788), worker='http://127.0.0.1:8787';
 const secret=process.env.SCANNER_SECRET;
+const offline=createOfflineMetadata({secret,autoUpdate:process.env.WASP_OFFLINE_AUTO_UPDATE==='1'});
+setInterval(()=>offline.updateTick(),3600000);
 const scanInterval=Math.max(60,Number(process.env.MUSIC_SCAN_INTERVAL||300))*1000;
 const catalogue=new Map(), covers=new Map();
 const cacheFile=process.env.WASP_FOLDER_INDEX_CACHE||'/app/.wrangler/state/folder-index-v183.json';
@@ -165,6 +168,7 @@ function streamFile(req,res,t){
 }
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');
+ if(await offline.handle(req,res,u))return;
  if(u.pathname==='/_internal/hash-scan'&&req.method==='POST'){
    if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
    void hashScan();res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({ok:true}));return;

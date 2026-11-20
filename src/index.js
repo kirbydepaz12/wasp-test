@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.3";
-const BUILD_LABEL = "HIVE Metadata & Telemetry Refinement";
+const BUILD_VERSION = "18.0.4";
+const BUILD_LABEL = "HIVE Offline Metadata Engine";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1785,7 +1785,7 @@ async function api(req, env, url, ctx) {
   const DB = env.DB;
   let x;
   if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
-  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull|rescan-files))?$/.test(path)){
+  if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull|rescan-files|offline-status|offline-download|offline-cancel))?$/.test(path)){
     const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
     await ensureTelemetrySchemaForMetadata(env);return metadataAdmin(req,env,url);
   }
