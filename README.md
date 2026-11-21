@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-0-5-HIVE-RADIO-PLAYLIST-UX.md">Latest feature guide (v18.0.5)</a>
+    <a href="docs/V18-0-6-HIVE-RADIO-UI-POLISH.md">Latest feature guide (v18.0.6)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, likes/hearts, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.0.5 — HIVE Radio & Playlist Refinement.** See the [v18.0.5 feature guide](docs/V18-0-5-HIVE-RADIO-PLAYLIST-UX.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.0.6 — HIVE Radio Interface Polish.** See the [v18.0.6 feature guide](docs/V18-0-6-HIVE-RADIO-UI-POLISH.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -129,6 +129,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.0.6 — HIVE Radio form layout | [Centered genre selection, artist suggestions and aligned controls](docs/V18-0-6-HIVE-RADIO-UI-POLISH.md) |
 | v18.0.5 — HIVE Radio and player/playlist UI | [Radio, metadata columns, multi-artist links, duplicate review and UI testing](docs/V18-0-5-HIVE-RADIO-PLAYLIST-UX.md) |
 | v18.0.4 — Offline metadata engine | [Downloadable MusicBrainz index, safe updates and offline lookup](docs/V18-0-4-HIVE-OFFLINE-METADATA-ENGINE.md) |
 | v18.0.3 — Metadata and telemetry refinement | [Incremental tags, persistent file index and independent chart filters](docs/V18-0-3-HIVE-METADATA-TELEMETRY-REFINEMENT.md) |

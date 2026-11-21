@@ -815,3 +815,27 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .radio-actions{display:flex;gap:8px;flex-wrap:wrap}
 .radio-output>.track-column-head{margin-top:10px}
 @media(max-width:700px){.radio-heading{gap:13px}.radio-logo{width:68px;height:68px;flex-basis:68px;padding:7px}.radio-builder{padding:14px}.radio-count{flex:1 1 140px}.radio-actions{width:100%}.radio-actions .btn{flex:1}}
+
+/* v18.0.6 · Radio builder polish: aligned control row, in-place genre chips,
+   and a compact artist listbox under the actual search field. */
+.radio-builder{align-items:flex-start}
+.radio-mode-row{display:flex;flex:0 0 100%;align-items:center;flex-wrap:wrap;gap:10px;min-width:0}
+.radio-mode-row .radio-modes{flex:0 0 auto}
+.radio-selected-genres{display:flex;flex:1 1 240px;min-width:0;gap:6px;align-items:center;flex-wrap:wrap;max-height:92px;overflow-y:auto}
+.radio-selected-genres[hidden]{display:none}
+.radio-genre-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:7px 10px;border:1px solid var(--accent);border-radius:20px;background:color-mix(in srgb,var(--accent) 12%,var(--panel));color:var(--text);font-size:12px;cursor:pointer}
+.radio-genre-chip span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.radio-chip-x{font-size:17px;font-weight:700;line-height:1;color:var(--accent)}
+.radio-genre-chip:hover{background:color-mix(in srgb,var(--accent) 23%,var(--panel))}
+.radio-builder .radio-generate{align-self:flex-start;margin-top:23px;white-space:nowrap}
+.radio-artist-picker{position:relative;min-width:0}
+.radio-artist-picker .radio-field{margin-bottom:7px}
+.radio-artist-picker input{display:block;width:100%;max-width:100%;min-height:44px;height:44px;padding:8px 12px;border-radius:10px;background:var(--bg);border:1px solid var(--line2);color:var(--text);font-size:13px}
+.radio-artist-suggestions{position:absolute;top:calc(100% + 5px);left:0;right:0;max-height:240px;overflow:auto;z-index:30;border:1px solid var(--line2);border-radius:12px;background:var(--panel);box-shadow:0 14px 32px #0008;padding:4px}
+.radio-artist-suggestions[hidden]{display:none}
+.radio-artist-option{display:block;width:100%;padding:11px 12px;text-align:left;background:transparent;border:0;border-radius:8px;color:var(--text);cursor:pointer;overflow-wrap:anywhere}
+.radio-artist-option:hover,.radio-artist-option[aria-selected="true"]{background:var(--accent);color:var(--bg)}
+@media(max-width:900px){.radio-options{flex:1 1 100%}.radio-count{flex:1 1 140px}.radio-custom{flex:1 1 140px}.radio-builder .radio-generate{margin-top:23px}}
+@media(max-width:540px){.radio-selected-genres{flex-basis:100%}.radio-builder .radio-generate{margin-top:0}.radio-builder .radio-field.radio-count{flex:1 1 100%}.radio-builder .radio-custom{flex:1 1 100%}}
+
+@media(min-width:901px){.radio-builder .radio-count{flex-basis:185px}}

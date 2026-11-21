@@ -966,7 +966,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.5';
+  frame.src='/telemetry.html?v=18.0.6';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1455,7 +1455,7 @@ window.addEventListener("message", (e) => { // the slider (a sandboxed frame) as
   if (f && e.source === f.contentWindow && e.data && (e.data.type === "ad:shuffle" || e.data.type === "wasp:featured-shuffle")) surpriseMe();
 });
 
-// v18.0.5: Public, anonymous HIVE Radio. Generates an ephemeral player queue,
+// v18.0.6: Public, anonymous HIVE Radio. Generates an ephemeral player queue,
 // never writes a playlist until an authenticated user explicitly saves it.
 let radioMode='artist',radioSession=null,radioKnownGenres={},radioGenresLoaded=false,radioGenresLoading=false;
 let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set();
@@ -1471,8 +1471,7 @@ function radioGenreOptions(){
 }
 function radioOptions(){
   if(radioMode==='artist'){
-    const names=[...new Set(tracks.flatMap(artistsOf))].sort((a,b)=>a.localeCompare(b));
-    return `<label class="radio-field">Artist<input id="radioArtist" type="search" list="radioArtistNames" maxlength="160" value="${esc(radioArtist)}" placeholder="Search an artist" required></label><datalist id="radioArtistNames">${names.slice(0,3000).map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist><p class="muted radio-hint">Starts with this artist, then includes available songs from related artists where supported by HIVE metadata.</p>`;
+    return `<div class="radio-artist-picker"><label class="radio-field" for="radioArtist">Artist</label><input id="radioArtist" type="search" role="combobox" aria-autocomplete="list" aria-controls="radioArtistSuggestions" aria-expanded="false" maxlength="160" value="${esc(radioArtist)}" placeholder="Search an artist" autocomplete="off" required><div id="radioArtistSuggestions" class="radio-artist-suggestions" role="listbox" aria-label="Matching artists" hidden></div></div><p class="muted radio-hint">Starts with this artist, then includes available songs from related artists where supported by HIVE metadata.</p>`;
   }
   if(radioMode==='decade')return `<label class="radio-field">Decade<select id="radioDecade"><option value="pre" ${radioDecade==='pre'?'selected':''}>Pre-1960</option>${Array.from({length:Math.floor(new Date().getFullYear()/10)*10/10-1960/10+1},(_,i)=>1960+i*10).map(y=>`<option value="${y}" ${radioDecade===String(y)?'selected':''}>${y}s</option>`).join('')}</select></label><p class="muted radio-hint">Only songs with verified release years are eligible.</p>`;
   if(radioMode==='genre'){
@@ -1489,17 +1488,75 @@ function radioPage(el){
   if(ids.length)view={ids,label:radioSession.label,pl:null};else noView();
   el.innerHTML=`<section class="radio-page"><div class="radio-heading"><img src="/nav-icons/radio.png" alt="" class="radio-logo"><div><span class="eyebrow">WASP · HIVE listening</span><h1>HIVE Radio</h1><p class="muted">Build a music mix from songs currently available across your connected HIVE.</p></div></div>
     <form id="radioBuilder" class="radio-builder">
-      <div class="radio-modes" role="group" aria-label="Radio selection">${options.map(([key,title])=>`<button class="radio-mode${radioMode===key?' on':''}" type="button" data-radio-mode="${key}" aria-pressed="${radioMode===key}">${title}</button>`).join('')}</div>
+      <div class="radio-mode-row"><div class="radio-modes" role="group" aria-label="Radio selection">${options.map(([key,title])=>`<button class="radio-mode${radioMode===key?' on':''}" type="button" data-radio-mode="${key}" aria-pressed="${radioMode===key}">${title}</button>`).join('')}</div><div class="radio-selected-genres" id="radioSelectedGenres" aria-label="Selected radio genres" ${radioMode==='genre'?'':'hidden'}></div></div>
       <div class="radio-options" id="radioOptions">${radioOptions()}</div>
       <label class="radio-field radio-count">Songs in radio<select id="radioCount"><option value="20" ${radioCount==='20'?'selected':''}>20 songs</option><option value="30" ${radioCount==='30'?'selected':''}>30 songs</option><option value="50" ${radioCount==='50'?'selected':''}>50 songs</option><option value="custom" ${radioCount==='custom'?'selected':''}>Custom (up to 100)</option></select></label>
-      <label class="radio-field" id="radioCustomLabel" ${radioCount==='custom'?'':'hidden'}>Custom number<input id="radioCustom" type="number" min="1" max="100" value="${esc(radioCustomCount)}"></label>
-      <button class="btn" type="submit" id="radioGenerate">Generate radio</button>
+      <label class="radio-field radio-custom" id="radioCustomLabel" ${radioCount==='custom'?'':'hidden'}>Custom number<input id="radioCustom" type="number" min="1" max="100" value="${esc(radioCustomCount)}"></label>
+      <button class="btn radio-generate" type="submit" id="radioGenerate">Generate radio</button>
       <p class="msg" id="radioError" role="status" aria-live="polite"></p>
     </form>
     <div class="radio-output" id="radioOutput">${radioSession?`<div class="radio-result-head"><div><h2>${esc(radioSession.label)}</h2><p class="muted">${ids.length} available songs in this temporary radio queue · ${radioSession.requested} requested</p></div><div class="radio-actions"><button class="btn" type="button" id="radioPlay" ${!ids.length?'disabled':''}>▶ Play</button><button class="btn ghost" type="button" id="radioSave" ${!ids.length?'disabled':''}>+ Save as playlist</button></div></div>${ids.length?rowHeading()+ids.map((id,i)=>row(byId[id],i+1)).join(''):empty('No available songs for this radio.')}`:''}</div>
   </section>`;
+  // The selected genre chips sit beside the mode buttons and allow one-click removal.
+  // All controls use the same radioSelections state and underlying checkboxes.
+  const genreContainer=el.querySelector('#radioSelectedGenres');
+  const paintRadioGenres=()=>{
+    if(!genreContainer||radioMode!=='genre')return;
+    const selections=[...el.querySelectorAll('input[name="radioGenre"]:checked')].map(c=>c.value);
+    radioSelections=new Set(selections);
+    genreContainer.innerHTML=selections.map(genre=>`<button type="button" class="radio-genre-chip" data-selected-genre="${esc(genre)}" aria-label="Remove ${esc(genre)} from radio"><span>${esc(genre)}</span><span class="radio-chip-x" aria-hidden="true">×</span></button>`).join('');
+    genreContainer.hidden=!selections.length;
+  };
+  el.querySelector('#radioOptions').addEventListener('change',event=>{
+    if(event.target.matches('input[name="radioGenre"]'))paintRadioGenres();
+  });
+  genreContainer.addEventListener('click',event=>{
+    const chip=event.target.closest('[data-selected-genre]');if(!chip)return;
+    const genre=chip.dataset.selectedGenre;
+    const input=[...el.querySelectorAll('input[name="radioGenre"]')].find(x=>x.value===genre);
+    if(input)input.checked=false;
+    paintRadioGenres();
+  });
+  paintRadioGenres();
+  // Native datalist popups may open beside the input. Use an accessible, limited
+  // listbox anchored directly below the search field instead.
+  const artistInput=el.querySelector('#radioArtist'),artistBox=el.querySelector('#radioArtistSuggestions');
+  if(artistInput&&artistBox){
+    const names=[...new Set(tracks.flatMap(artistsOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    let matches=[],selected=-1;
+    const close=()=>{artistBox.hidden=true;artistBox.innerHTML='';artistInput.setAttribute('aria-expanded','false');artistInput.removeAttribute('aria-activedescendant');selected=-1;};
+    const update=(open=true)=>{
+      const query=artistInput.value.trim().toLocaleLowerCase();
+      if(!open||!query){close();return;}
+      matches=names.filter(n=>n.toLocaleLowerCase().includes(query)).sort((a,b)=>{
+        const aStart=a.toLocaleLowerCase().startsWith(query),bStart=b.toLocaleLowerCase().startsWith(query);
+        return Number(bStart)-Number(aStart)||a.localeCompare(b);
+      }).slice(0,8);
+      if(!matches.length){close();return;}
+      selected=-1;
+      artistBox.innerHTML=matches.map((n,i)=>`<button type="button" class="radio-artist-option" id="radioArtistOption${i}" role="option" aria-selected="false" data-artist-option="${esc(n)}">${esc(n)}</button>`).join('');
+      artistBox.hidden=false;artistInput.setAttribute('aria-expanded','true');
+    };
+    const choose=(n)=>{artistInput.value=n;radioArtist=n;close();artistInput.focus();};
+    artistInput.addEventListener('focus',()=>update());
+    artistInput.addEventListener('input',()=>{radioArtist=artistInput.value;update();});
+    artistInput.addEventListener('keydown',e=>{
+      if(e.key==='Escape'){if(!artistBox.hidden){e.preventDefault();close();}return;}
+      if(e.key==='Enter'&&!artistBox.hidden&&selected>=0){e.preventDefault();choose(matches[selected]);return;}
+      if(!['ArrowDown','ArrowUp'].includes(e.key))return;
+      if(artistBox.hidden){update();if(artistBox.hidden)return;}
+      e.preventDefault();selected=e.key==='ArrowDown'?(selected+1)%matches.length:(selected-1+matches.length)%matches.length;
+      artistBox.querySelectorAll('[data-artist-option]').forEach((option,i)=>option.setAttribute('aria-selected',String(i===selected)));
+      artistInput.setAttribute('aria-activedescendant',`radioArtistOption${selected}`);
+      artistBox.querySelector(`#radioArtistOption${selected}`)?.scrollIntoView({block:'nearest'});
+    });
+    // Prevent input blur on pointer selection; support touchscreen and mouse.
+    artistBox.addEventListener('pointerdown',e=>{if(e.target.closest('[data-artist-option]'))e.preventDefault();});
+    artistBox.addEventListener('click',e=>{const option=e.target.closest('[data-artist-option]');if(option)choose(option.dataset.artistOption);});
+    artistInput.addEventListener('blur',close);
+  }
   el.querySelectorAll('[data-radio-mode]').forEach(b=>b.onclick=()=>{
-    const f=el.querySelector('#radioBuilder');if(f){radioArtist=f.querySelector('#radioArtist')?.value.trim()||radioArtist;radioDecade=f.querySelector('#radioDecade')?.value||radioDecade;radioSelections=new Set([...f.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));}
+    const f=el.querySelector('#radioBuilder');if(f){if(f.querySelector('#radioArtist'))radioArtist=f.querySelector('#radioArtist').value.trim();radioDecade=f.querySelector('#radioDecade')?.value||radioDecade;if(radioMode==='genre')radioSelections=new Set([...f.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));}
     radioMode=b.dataset.radioMode;radioPage(el);
   });
   el.querySelector('#radioCount').onchange=e=>{radioCount=e.target.value;el.querySelector('#radioCustomLabel').hidden=radioCount!=='custom';};
@@ -1507,9 +1564,9 @@ function radioPage(el){
     e.preventDefault();const btn=el.querySelector('#radioGenerate'),message=el.querySelector('#radioError');
     const count=radioCount==='custom'?Number(el.querySelector('#radioCustom').value):Number(radioCount);
     if(!Number.isInteger(count)||count<1||count>100){message.textContent='Custom radio size must be between 1 and 100.';return;}
-    radioCustomCount=String(count);radioArtist=el.querySelector('#radioArtist')?.value.trim()||radioArtist;
+    radioCustomCount=String(count);if(el.querySelector('#radioArtist'))radioArtist=el.querySelector('#radioArtist').value.trim();
     radioDecade=el.querySelector('#radioDecade')?.value||radioDecade;
-    radioSelections=new Set([...el.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));
+    if(radioMode==='genre')radioSelections=new Set([...el.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));
     if(radioMode==='artist'&&!radioArtist){message.textContent='Choose an artist.';return;}
     if(radioMode==='genre'&&!radioSelections.size){message.textContent='Choose at least one genre.';return;}
     btn.disabled=true;message.textContent='Selecting eligible songs from HIVE…';
