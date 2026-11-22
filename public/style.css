@@ -856,14 +856,12 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 /* v18.0.7: one heart and a compact row of five rateable stars. */
 #bl,#bd{display:none!important}
 .rating-stars{display:inline-flex;align-items:center;gap:1px;margin-left:6px;vertical-align:middle;white-space:nowrap}
-.rating-symbol{width:20px;height:20px;object-fit:contain;margin-right:3px}
 .rate-star{background:none;border:0;padding:0 1px;min-width:21px;min-height:28px;color:var(--muted);font-size:23px;line-height:1;cursor:pointer}
 .rate-star.filled{color:#ffd143}
 .rate-star:hover,.rate-star:focus-visible{color:var(--accent);outline-offset:2px}
 .rating-avg{font-size:11px;color:var(--muted);margin-left:3px}
 .player-star-wrap{display:inline-flex;align-items:center}
-.player .rating-symbol{display:none}
-@media(max-width:600px){.rate-star{min-width:18px;font-size:20px}.rating-symbol{width:17px;height:17px}}
+@media(max-width:600px){.rate-star{min-width:18px;font-size:20px}}
 
 /* v18.0.7 grouped admin telemetry / metadata controls */
 .metadata-subtabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;border-bottom:1px solid var(--line2);padding-bottom:14px}
@@ -887,3 +885,6 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .request-manual-add label{font-size:13px}.request-manual-add input{min-width:130px;flex:1;max-width:280px}
 .request-skipped{margin:8px 0}.request-skipped>div{padding:4px 0}
 .metadata-global-footer{padding-top:16px;border-top:1px solid var(--line,#383632);margin-top:18px}
+
+/* v18.0.8: star icon is reserved for the Most starred navigation, not a sixth voting star. */
+.nav-item[href="#stars"] .nav-icon{object-fit:contain}

@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.7";
-const BUILD_LABEL = "Picard Metadata, Stars & Request Review";
+const BUILD_VERSION = "18.0.8";
+const BUILD_LABEL = "Most Starred Rankings & Rating Polish";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2340,6 +2340,27 @@ async function api(req, env, url, ctx) {
   }
   // v18.0.7: independent 1–5 star votes. Legacy likes/dislikes stay in the
   // database for reversibility; they are no longer displayed or written here.
+  // v18.0.8: star-ranked public charts. Use aggregates only; never expose
+  // voter identifiers or private user playlist IDs. Peer keys must belong to
+  // an explicitly registered server. Sum of stars is the ranking score.
+  if(path==='/api/stars/rankings' && m==='GET'){
+    const type=clean(url.searchParams.get('type'),20);
+    if(!['track','artist','playlist'].includes(type))return json({error:'Invalid star ranking type'},400);
+    const visible=type==='track'?
+      `AND (EXISTS(SELECT 1 FROM tracks t WHERE t.id=target_key) OR EXISTS(SELECT 1 FROM peers p WHERE instr(target_key,p.url||'|')=1))`:
+      type==='playlist'?
+      `AND (EXISTS(SELECT 1 FROM playlists p WHERE p.id=target_key) OR EXISTS(SELECT 1 FROM user_playlists p WHERE p.id=target_key AND p.is_public=1) OR EXISTS(SELECT 1 FROM peers p WHERE instr(target_key,p.url||'|')=1))`:'';
+    try{
+      const rows=(await DB.prepare(`SELECT target_key AS key,COALESCE(SUM(stars),0) AS score,COUNT(*) AS votes,ROUND(AVG(stars),2) AS average
+        FROM star_votes WHERE target_type=? ${visible} GROUP BY target_key
+        ORDER BY score DESC,votes DESC,average DESC,target_key ASC LIMIT 100`).bind(type).all()).results||[];
+      return json({items:rows});
+    }catch(e){
+      // Fresh installations may not yet have received their first star vote.
+      if(/no such table:\s*star_votes/i.test(String(e?.message||e)))return json({items:[]});
+      throw e;
+    }
+  }
   if(path==='/api/stars/batch' && m==='POST'){
     const b=await req.json().catch(()=>({}));const targets=Array.isArray(b.targets)?b.targets:[];
     if(targets.length>120||targets.some(t=>!['track','artist','playlist'].includes(t.type)||typeof t.key!=='string'||!t.key||t.key.length>512))return json({error:'Invalid rating lookup'},400);

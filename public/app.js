@@ -44,9 +44,9 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", radio: "Radio", hearts: "Most hearted", user: "My playlists", settings: "Account settings", request: "Request" };
+const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", radio: "Radio", hearts: "Most hearted", stars: "Most starred", user: "My playlists", settings: "Account settings", request: "Request" };
 // Icon assets are the original user-supplied images; dark glyphs get a light CSS treatment.
-const NAV_ICONS = Object.fromEntries(Object.keys(TABS).map((key) => [key, `/nav-icons/${key}.png`]));
+const NAV_ICONS = Object.fromEntries(Object.keys(TABS).map((key) => [key, key === "stars" ? "/star.png" : `/nav-icons/${key}.png`]));
 let sidebarCollapsed = store.get('sidebarCollapsed', false) === true;
 const sidebarTooltip = $('#sidebarHoverTip');
 function hideSidebarTooltip() { if(sidebarTooltip) sidebarTooltip.hidden=true; }
@@ -553,13 +553,14 @@ const SUBMAPS = {
   top: { items: { ranked: "Most listened", telemetry: "Telemetry" }, def: "ranked" },
   recent: { items: SUBS, def: "songs" },
   hearts: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  stars: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   likes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   dislikes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   playlists: { items: { server: "Server playlists", peer: "Peer playlists", users: "Users playlists" }, def: "server" },
   request: { items: { queue: "Active queue", previous: "Previous requests", new: "Make a request" }, def: "queue" },
 };
-const LIMIT = { top: 100, hearts: 50, likes: 20, dislikes: 20 };
-const RX = ["hearts", "likes", "dislikes"];
+const LIMIT = { top: 100, hearts: 50, stars: 50, likes: 20, dislikes: 20 };
+const RX = ["hearts", "stars"];
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const dec = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
 const enc = encodeURIComponent;
@@ -589,7 +590,7 @@ function updatePublishNoticeBadges(){
 function renderNav(tab) {
   hideSidebarTooltip();
   $("#nav").innerHTML = Object.entries(TABS).filter(([k]) => !["user","settings"].includes(k) || currentAccount?.authenticated).map(([k, v]) =>
-    `<a class="nav-item" href="#${k}" aria-label="${esc(v)}" data-label="${esc(v)}"${k === tab ? ' aria-current="page"' : ""}><span class="nav-icon-frame" aria-hidden="true"><img class="nav-icon${k === "hearts" ? " nav-icon-color" : ""}" src="${NAV_ICONS[k]}" alt=""></span><span class="nav-label">${esc(v)}</span></a>`).join("");
+    `<a class="nav-item" href="#${k}" aria-label="${esc(v)}" data-label="${esc(v)}"${k === tab ? ' aria-current="page"' : ""}><span class="nav-icon-frame" aria-hidden="true"><img class="nav-icon${["hearts","stars"].includes(k) ? " nav-icon-color" : ""}" src="${NAV_ICONS[k]}" alt=""></span><span class="nav-label">${esc(v)}</span></a>`).join("");
   updatePublishNoticeBadges();
 }
 function renderSub(tab, sub) {
@@ -661,7 +662,7 @@ const starCache=new Map(),starKey=(type,key)=>type+'\x1f'+key;
 function starsMarkup(type,key){
   const state=starCache.get(starKey(type,key))||{mine:0,average:0,votes:0};
   const mine=Math.max(0,Math.min(5,Number(state.mine)||0));
-  return `<span class="rating-stars" data-star-type="${esc(type)}" data-star-key="${esc(key)}" role="group" aria-label="Rate ${type} from one to five stars"><img class="rating-symbol" src="/star.png" alt="" aria-hidden="true">${Array.from({length:5},(_,i)=>`<button type="button" class="rate-star${i<mine?' filled':''}" data-star-value="${i+1}" aria-pressed="${i+1===mine}" aria-label="Rate ${i+1} of 5 stars" title="${i+1} of 5 stars">${i<mine?'★':'☆'}</button>`).join('')}<small class="rating-avg" title="Average rating across voters">${state.votes?Number(state.average).toFixed(1)+' ('+state.votes+')':''}</small></span>`;
+  return `<span class="rating-stars" data-star-type="${esc(type)}" data-star-key="${esc(key)}" role="group" aria-label="Rate ${type} from one to five stars">${Array.from({length:5},(_,i)=>`<button type="button" class="rate-star${i<mine?' filled':''}" data-star-value="${i+1}" aria-pressed="${i+1===mine}" aria-label="Rate ${i+1} of 5 stars" title="${i+1} of 5 stars">${i<mine?'★':'☆'}</button>`).join('')}<small class="rating-avg" title="Average rating across voters">${state.votes?Number(state.average).toFixed(1)+' ('+state.votes+')':''}</small></span>`;
 }
 let starsTimer=0,starsBusy=false;
 function scheduleStarRefresh(){clearTimeout(starsTimer);starsTimer=setTimeout(refreshVisibleStars,250);}
@@ -685,7 +686,7 @@ async function setStarVote(button){const host=button.closest('.rating-stars'),ty
  }else if(type==='artist'){const t=tracks.find(t=>t.origin&&artistsOf(t).includes(key));if(t)item.origin=registeredPeerOrigin(t.origin);
  }else if(type==='playlist'){const p=lookupReactedPlaylist(key);if(p?.origin)item.origin=registeredPeerOrigin(p.origin);}
  button.disabled=true;
- try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);scheduleStarRefresh();
+ try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);starRankingCache.delete(type);scheduleStarRefresh();if(parse().a==='stars')void refreshStarRankings(document.querySelector('#list'),parse().arg.split('/')[0]||'songs');
  }catch(e){popup('Rating not saved',e.message||'Please retry.');}finally{button.disabled=false;}
 }
 document.addEventListener('click',e=>{const star=e.target.closest('[data-star-value]');if(!star)return;e.preventDefault();e.stopPropagation();void setStarVote(star);},true);
@@ -771,6 +772,8 @@ async function paintSpotifyImportStatus(playlistId){
 
 let lastBrowseHash = location.hash && !/^#settings(?:\/|$)/.test(location.hash) ? location.hash : "#home";
 function render() {
+  // Legacy thumbs-up and thumbs-down bookmarks now show star-vote rankings.
+  if(["likes","dislikes"].includes(parse().a)){location.hash="#stars";return;}
   // Old #settings and #settings/publish links still work, but no longer replace
   // the browser view or destroy the current queue/player/scroll position.
   if(parse().a === "settings"){
@@ -859,6 +862,7 @@ function renderPage() {
   // element, queue and control handlers in index.html are NEVER replaced.
   if(tab==='top'||RX.includes(tab)){
     renderTelemetryMount(el,tab,sub);
+    if(tab==='stars')void refreshStarRankings(el,sub);
     return;
   }
   if (tab === "request") { if (sub === "new") requestForm(el); else if (sub === "previous") requestPrevious(el, arg.split("/")[1]); else requestQueue(el); return; }
@@ -986,10 +990,54 @@ function telemetryRankRows(tab,sub){
     .map(r=>({kind:'playlist',id:r.p.id,title:r.p.name,cover:playlistCoverUrl(r.p),
       subtitle:r.p.username?`By ${r.p.username}`:'WASP',score:r.score,scoreLabel:field}));
 }
+// Most starred is driven by real five-star votes, not the old thumbs-up counts.
+// Keep a short client-side snapshot to avoid repeated Cloudflare D1 reads while
+// switching Songs / Artists / Playlists. No voter identities are requested.
+const starRankingCache=new Map();
+async function refreshStarRankings(el,sub){
+  if(!el||!['songs','artists','playlists'].includes(sub))return;
+  const type={songs:'track',artists:'artist',playlists:'playlist'}[sub];
+  let cached=starRankingCache.get(type);
+  if(!cached||Date.now()-cached.at>15000){
+    try{
+      const res=await fetch('/api/stars/rankings?type='+encodeURIComponent(type),{cache:'no-store'});
+      if(!res.ok)throw Error('Star rankings unavailable');
+      const data=await res.json();cached={at:Date.now(),rows:Array.isArray(data.items)?data.items:[]};starRankingCache.set(type,cached);
+    }catch(e){
+      const current=parse();if(current.a==='stars'&&(current.arg.split('/')[0]||'songs')===sub){
+        const frame=el.querySelector(':scope > iframe.wasp-telemetry-frame');
+        if(frame)frame.contentWindow?.postMessage({type:'wasp:telemetry-data',mode:'stars',sub,query,items:[],error:'Unable to load star rankings; please retry.'},location.origin);
+      }
+      return;
+    }
+  }
+  const current=parse();if(current.a!=='stars'||(current.arg.split('/')[0]||'songs')!==sub)return;
+  let rows=[];
+  for(const r of cached.rows){
+    const key=String(r.key||'');if(!key)continue;
+    let item;
+    if(type==='track'){
+      const t=byId[key]||peerTrackLookup.get(key)||tracks.find(x=>x.id===key);
+      if(!t||query&&!(`${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query)))continue;
+      item={kind:'song',id:t.id,title:t.title,subtitle:artistLine(t),cover:albumArt(t)};
+    }else if(type==='artist'){
+      if(query&&!key.toLowerCase().includes(query))continue;
+      item={kind:'artist',id:key,title:key,subtitle:'Artist',cover:artistArt(key)};
+    }else{
+      const p=lookupReactedPlaylist(key);
+      if(!p||query&&!p.name.toLowerCase().includes(query))continue;
+      item={kind:'playlist',id:p.id,title:p.name,subtitle:p.username?`By ${p.username}`:'WASP playlist',cover:playlistCoverUrl(p)};
+    }
+    rows.push({...item,score:Number(r.score)||0,scoreLabel:'stars',average:Number(r.average)||0,votes:Number(r.votes)||0});
+  }
+  if(type==='track')view={ids:rows.map(r=>r.id),label:TABS.stars,pl:null};else noView();
+  const frame=el.querySelector(':scope > iframe.wasp-telemetry-frame');
+  if(frame)frame.contentWindow?.postMessage({type:'wasp:telemetry-data',mode:'stars',sub,query,items:rows},location.origin);
+}
 function sendTelemetryRows(frame,tab,sub){
   if(!frame?.contentWindow)return;
   frame.contentWindow.postMessage({type:'wasp:telemetry-data',mode:tab,sub,
-    query,items:telemetryRankRows(tab,sub)},location.origin);
+    query,items:tab==='stars'?[]:telemetryRankRows(tab,sub)},location.origin);
 }
 function renderTelemetryMount(el,tab,sub){
   // Preserve the already-loaded feature document when changing telemetry tabs.
@@ -1002,7 +1050,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.7';
+  frame.src='/telemetry.html?v=18.0.8';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1014,7 +1062,7 @@ window.addEventListener('message',event=>{
   if(!data||typeof data!=='object'||typeof data.type!=='string')return;
   if(data.type==='wasp:telemetry-ready'){
     const {a,arg}=parse();
-    if(a==='top'||RX.includes(a))sendTelemetryRows(frame,a,arg.split('/')[0]||(a==='top'?'ranked':'songs'));
+    if(a==='top'||RX.includes(a)){const sub=arg.split('/')[0]||(a==='top'?'ranked':'songs');if(a==='stars')void refreshStarRankings(document.querySelector('#list'),sub);else sendTelemetryRows(frame,a,sub);}
   } else if(data.type==='wasp:telemetry-height'){
     const h=Number(data.height);
     if(Number.isFinite(h))frame.style.height=Math.max(250,Math.min(15000,h+8))+'px';
@@ -1022,7 +1070,7 @@ window.addEventListener('message',event=>{
     const id=String(data.id||'');
     if(byId[id])play(id); // Never create a second audio element.
   } else if(data.type==='wasp:telemetry-navigate'){
-    const allowed=/^#(?:artist|album|playlist|top|hearts|likes|dislikes)(?:\/[^?#]*)?$/;
+    const allowed=/^#(?:artist|album|playlist|top|hearts|stars)(?:\/[^?#]*)?$/;
     if(typeof data.href==='string'&&data.href.length<=500&&allowed.test(data.href))location.hash=data.href;
   }
 });

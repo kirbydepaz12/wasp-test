@@ -6,7 +6,7 @@ const n=v=>Number(v||0).toLocaleString();
 const clip=s=>String(s||'').slice(0,190);
 function localToday(){const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
 const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0};
-const names={top:'Most listened',hearts:'Most hearted',likes:'Most liked',dislikes:'Most disliked'};
+const names={top:'Most listened',hearts:'Most hearted',stars:'Most starred',likes:'Most liked',dislikes:'Most disliked'};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const tagColors=['#c8f169','#49d8be','#7ba7ff','#a88bff','#ffba67','#ec86b6','#62bfed','#89b8a0'];
 const tooltip=document.createElement('div');tooltip.className='telemetry-tooltip';tooltip.hidden=true;
@@ -254,8 +254,8 @@ async function showHive({quiet=false,keep=false}={}){
   resized();
 }
 function showRanking(){++state.request;telemetryBusy=false;const rows=state.items;const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
-  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':'Reactions recorded for local and available peer music.'}</p></div></div>
-    ${rows.length?`<div class="browse-grid">${rows.map((r,i)=>`<button type="button" class="browse-tile" data-kind="${safe(r.kind)}" data-id="${safe(r.id)}"><span class="picture">${r.cover?`<img loading="lazy" src="${safe(r.cover)}" alt="" onerror="this.style.display='none'">`:''}</span><b>${safe(r.title)}</b><small>${safe(r.subtitle||'')}</small><small>${n(r.score)} ${safe(r.scoreLabel||'votes')}</small></button>`).join('')}</div>`:
+  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':state.mode==='stars'?'Ranked by total stars given on this WASP server. Average rating and number of votes appear on each item.':'Reactions recorded for local and available peer music.'}</p></div></div>
+    ${rows.length?`<div class="browse-grid">${rows.map((r,i)=>`<button type="button" class="browse-tile" data-kind="${safe(r.kind)}" data-id="${safe(r.id)}"><span class="picture">${r.cover?`<img loading="lazy" src="${safe(r.cover)}" alt="" onerror="this.style.display='none'">`:''}</span><b>${safe(r.title)}</b><small>${safe(r.subtitle||'')}</small><small>${state.mode==='stars'?`★ ${n(r.score)} stars · ${Number(r.average||0).toFixed(1)}/5 · ${n(r.votes)} vote${Number(r.votes)===1?'':'s'}`:n(r.score)+' '+safe(r.scoreLabel||'votes')}</small></button>`).join('')}</div>`:
       '<p class="message">Nothing here yet. Results appear when songs are played or rated.</p>'}`;
   resized();
 }
@@ -310,7 +310,7 @@ window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='wasp:telemetry-data')return;
   const data=event.data;
   const wasTelemetry=state.mode==='top'&&state.sub==='telemetry';
-  state.mode=['top','hearts','likes','dislikes'].includes(data.mode)?data.mode:'top';
+  state.mode=['top','hearts','stars','likes','dislikes'].includes(data.mode)?data.mode:'top';
   state.sub=typeof data.sub==='string'?data.sub:'ranked';
   state.items=Array.isArray(data.items)?data.items.slice(0,100):[];
   state.query=String(data.query||'');

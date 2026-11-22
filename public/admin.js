@@ -879,12 +879,12 @@ const SAMPLE_FEATURED = `<style>
     <a href="#hearts" target="_top" data-cta="hearts">See most hearted</a>
   </div>
 
-  <!-- 4 — most liked -->
-  <div class="slide s4" data-live="likes">
-    <p class="kicker">Most liked this week</p>
+  <!-- 4 — most starred -->
+  <div class="slide s4" data-live="stars">
+    <p class="kicker">Most starred on WASP</p>
     <h2>The crowd favourites</h2>
-    <p>Ranked by real likes from real listeners — no editorial picks, no paid placement.</p>
-    <a href="#likes" target="_top" data-cta="likes">See most liked</a>
+    <p>Ranked by real five-star votes from listeners, with no editorial picks or paid placement.</p>
+    <a href="#stars" target="_top" data-cta="stars">See most starred</a>
   </div>
 
   <!-- 5 — become part of the WASP HIVE -->
