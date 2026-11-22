@@ -8,12 +8,14 @@ import {recordTelemetryListen, rememberTrackMetadata, syncTelemetryPeers, teleme
 import {handleMobileRest, handleMobileArtistImage, manageMobileBridge, ensureMobileSchema} from "./mobile-bridge.js";
 import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federation.js";
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
+import {RELEASE_SOURCES,fetchUpstream,releaseDecision} from "./release-updates.js";
+import {BUILD_COMMIT} from "./build-commit.js";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.2a";
-const BUILD_LABEL = "Compact Ranking Sort Toggle";
+const BUILD_VERSION = "18.1.3";
+const BUILD_LABEL = "GitHub Release Update Channels";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2999,6 +3001,38 @@ async function api(req, env, url, ctx) {
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
   if(path==="/api/admin/mobile-bridge" || path==="/api/admin/mobile-bridge/secret") return manageMobileBridge(req,env,"admin",null);
   if(path==="/api/admin/version" && m==="GET") return json({version:BUILD_VERSION,label:BUILD_LABEL},200,{"cache-control":"no-store"});
+  // v18.1.3: release-channel preferences are local to this WASP deployment.
+  // Only this fixed pair of public repositories is fetched; no arbitrary URLs,
+  // access tokens, repository content execution or automatic installation.
+  if(path==='/api/admin/release-updates'){
+    if(m==='PUT'){
+      const body=await req.json().catch(()=>null);
+      if(!body||!Object.hasOwn(RELEASE_SOURCES,body.channel))return json({error:'Choose Stable or Test.'},400);
+      await DB.prepare("INSERT INTO settings(key,value) VALUES('release_update_channel',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.channel).run();
+      return json({ok:true,channel:body.channel,repository:RELEASE_SOURCES[body.channel].owner+'/'+RELEASE_SOURCES[body.channel].repo});
+    }
+    if(m!=='GET')return json({error:'Method not allowed'},405);
+    const prefs=(await DB.prepare("SELECT key,value FROM settings WHERE key IN ('release_update_channel','release_update_baseline_stable','release_update_baseline_test')").all()).results;
+    const settings=Object.fromEntries(prefs.map(row=>[row.key,row.value]));
+    const channel=Object.hasOwn(RELEASE_SOURCES,settings.release_update_channel)?settings.release_update_channel:'stable';
+    const source=RELEASE_SOURCES[channel];
+    const deployedSha=[env.WASP_BUILD_SHA,env.WORKERS_CI_COMMIT_SHA,env.GITHUB_SHA,BUILD_COMMIT].find(v=>/^[a-f0-9]{40}$/i.test(v||''))||'';
+    const base={channel,repository:`${source.owner}/${source.repo}`,repository_url:`https://github.com/${source.owner}/${source.repo}`,installed_version:BUILD_VERSION,deployed_sha:deployedSha||null};
+    try{
+      const upstream=await fetchUpstream(channel,{force:url.searchParams.get('refresh')==='1'});
+      const k='release_update_baseline_'+channel;
+      let baselineSha=settings[k]||'';
+      // Unknown build SHA: pin the first observed HEAD only once per server
+      // and channel. Subsequent upstream commits then generate notifications.
+      if(!deployedSha&&!/^[a-f0-9]{40}$/i.test(baselineSha)&&upstream.commit?.sha){
+        await DB.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').bind(k,upstream.commit.sha).run();
+        baselineSha=(await DB.prepare('SELECT value FROM settings WHERE key=?').bind(k).first())?.value||upstream.commit.sha;
+      }
+      return json({...base,...upstream,decision:releaseDecision({upstream,installedVersion:BUILD_VERSION,deployedSha,baselineSha}),
+        detection:deployedSha?'deployed-sha':'first-observed-commit',check_interval_ms:21600000},200,{'cache-control':'private, no-store'});
+    }catch(e){return json({...base,error:'Could not check GitHub: '+String(e.message||e).slice(0,180)},503);}
+  }
+
   if(path==='/api/admin/announcements'){
     await ensureAnnouncementTable(DB);
     if(m==='GET'){

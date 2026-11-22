@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.1.2a">
+<link rel="stylesheet" href="/style.css?v=18.1.3">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -34,6 +34,17 @@
       <a class="nav-item" id="docsNav" href="#docs">Update documentations</a>
       <a class="nav-item" href="/">View site</a>
       <button class="nav-item" id="logout" type="button" style="width:100%;background:none;border:0;font:inherit;font-weight:600;cursor:pointer;text-align:left">Log out</button>
+    </div>
+    <div class="admin-release-alert hidden" id="adminReleaseAlert" aria-live="polite">
+      <div class="form" style="justify-content:space-between;align-items:center">
+        <strong id="adminReleaseAlertTitle">New WASP update available</strong>
+        <span class="admin-release-channel" id="adminReleaseAlertChannel">Stable</span>
+      </div>
+      <p class="muted" id="adminReleaseAlertInfo"></p>
+      <div class="form" style="gap:12px">
+        <a id="adminReleaseAlertLink" href="https://github.com/KNDPZ/WASP" target="_blank" rel="noopener noreferrer">See what's new</a>
+        <button class="admin-release-dismiss" id="adminReleaseDismiss" type="button">Dismiss</button>
+      </div>
     </div>
     <div class="admin-build" id="adminBuild" role="status">WASP · Checking version…</div>
   </aside>
@@ -164,6 +175,11 @@
     <!-- General settings -->
     <section class="pane hidden" id="s-settings">
       <h1>General settings</h1>
+      <div class="tabs sub" role="tablist" aria-label="General settings sections">
+        <button class="tab" id="settingsTabGeneral" type="button" role="tab" aria-controls="settingsGeneralPanel" aria-selected="true">General</button>
+        <button class="tab" id="settingsTabUpdates" type="button" role="tab" aria-controls="settingsUpdatesPanel" aria-selected="false">Release Updates</button>
+      </div>
+      <div id="settingsGeneralPanel" role="tabpanel" aria-labelledby="settingsTabGeneral">
       <div class="card">
         <h2>Branding</h2>
         <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
@@ -220,6 +236,34 @@
           <span class="msg" id="spMsg" role="status"></span>
         </div>
         <div id="spPrev" style="margin-top:16px"></div>
+      </div>
+      </div>
+      <div id="settingsUpdatesPanel" class="hidden" role="tabpanel" aria-labelledby="settingsTabUpdates">
+        <div class="card release-update-card">
+          <h2>GitHub release updates</h2>
+          <p class="muted">Choose which upstream WASP repository this server follows for update announcements. This is a notification setting only: your own fork, running deployment, music, settings and database are never modified.</p>
+          <fieldset class="release-channel-options"><legend class="muted">Update channel</legend>
+            <label class="release-channel-choice"><input type="radio" name="releaseChannel" value="stable" checked>
+              <span><b>Stable · Main</b><small>KNDPZ/WASP</small></span></label>
+            <label class="release-channel-choice"><input type="radio" name="releaseChannel" value="test">
+              <span><b>Test · Preview</b><small>kirbydepaz12/wasp-test</small></span></label>
+          </fieldset>
+          <p class="muted">Published GitHub Releases take priority. When there are no newer releases, new commits on the selected repository can also trigger an update notification. Notifications never trigger a download or redeploy.</p>
+          <div class="form" style="margin-bottom:10px">
+            <button class="btn" id="releaseSave" type="button">Save channel</button>
+            <button class="btn ghost" id="releaseCheck" type="button">Check now</button>
+          </div>
+          <p id="releaseSettingsMsg" class="msg" role="status"></p>
+          <div class="release-check-details">
+            <div><span class="muted">Installed version</span><strong id="releaseInstalled">Checking…</strong></div>
+            <div><span class="muted">Upstream repository</span><a id="releaseRepoLink" href="https://github.com/KNDPZ/WASP" target="_blank" rel="noopener noreferrer">KNDPZ/WASP</a></div>
+            <div><span class="muted">Latest upstream release</span><strong id="releaseLatestVersion">Checking…</strong></div>
+            <div><span class="muted">Latest upstream commit</span><a id="releaseLatestCommit" href="https://github.com/KNDPZ/WASP" target="_blank" rel="noopener noreferrer">Checking…</a></div>
+            <div><span class="muted">Last checked</span><span id="releaseLastChecked">—</span></div>
+          </div>
+          <div class="release-update-result" id="releaseResult" role="status">Checking GitHub…</div>
+          <p class="muted" style="font-size:12px">Checks are cached server-side for up to six hours. When an installed commit ID is unavailable, the first observed commit is used as a baseline; later commits generate alerts. A GitHub commit does not prove your deployment has changed. For accurate deployed-commit detection, build with a Git SHA or configure WASP_BUILD_SHA. See the release notes for limitations.</p>
+        </div>
       </div>
     </section>
 
@@ -560,6 +604,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.1.2a"></script>
+<script type="module" src="/admin.js?v=18.1.3"></script>
 </body>
 </html>

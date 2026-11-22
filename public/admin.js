@@ -27,6 +27,7 @@ function showPane() {
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   adminPublishNotificationBadge(pendingPublishCount);
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
+  if (k === "settings") showSettingsSubtab(route.split("/")[1] === "release-updates" ? "release-updates" : "general");
   if (k === "duplicates") loadDuplicates();
   if (k === "processes") showOperationsTab(route.split("/")[1] === "logs" ? "logs" : "running");
   if (k === "users") showUsersTab(route.split("/")[1] === "announcements" ? "announcements" : "accounts");
@@ -281,6 +282,7 @@ async function show() {
     $("#adminAccountName").textContent=me.username||"admin";
     $("#adminNewName").value=me.username||"admin";
     showPane(); refresh(); loadPlaylists(); loadRequests(); loadSite(); loadNetwork(); syncMode();
+    void checkReleases();
     fetch("/api/admin/version",{cache:"no-store"}).then(r=>r.json()).then(v=>{
       $("#adminBuild").textContent=`WASP v${v.version||"?"} · ${v.label||""}`;
     }).catch(()=>{$("#adminBuild").textContent="WASP · Version unavailable";});
@@ -861,6 +863,83 @@ $('#mobileBridgeCopyUrl').addEventListener('click',async()=>{
   try{await navigator.clipboard.writeText(location.origin+'/mobile');mobileSetupMessage('Mobile Bridge URL copied.');}
   catch{mobileSetupMessage('Copy the address displayed above.',true);}
 });
+// ---------- instance-local GitHub release/update channel ----------
+let lastReleaseCheck=null;
+let releaseRequestRunning=false;
+const releaseRepos={stable:'https://github.com/KNDPZ/WASP',test:'https://github.com/kirbydepaz12/wasp-test'};
+const releaseAcknowledged=key=>{try{return localStorage.getItem('wasp-release-dismissed:'+key)==='1';}catch{return false;}};
+function showSettingsSubtab(which='general'){
+  const updates=which==='release-updates';
+  $('#settingsGeneralPanel').classList.toggle('hidden',updates);
+  $('#settingsUpdatesPanel').classList.toggle('hidden',!updates);
+  $('#settingsTabGeneral').setAttribute('aria-selected',String(!updates));
+  $('#settingsTabUpdates').setAttribute('aria-selected',String(updates));
+  if(updates)void checkReleases();
+}
+$('#settingsTabGeneral').onclick=()=>{location.hash='settings';showSettingsSubtab('general');};
+$('#settingsTabUpdates').onclick=()=>{location.hash='settings/release-updates';showSettingsSubtab('release-updates');};
+function paintReleaseAlert(info){
+  const node=$('#adminReleaseAlert');const decision=info?.decision;
+  const available=!!decision?.available&&!releaseAcknowledged(decision.key);
+  node.classList.toggle('hidden',!available);
+  if(!available)return;
+  const channel=info.channel==='test'?'Test':'Stable';
+  $('#adminReleaseAlertChannel').textContent=channel;
+  $('#adminReleaseAlertTitle').textContent=decision.kind==='release'?'New WASP release available':'New GitHub commit available';
+  $('#adminReleaseAlertInfo').textContent=decision.kind==='release'?`${decision.version} is available · Installed: v${info.installed_version}`:
+    `${info.repository} has a newer commit than this server's recorded build/baseline.`;
+  $('#adminReleaseAlertLink').href=decision.url;
+  $('#adminReleaseAlertLink').textContent=decision.kind==='release'?"See what's new":'View commit';
+  $('#adminReleaseDismiss').onclick=()=>{
+    try{localStorage.setItem('wasp-release-dismissed:'+decision.key,'1');}catch{}
+    node.classList.add('hidden');
+  };
+}
+function paintReleaseStatus(info){
+  lastReleaseCheck=info;
+  const channel=info.channel==='test'?'test':'stable';
+  const chosen=document.querySelector(`input[name="releaseChannel"][value="${channel}"]`);
+  if(chosen)chosen.checked=true;
+  $('#releaseRepoLink').href=releaseRepos[channel];$('#releaseRepoLink').textContent=info.repository||'';
+  $('#releaseInstalled').textContent='v'+(info.installed_version||'?');
+  $('#releaseLatestVersion').textContent=info.release?.tag||'No published release';
+  $('#releaseLatestCommit').href=info.commit?.url||releaseRepos[channel];
+  $('#releaseLatestCommit').textContent=info.commit?.short_sha||'Unavailable';
+  $('#releaseLastChecked').textContent=info.checked_at?new Date(info.checked_at).toLocaleString():'—';
+  const message=$('#releaseResult');
+  if(info.decision?.available){
+    message.textContent=info.decision.kind==='release'?`New release: ${info.decision.version}. ${info.decision.title}`:
+      `New commit available: ${info.commit?.short_sha||''} · ${info.decision.details||''}`;
+  }else message.textContent=info.detection==='first-observed-commit'?
+    'No newer release found. Commit-only monitoring is active from this server’s first observed GitHub commit.':'No new updates detected for this channel.';
+  paintReleaseAlert(info);
+}
+async function checkReleases(force=false){
+  if(releaseRequestRunning || $('#panel').classList.contains('hidden'))return;
+  releaseRequestRunning=true;$('#releaseCheck').disabled=true;
+  if(force)$('#releaseSettingsMsg').textContent='Checking GitHub…';
+  try{
+    const response=await fetch('/api/admin/release-updates'+(force?'?refresh=1':''),{cache:'no-store'});
+    const info=await response.json();
+    if(!response.ok)throw Error(info.error||'Could not check GitHub.');
+    paintReleaseStatus(info);
+    if(force)$('#releaseSettingsMsg').textContent='GitHub check complete.';
+  }catch(e){if(force||!lastReleaseCheck){$('#releaseSettingsMsg').textContent=e.message;$('#releaseResult').textContent='GitHub check unavailable. Existing WASP services are unaffected.';}}
+  finally{releaseRequestRunning=false;$('#releaseCheck').disabled=false;}
+}
+$('#releaseSave').onclick=async()=>{
+  const channel=document.querySelector('input[name="releaseChannel"]:checked')?.value;
+  const btn=$('#releaseSave');btn.disabled=true;
+  try{const response=await post('/api/admin/release-updates',{channel},'PUT');const data=await response.json();
+    if(!response.ok)throw Error(data.error||'Could not save the channel');
+    $('#adminReleaseAlert').classList.add('hidden'); lastReleaseCheck=null;
+    $('#releaseSettingsMsg').textContent='Release channel saved for this WASP server. No deployment changes made.';
+    await checkReleases();
+  }catch(e){$('#releaseSettingsMsg').textContent=e.message;}finally{btn.disabled=false;}
+};
+$('#releaseCheck').onclick=()=>checkReleases(true);
+setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden'))void checkReleases();},6*60*60*1000);
+
 // ---------- general settings: branding + advertising ----------
 let site = null;
 function paintFavicon() {

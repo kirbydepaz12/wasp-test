@@ -119,6 +119,7 @@ docker compose up -d --build
 - **HIVE Radio (`/#radio`):** any visitor can generate a temporary queue by artist, genre, decade or all-time top songs; select 20, 30, 50 or a custom 1–100 tracks. Signed-in users may save it as a personal playlist.
 - **HIVE Telemetry:** listening history, music-by-decade, artist origin, genres, top tracks/albums/artists, and individual Week/Month/Year/All time filters.
 - **Metadata intelligence:** incremental embedded-tag scanning, trusted peer metadata, historical telemetry reclassification, and optional offline MusicBrainz matching on Docker.
+- **Release Updates:** Admin → General settings → Release Updates monitors the public [Stable](https://github.com/KNDPZ/WASP) or [Test](https://github.com/kirbydepaz12/wasp-test) repository for new releases or commits. Forks are never updated automatically.
 - **Account and admin tools:** user profile/password settings, controlled peer publishing, server-local public announcements with live preview, selective HIVE telemetry pulls and a local telemetry refresh, scheduled jobs, a protected running-process dashboard with auditable administrator actions/text export, and an in-app read-only documentation viewer.
 
 ## Feature documentation
@@ -129,6 +130,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.3 — GitHub Release Updates | [Stable/Test channels, GitHub release and commit notifications, opt-in admin guidance](docs/V18-1-3-GITHUB-RELEASE-UPDATES.md) |
 | v18.1.2a — Compact ranking sort control | [Icon toggle beside Most starred/hearted headings](docs/V18-1-2A-COMPACT-RANKING-TOGGLE.md) |
 | v18.1.2 — Running processes, audit logs and ranking sort | [Process monitoring, admin audit log export/clear, compact Users table and most/least rankings](docs/V18-1-2-ADMIN-PROCESSES-LOGS-RANKING-SORT.md) |
 | v18.1.1 — Public live announcements and telemetry refresh | [Anonymous and registered visitor notices, quiet ding, refresh persistence, local cache rebuild](docs/V18-1-1-PUBLIC-ANNOUNCEMENTS-TELEMETRY-REFRESH.md) |
