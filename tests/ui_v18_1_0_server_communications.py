@@ -28,6 +28,7 @@ with sync_playwright() as pw:
     else if(path==='/api/admin/network')d={share:true,peers:[]};
     else if(path==='/api/admin/telemetry/peers')d={peers:[{id:'a',url:'https://peer-a.example',name:'TEST',last_ok:1},{id:'b',url:'https://peer-b.example',name:'PROD',last_ok:1}]};
     else if(path==='/api/admin/telemetry/pull'){window.__pulled.push(JSON.parse(opt.body));d={imported:3,checked:2,errors:0,totalPeers:2};}
+    else if(path==='/api/admin/telemetry/recalculate'){window.__recalculated=true;d={ok:true,localPlays:7,hivePlays:10};}
     else if(path==='/api/admin/telemetry/metadata')d={runtime:'cloudflare',preferred:'musicbrainz',peers:[],coverage:{total:10,years:6,origins:8},apiKeyConfigured:false};
     else if(path==='/api/admin/announcements'&&method==='GET')d={items:window.__sent};
     else if(path==='/api/admin/announcements'&&method==='POST'){const item={id:'created-1',created_at:Date.now(),...JSON.parse(opt.body)};window.__sent.push(item);d={ok:true,id:item.id};status=201;}
@@ -49,6 +50,9 @@ with sync_playwright() as pw:
   assert p.evaluate('__pulled[0].peers')==['https://peer-a.example','https://peer-b.example']
   p.wait_for_function("document.querySelector('#telemetryPullStatus').textContent.includes('3 new plays')")
   assert p.locator('#telemetryPullProgress').evaluate('(n)=>n.value')==100
+  p.locator('#telemetryRecalculate').click()
+  p.wait_for_function('window.__recalculated===true')
+  p.wait_for_function("document.querySelector('#telemetryRecalculateStatus').textContent.includes('7 local confirmed plays')")
   p.evaluate('location.hash="#users/announcements";window.dispatchEvent(new Event("hashchange"))')
   p.locator('#announcementTemplates button').first.click()
   assert p.locator('#announcementTitle').input_value()=='Scheduled maintenance'
@@ -74,7 +78,7 @@ with sync_playwright() as pw:
   window.fetch=async(input,opt={})=>{
    const path=new URL(String(input),'https://wasp.test').pathname;let d=[];
    if(path==='/api/me')d={authenticated:true,admin:false,role:'user',username:'user1'};
-   else if(path==='/api/user/announcements'){__messageFetches++;d={items:__userMessages};}
+   else if(path==='/api/announcements'){__messageFetches++;d={items:__userMessages};}
    else if(path==='/api/catalog-version')d={revision:'1'};
    else if(path==='/api/site')d={name:'MAIN',title:'Browser title',sidebar:{enabled:false},ad:{enabled:false}};
    else if(path==='/api/entity-reactions')d={artist:{},playlist:{}};
@@ -95,9 +99,9 @@ with sync_playwright() as pw:
  p.evaluate('window.__ann.poll(true)')
  p.wait_for_timeout(180)
  assert p.locator('#serverAnnouncements .wasp-announcement').count()==0,'dismissed announcement should not reappear'
- assert p.evaluate('JSON.parse(localStorage.getItem("wasp-announcements-seen-v1810:user1")).includes("m1")')
+ assert p.evaluate('JSON.parse(localStorage.getItem("wasp-announcements-handled-v1811")).includes("m1")')
  # Prove the code actually registers a 30-second timeout and auto-dismisses.
- p.evaluate('''()=>{window.__timeoutSeen=0;const real=window.setTimeout;window.setTimeout=(fn,ms)=>{if(ms===30000){window.__timeoutSeen=ms;return real(fn,25);}return real(fn,ms);};window.__userMessages.push({id:'m2',title:'Short display',body:'Thirty second message',severity:'info',opacity:.87,created_at:Date.now()});}''')
+ p.evaluate('''()=>{window.__timeoutSeen=0;const real=window.setTimeout;window.setTimeout=(fn,ms)=>{if(ms>29500&&ms<=30000){window.__timeoutSeen=30000;return real(fn,25);}return real(fn,ms);};window.__userMessages.push({id:'m2',title:'Short display',body:'Thirty second message',severity:'info',opacity:.87,created_at:Date.now()});}''')
  p.evaluate('window.__ann.poll(true)')
  p.wait_for_function('window.__timeoutSeen===30000')
  p.wait_for_function('document.querySelectorAll("#serverAnnouncements .wasp-announcement").length===0')

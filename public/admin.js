@@ -1211,6 +1211,18 @@ $('#telemetryPullSelected').onclick=async()=>{
   }catch(e){status.textContent=`Pull stopped after ${completed} peers: ${e.message}. Imported plays remain saved; retry is duplicate-safe.`;}
   finally{telemetryPullBusy=false;$('#telemetryPullSelected').disabled=false;progress.hidden=false;}
 };
+// Refresh the current server's derived summaries, without pulling any peers.
+$('#telemetryRecalculate').onclick=async()=>{
+  const button=$('#telemetryRecalculate'),status=$('#telemetryRecalculateStatus');
+  if(button.disabled)return;
+  button.disabled=true;status.textContent='Updating this WASP server’s telemetry summaries…';
+  try{
+    const r=await post('/api/admin/telemetry/recalculate',{});
+    const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to update telemetry');
+    status.textContent=`Current telemetry updated: ${d.localPlays} local confirmed plays, ${d.hivePlays} total HIVE confirmed plays. Peer feeds were not pulled.`;
+  }catch(e){status.textContent='Update failed: '+e.message;}
+  finally{button.disabled=false;}
+};
 // v18.0.7: reorganize existing controls without duplicating forms or saved
 // settings. All four panes belong to the same metadata form.
 const metadataFormNode=$('#metadataForm');

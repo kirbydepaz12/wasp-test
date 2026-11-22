@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.1.0">
+<link rel="stylesheet" href="/style.css?v=18.1.1">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -335,9 +335,9 @@
           <div class="form" style="justify-content:space-between"><strong>Pull telemetry now</strong><button class="btn ghost" type="button" id="telemetrySelectAll">Select all peers</button></div>
           <p class="muted">Select administrator-connected peers to import their confirmed listening events into this server's HIVE totals. Already imported plays are never counted twice. Automatic sharing and synchronization in Crons remain unchanged.</p>
           <div id="telemetryPeerChoices" class="telemetry-peer-choices" aria-label="Connected peers">Open this tab to load peers.</div>
-          <div class="form" style="margin-top:12px"><button class="btn" type="button" id="telemetryPullSelected">Pull telemetry from selected peers now</button><button class="btn ghost" type="button" id="telemetryRefreshPeers">Refresh peers</button></div>
+          <div class="form" style="margin-top:12px"><button class="btn" type="button" id="telemetryPullSelected">Pull telemetry from selected peers now</button><button class="btn ghost" type="button" id="telemetryRefreshPeers">Refresh peers</button><button class="btn ghost" type="button" id="telemetryRecalculate">Update current telemetry</button></div>
           <progress id="telemetryPullProgress" max="100" value="0" style="width:100%;margin-top:8px" hidden></progress>
-          <p id="telemetryPullStatus" class="msg" role="status" aria-live="polite"></p>
+          <p id="telemetryPullStatus" class="msg" role="status" aria-live="polite"></p><p id="telemetryRecalculateStatus" class="msg" role="status" aria-live="polite"></p>
         </div></div>
         <div class="card"><h2>Telemetry &amp; Metadata</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
           <form id="metadataForm" class="metadata-form" autocomplete="off">
@@ -529,6 +529,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.1.0"></script>
+<script type="module" src="/admin.js?v=18.1.1"></script>
 </body>
 </html>

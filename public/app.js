@@ -2777,58 +2777,113 @@ async function refreshAccount(){
   $("#accountMenu").classList.toggle("signed-in",!!currentAccount?.authenticated);
   if(!currentAccount?.authenticated)$("#accountDrop").classList.add("hidden");
   updatePublishNoticeBadges();
-  const nextUser=currentAccount?.role==='user'?currentAccount.username.toLowerCase():'';
-  if(nextUser!==announcementAccount){
-    clearTimeout(announcementTimer);announcementTimer=null;announcementVisible=false;
-    $('#serverAnnouncements').replaceChildren();announcementQueue=[];
-    announcementAccount=nextUser;announcementPollTime=0;
-  }
-  if(nextUser)void pollServerAnnouncements();
+  // Local public announcements belong to every visitor, including guests.
+  void pollServerAnnouncements();
   // Keep + visible to guests; it opens a themed sign-in requirement dialog.
   $("#playlistAdd").hidden = false;
   document.querySelectorAll(".album-add").forEach(b=>b.hidden=false);
 }
 const postJSON=(url,body,method="POST")=>fetch(url,{method,headers:{"content-type":"application/json"},body:JSON.stringify(body)});
 
-// v18.1.0: browser-cached, user-specific notices originating on THIS server.
-// No peer announcements are fetched, displayed or federated.
+// v18.1.1: public server-local announcements, including visitors without accounts.
+// Brief shared-edge cached polling provides a near-live feed without a paid
+// third-party push service or a long-running Worker/D1 connection. Notices are
+// remembered in this origin's browser cache until dismissed/fully displayed.
+const ANNOUNCEMENTS_SEEN='wasp-announcements-handled-v1811';
+const ANNOUNCEMENTS_STARTED='wasp-announcements-started-v1811';
+const ANNOUNCEMENTS_SOUND='wasp-announcements-sound-v1811';
 let announcementTimer=null,announcementPollTime=0,announcementPolling=false;
-let announcementQueue=[],announcementVisible=false,announcementAccount='';
-function announcementKey(){return 'wasp-announcements-seen-v1810:'+String(currentAccount?.username||'').toLowerCase();}
+let announcementQueue=[],announcementVisible=false,announcementCurrent=null;
+let announcementAudio=null;
+function announcementHandled(){return new Set(store.get(ANNOUNCEMENTS_SEEN,[]));}
+function finishAnnouncement(id){
+  store.set(ANNOUNCEMENTS_SEEN,[...new Set([...announcementHandled(),id])].slice(-150));
+  const starts=store.get(ANNOUNCEMENTS_STARTED,{});delete starts[id];store.set(ANNOUNCEMENTS_STARTED,starts);
+}
+function announcementSoundEnabled(){return store.get(ANNOUNCEMENTS_SOUND,true)!==false;}
+function prepareAnnouncementAudio(){
+  if(!announcementSoundEnabled()||announcementAudio)return;
+  try {const AC=window.AudioContext||window.webkitAudioContext;if(AC)announcementAudio=new AC();}catch{}
+}
+// Unlock WebAudio only after a user gesture; autoplay policies may suppress
+// sound for passive visitors. The separate audio graph never touches playback.
+document.addEventListener('pointerdown',()=>{
+  prepareAnnouncementAudio();
+  if(announcementAudio?.state==='suspended')announcementAudio.resume().catch(()=>{});
+},{passive:true});
+function dingServerAnnouncement(){
+  if(!announcementSoundEnabled()||document.hidden)return;
+  try{
+    prepareAnnouncementAudio();const ctx=announcementAudio;if(!ctx||ctx.state!=='running')return;
+    const now=ctx.currentTime,osc=ctx.createOscillator(),gain=ctx.createGain();
+    osc.type='sine';osc.frequency.setValueAtTime(880,now);
+    osc.frequency.exponentialRampToValueAtTime(1174.66,now+0.10);
+    gain.gain.setValueAtTime(0.0001,now);
+    gain.gain.exponentialRampToValueAtTime(0.026,now+0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001,now+0.16);
+    osc.connect(gain);gain.connect(ctx.destination);osc.start(now);osc.stop(now+0.17);
+  }catch{/* Never interrupt music or announcements if audio is unavailable. */}
+}
+function suspendAnnouncement(){
+  clearTimeout(announcementTimer);announcementTimer=null;
+  $('#serverAnnouncements').replaceChildren();announcementVisible=false;
+  const previous=announcementCurrent;announcementCurrent=null;return previous;
+}
 function showNextServerAnnouncement(){
-  if(announcementVisible||!announcementQueue.length||currentAccount?.role!=='user')return;
-  const notice=announcementQueue.shift(),box=$('#serverAnnouncements');
-  const card=document.createElement('div');card.className='wasp-announcement';card.dataset.severity=notice.severity||'info';
-  card.style.setProperty('--announcement-opacity',String(Number(notice.opacity)||0.87));
-  const titleRow=document.createElement('div');titleRow.className='announcement-heading';
-  const title=document.createElement('strong');title.textContent=notice.title;
-  const close=document.createElement('button');close.type='button';close.className='announcement-close';close.setAttribute('aria-label','Dismiss announcement');close.textContent='×';
-  const body=document.createElement('div');body.className='announcement-body';body.textContent=notice.body;
-  titleRow.append(title,close);card.append(titleRow,body);box.replaceChildren(card);
-  announcementVisible=true;
-  const key=announcementKey(),seen=store.get(key,[]);
-  if(!seen.includes(notice.id))store.set(key,[...seen,notice.id].slice(-150));
-  const dismiss=()=>{clearTimeout(announcementTimer);card.remove();announcementVisible=false;announcementTimer=null;showNextServerAnnouncement();};
-  close.onclick=dismiss;
-  announcementTimer=setTimeout(dismiss,30000);
+  if(announcementVisible)return;
+  const box=$('#serverAnnouncements');
+  while(announcementQueue.length){
+    const notice=announcementQueue.shift();
+    if(!notice?.id||announcementHandled().has(notice.id))continue;
+    const starts=store.get(ANNOUNCEMENTS_STARTED,{});
+    const began=Number(starts[notice.id])||Date.now();
+    if(!starts[notice.id]){starts[notice.id]=began;store.set(ANNOUNCEMENTS_STARTED,starts);}
+    const remaining=30000-(Date.now()-began);
+    if(remaining<=0){finishAnnouncement(notice.id);continue;}
+    const card=document.createElement('div');card.className='wasp-announcement';card.dataset.severity=notice.severity||'info';
+    const opacity=Number(notice.opacity);
+    card.style.setProperty('--announcement-opacity',String(Number.isFinite(opacity)?Math.max(.5,Math.min(.98,opacity)):.87));
+    const titleRow=document.createElement('div');titleRow.className='announcement-heading';
+    const title=document.createElement('strong');title.textContent=notice.title;
+    const sound=document.createElement('button');sound.type='button';sound.className='announcement-sound';
+    const updateSound=()=>{sound.textContent=announcementSoundEnabled()?'♪':'♪̸';sound.title=announcementSoundEnabled()?'Mute announcement ding':'Enable announcement ding';sound.setAttribute('aria-label',sound.title);sound.setAttribute('aria-pressed',String(announcementSoundEnabled()));};
+    updateSound();sound.onclick=()=>{store.set(ANNOUNCEMENTS_SOUND,!announcementSoundEnabled());updateSound();};
+    const close=document.createElement('button');close.type='button';close.className='announcement-close';close.setAttribute('aria-label','Dismiss announcement');close.textContent='×';
+    const body=document.createElement('div');body.className='announcement-body';body.textContent=notice.body;
+    titleRow.append(title,sound,close);card.append(titleRow,body);box.replaceChildren(card);
+    announcementVisible=true;announcementCurrent=notice;
+    const dismiss=()=>{suspendAnnouncement();finishAnnouncement(notice.id);showNextServerAnnouncement();};
+    close.onclick=dismiss;
+    announcementTimer=setTimeout(dismiss,remaining);
+    dingServerAnnouncement();
+    return;
+  }
 }
 async function pollServerAnnouncements(force=false){
-  if(!currentAccount?.authenticated||currentAccount.role!=='user'||announcementPolling)return;
-  if(!force && Date.now()-announcementPollTime<60000)return;
+  if(announcementPolling||document.hidden)return;
+  if(!force&&Date.now()-announcementPollTime<2000)return;
   announcementPolling=true;announcementPollTime=Date.now();
   try{
-    const r=await fetch('/api/user/announcements',{cache:'no-store'});
+    const r=await fetch('/api/announcements',{cache:'no-store'});
     if(!r.ok)return;
-    const data=await r.json();
-    const seen=new Set(store.get(announcementKey(),[]));
-    const pending=(data.items||[]).filter(a=>a?.id&&!seen.has(a.id)).reverse();
-    // Do not requeue the same notice while other notices are being displayed.
-    const queued=new Set(announcementQueue.map(a=>a.id));
-    for(const notice of pending)if(!queued.has(notice.id)){announcementQueue.push(notice);queued.add(notice.id);}
+    const data=await r.json(),handled=announcementHandled();
+    const queued=new Set(announcementQueue.map(x=>x.id));
+    const incoming=(Array.isArray(data.items)?data.items:[]).filter(a=>a?.id&&!handled.has(a.id)&&!queued.has(a.id)&&a.id!==announcementCurrent?.id);
+    // New messages take precedence over an older displayed announcement.
+    // A preempted message retains its original remaining display time.
+    if(incoming.length&&announcementCurrent){
+      const previous=suspendAnnouncement();
+      if(previous)announcementQueue.push(previous);
+    }
+    // The feed is newest-first, so place new messages ahead of old backlog.
+    announcementQueue=[...incoming,...announcementQueue];
     showNextServerAnnouncement();
-  }catch{/* A temporary connection problem must not interrupt music playback. */}
+  }catch{/* Temporary network errors do not interrupt the music player. */}
   finally{announcementPolling=false;}
 }
+window.addEventListener('focus',()=>void pollServerAnnouncements(true));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void pollServerAnnouncements(true);});
+window.addEventListener('online',()=>void pollServerAnnouncements(true));
 // WASP v15.0.8 — settings are an independent HTML-backed dialog. The music
 // app, audio element, current page and scroll position are never remounted.
 let accountSettingsTemplate = null;
@@ -3166,5 +3221,8 @@ refreshAccount();
 paintRepeat(); paintVol(); paintReact(); paintShuffle(); renderQueue();
 load();
 
-// Approval notices are lightweight, session-specific and never cached.
-setInterval(()=>{if(document.visibilityState==='visible'&&currentAccount?.role==='user'){refreshAccount();void pollServerAnnouncements();}},30000);
+// The announcement feed remains active for guests and registered users alike.
+// A short public shared-edge cache keeps repeated checks from hitting D1 per user.
+setInterval(()=>{if(document.visibilityState==='visible')void pollServerAnnouncements();},2000);
+// Account approval state is independent of the server-wide announcement feed.
+setInterval(()=>{if(document.visibilityState==='visible'&&currentAccount?.role==='user')void refreshAccount();},30000);

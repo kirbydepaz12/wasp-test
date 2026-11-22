@@ -927,3 +927,7 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .announcement-editor textarea{background:var(--panel);border:1px solid var(--line2);border-radius:12px;min-height:120px;padding:12px;color:var(--text);font:inherit;resize:vertical}
 .announcement-editor select{background:var(--panel);color:var(--text);border:1px solid var(--line2);padding:8px;border-radius:10px}
 .announcement-editor input[type=range]{accent-color:var(--accent)}
+
+/* v18.1.1: quiet opt-out for public announcement ding */
+.announcement-sound{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:15px;padding:0 3px;line-height:18px;flex:none}
+.announcement-sound:hover,.announcement-sound:focus-visible{color:var(--accent)}

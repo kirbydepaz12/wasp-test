@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.0";
-const BUILD_LABEL = "Server Identity, Selective Telemetry & Announcements";
+const BUILD_VERSION = "18.1.1";
+const BUILD_LABEL = "Public Live Announcements & Telemetry Refresh";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1821,6 +1821,21 @@ async function api(req, env, url, ctx) {
     const peers=(await DB.prepare('SELECT id,name,url,last_ok,last_error FROM peers ORDER BY added_at').all()).results;
     return json({peers:peers.map(p=>({id:p.id,name:p.name||p.url,url:p.url,last_ok:p.last_ok||null,last_error:p.last_error||null}))});
   }
+  // Recalculate this server's telemetry from the retained confirmed-play ledger.
+  // This is deliberately distinct from importing more plays from HIVE peers.
+  if(path==='/api/admin/telemetry/recalculate' && m==='POST'){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    await ensureTelemetrySchemaForMetadata(env);
+    await DB.batch([
+      DB.prepare('DELETE FROM telemetry_summary_cache'),
+      DB.prepare("DELETE FROM settings WHERE key='hive_metadata_coverage_v177'")
+    ]);
+    const instance=(await DB.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
+    const hive=await DB.prepare('SELECT COUNT(*) AS n FROM telemetry_events').first();
+    const local=await DB.prepare('SELECT COUNT(*) AS n FROM telemetry_events WHERE origin_id=?').bind(instance).first();
+    return json({ok:true,localPlays:Number(local?.n)||0,hivePlays:Number(hive?.n)||0,refreshedAt:Date.now(),message:'Telemetry summaries rebuilt from retained plays. No new peer events imported.'});
+  }
   if(path==='/api/admin/telemetry/pull' && m==='POST'){
     const info=await sessionInfo(req,env);
     if(info?.role!=='admin')return json({error:'Administrator required'},403);
@@ -1871,6 +1886,21 @@ async function api(req, env, url, ctx) {
     await ensureHiveRequests(env);
     const state=(await DB.prepare('SELECT url,cursor,synced_at,last_error FROM hive_request_peer_cursors ORDER BY synced_at DESC LIMIT 60').all()).results;
     return json({peers:state});
+  }
+  // v18.1.1: public, server-local announcements for guests AND signed-in listeners.
+  // There is no user identity, cookie, telemetry event or peer federation in this feed.
+  // A two-second shared edge cache bounds D1 reads when many clients are listening.
+  if(path==='/api/announcements' && m==='GET'){
+    const cache=(typeof caches!=='undefined'&&caches.default)?caches.default:null;
+    // The cache key is origin-local, independent of cookies and query parameters.
+    const cacheKey=new Request(new URL('/api/announcements',req.url));
+    if(cache){try{const hit=await cache.match(cacheKey);if(hit)return hit;}catch{}}
+    await ensureAnnouncementTable(DB);
+    const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
+      WHERE created_at>=? ORDER BY created_at DESC LIMIT 20`).bind(Date.now()-30*86400000).all()).results;
+    const response=json({items},200,{'cache-control':'public, max-age=0, s-maxage=2','x-content-type-options':'nosniff'});
+    if(cache){const job=cache.put(cacheKey,response.clone()).catch(()=>{});if(ctx?.waitUntil)ctx.waitUntil(job);else await job;}
+    return response;
   }
   // ---------- public ----------
   if(path==="/api/catalog-version" && m==="GET") {
@@ -2646,6 +2676,8 @@ async function api(req, env, url, ctx) {
   }
 
   const auth = await sessionInfo(req, env);
+  // Retain the v18.1.0 user-only endpoint for older clients. New public
+  // clients subscribe to /api/announcements and do not need a login.
   if (path === '/api/user/announcements' && m === 'GET'){
     if(!auth || auth.role!=='user')return json({error:'User login required.'},401);
     await ensureAnnouncementTable(DB);
@@ -2955,6 +2987,9 @@ async function api(req, env, url, ctx) {
       const id=crypto.randomUUID(),now=Date.now();
       await DB.prepare(`INSERT INTO server_announcements(id,title,body,severity,opacity,created_at)
         VALUES(?,?,?,?,?,?)`).bind(id,title,body,severity,Math.round(opacity*100)/100,now).run();
+      // Invalidate this edge's public announcement cache immediately; other
+      // Cloudflare POPs will refresh within the short (2s) cache lifetime.
+      try {if(typeof caches!=='undefined'&&caches.default)await caches.default.delete(new Request(new URL('/api/announcements',req.url)));}catch{}
       return json({ok:true,id,title,created_at:now},201);
     }
     return json({error:'Method not allowed'},405);
