@@ -28,7 +28,7 @@ function showPane() {
   adminPublishNotificationBadge(pendingPublishCount);
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
   if (k === "duplicates") loadDuplicates();
-  if (k === "users") loadUsers();
+  if (k === "users") showUsersTab(route.split("/")[1] === "announcements" ? "announcements" : "accounts");
   $("#docsNav").setAttribute("aria-current",k==="docs"?"page":"false");
   if (k === "docs") loadDocs();
   if (k === "requests") showRequestTab(route === "requests/spotify");
@@ -38,6 +38,64 @@ function showPane() {
 }
 window.addEventListener("hashchange", showPane);
 // Community publishing: global default, per-account exceptions, searchable/sortable statistics.
+function showUsersTab(which='accounts'){
+  const announcements=which==='announcements';
+  $('#usersAccountsPanel').classList.toggle('hidden',announcements);
+  $('#usersAnnouncementsPanel').classList.toggle('hidden',!announcements);
+  $('#usersTabAccounts').setAttribute('aria-selected',String(!announcements));
+  $('#usersTabAnnouncements').setAttribute('aria-selected',String(announcements));
+  if(announcements)void loadAnnouncementHistory();else void loadUsers();
+}
+$('#usersTabAccounts').onclick=()=>{location.hash='users';showUsersTab('accounts');};
+$('#usersTabAnnouncements').onclick=()=>{location.hash='users/announcements';showUsersTab('announcements');};
+// Templates use WASP's existing muted backgrounds and severity-colored accents.
+const announcementTemplates=[
+  {name:'Planned downtime',title:'Scheduled maintenance',body:'WASP may be temporarily unavailable while we deploy an update. Your playlists and music remain preserved.',severity:'maintenance',opacity:0.92},
+  {name:'New music uploads',title:'New songs are available',body:'New music has been added to this server. Browse Recently added to discover the latest tracks.',severity:'upload',opacity:0.86},
+  {name:'Requests being fulfilled',title:'Your music requests are being processed',body:'We are uploading requested music. Some songs may appear gradually as the catalogue refreshes.',severity:'info',opacity:0.86},
+  {name:'Feature update',title:'WASP has been updated',body:'A new WASP update has been deployed. Refresh the page to see the latest improvements.',severity:'update',opacity:0.87},
+  {name:'Service restored',title:'Service is back online',body:'WASP maintenance has finished. Music playback and browsing should be available again.',severity:'info',opacity:0.87},
+  {name:'Urgent notice',title:'Important server notice',body:'Please check this announcement for important information about server availability.',severity:'critical',opacity:0.95}
+];
+const templatesContainer=$('#announcementTemplates');
+for(const template of announcementTemplates){const button=document.createElement('button');button.type='button';button.className='btn ghost';button.textContent=template.name;button.onclick=()=>{
+  $('#announcementTitle').value=template.title;$('#announcementBody').value=template.body;
+  $('#announcementSeverity').value=template.severity;$('#announcementOpacity').value=String(template.opacity);paintAnnouncementPreview();
+};templatesContainer.append(button);}
+function paintAnnouncementPreview(){
+  const preview=$('#announcementLivePreview');preview.dataset.severity=$('#announcementSeverity').value;
+  preview.style.setProperty('--announcement-opacity',$('#announcementOpacity').value);
+  $('#announcementOpacityValue').textContent=Math.round(Number($('#announcementOpacity').value)*100)+'%';
+  $('#announcementPreviewTitle').textContent=$('#announcementTitle').value.trim()||'Your announcement title';
+  $('#announcementPreviewBody').textContent=$('#announcementBody').value.trim()||'Your message appears here while you type.';
+}
+for(const id of ['announcementTitle','announcementBody','announcementSeverity','announcementOpacity'])
+  $('#'+id).addEventListener('input',paintAnnouncementPreview);
+paintAnnouncementPreview();
+async function loadAnnouncementHistory(){
+ const node=$('#announcementHistory');
+ try{const r=await fetch('/api/admin/announcements',{cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Unavailable');
+   node.replaceChildren();if(!d.items.length){node.textContent='No announcements sent yet.';return;}
+   for(const a of d.items){const item=document.createElement('div');item.className='announcement-history-item';
+     const heading=document.createElement('strong');heading.textContent=a.title;
+     const meta=document.createElement('small');meta.textContent=new Date(a.created_at).toLocaleString()+' · '+a.severity;
+     const body=document.createElement('p');body.textContent=a.body;
+     item.append(heading,meta,body);node.append(item);
+   }
+ }catch(e){node.textContent='Could not load announcements: '+e.message;}
+}
+$('#announcementForm').onsubmit=async e=>{
+  e.preventDefault();const btn=$('#announcementSend'),status=$('#announcementMessage');
+  const title=$('#announcementTitle').value.trim(),body=$('#announcementBody').value.trim();
+  if(!title||!body){status.textContent='Title and message are required.';return;}
+  if(!confirm('Send this announcement to signed-in users on this WASP server only?'))return;
+  btn.disabled=true;status.textContent='Sending…';
+  try{const r=await post('/api/admin/announcements',{title,body,severity:$('#announcementSeverity').value,opacity:Number($('#announcementOpacity').value)});
+    const d=await r.json();if(!r.ok)throw Error(d.error||'Could not send');
+    status.textContent='Announcement saved. Signed-in users on this server will receive it when their browser checks for updates.';
+    await loadAnnouncementHistory();
+  }catch(err){status.textContent='Unable to send: '+err.message;}finally{btn.disabled=false;}
+};
 let registeredUsers = [], usersSortKey = '', usersSortDescending = false, pendingPublishCount=0;
 const USER_COLUMNS = [
   ['username','Username','text'],['heart_songs','Heart songs','number'],
@@ -1096,14 +1154,63 @@ function showNetworkTab(section='peers'){
     $('#'+tab).setAttribute('aria-selected',String(selected===name));
     $('#'+panel).classList.toggle('hidden',selected!==name);
   }
-  if(selected==='telemetry')loadMetadataSettings();
+  if(selected==='telemetry'){loadMetadataSettings();void loadTelemetryPeerChoices();}
   if(selected==='crons'&&!cronsLoaded)loadCrons();
   if(selected==='mobile'&&!mobileBridgeLoaded)loadMobileBridgeSettings();
 }
 $('#netTabPeers').onclick=()=>{location.hash='network';showNetworkTab('peers');};
 $('#netTabMobile').onclick=()=>{location.hash='network/mobile';showNetworkTab('mobile');};
 $('#netTabTelemetry').onclick=()=>{location.hash='network/telemetry';showNetworkTab('telemetry');};
-$('#telemetryPullShortcut').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');const button=$('[data-run-cron="telemetry"]');if(button&&!button.disabled)button.click();};
+// Manual selection is managed below. Cron configuration remains independent.
+// v18.1.0: deliberate manual telemetry pull from selected managed peers.
+let telemetryPeers=[],telemetryPullBusy=false;
+async function loadTelemetryPeerChoices(){
+  const list=$('#telemetryPeerChoices');
+  try {
+    const r=await fetch('/api/admin/telemetry/peers',{cache:'no-store'});
+    const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to load managed peers');
+    const previous=new Set([...list.querySelectorAll('input:checked')].map(x=>x.value));
+    telemetryPeers=d.peers||[];
+    list.replaceChildren();
+    if(!telemetryPeers.length){list.textContent='No administrator-connected peers. Add a peer under Connected peers first.';return;}
+    for(const p of telemetryPeers){
+      const label=document.createElement('label');label.className='telemetry-peer-choice';
+      const input=document.createElement('input');input.type='checkbox';input.value=p.url;input.checked=previous.has(p.url);
+      const details=document.createElement('span');details.className='telemetry-peer-details';
+      const name=document.createElement('strong');name.textContent=p.name||p.url;
+      const url=document.createElement('small');url.textContent=p.url;
+      const state=document.createElement('small');state.textContent=p.last_error?'Last known check: unavailable':p.last_ok?'Last connected successfully':'Not yet checked';
+      details.append(name,url,state);label.append(input,details);list.append(label);
+    }
+  }catch(e){list.textContent='Unable to load peers: '+e.message;}
+}
+$('#telemetryRefreshPeers').onclick=loadTelemetryPeerChoices;
+$('#telemetrySelectAll').onclick=()=>{
+  const boxes=[...$('#telemetryPeerChoices').querySelectorAll('input[type="checkbox"]')];
+  const check=boxes.some(x=>!x.checked);for(const box of boxes)box.checked=check;
+  $('#telemetrySelectAll').textContent=check?'Deselect all peers':'Select all peers';
+};
+$('#telemetryPullSelected').onclick=async()=>{
+  if(telemetryPullBusy)return;
+  const peers=[...$('#telemetryPeerChoices').querySelectorAll('input:checked')].map(x=>x.value);
+  const status=$('#telemetryPullStatus'),progress=$('#telemetryPullProgress');
+  if(!peers.length){status.textContent='Select one or more connected peers first.';return;}
+  telemetryPullBusy=true;$('#telemetryPullSelected').disabled=true;progress.hidden=false;progress.value=0;
+  let imported=0,checked=0,errors=0,completed=0;
+  try {
+    // Each Worker request processes at most 10 peers; batch larger selections
+    // to keep serverless execution bounded while honoring Select all.
+    for(let i=0;i<peers.length;i+=10){
+      status.textContent=`Pulling telemetry: ${Math.min(i+10,peers.length)} of ${peers.length} peers requested…`;
+      const r=await post('/api/admin/telemetry/pull',{peers:peers.slice(i,i+10)});
+      const d=await r.json();if(!r.ok)throw Error(d.error||'Telemetry pull failed');
+      imported+=Number(d.imported)||0;checked+=Number(d.checked)||0;errors+=Number(d.errors)||0;
+      completed+=Math.min(10,peers.length-i);progress.value=Math.round(completed*100/peers.length);
+    }
+    status.textContent=`Finished: ${imported} new plays imported from ${checked} peer feeds; ${errors} unavailable or failed. HIVE summaries include these events without double-counting. Refresh Telemetry to see updated totals.`;
+  }catch(e){status.textContent=`Pull stopped after ${completed} peers: ${e.message}. Imported plays remain saved; retry is duplicate-safe.`;}
+  finally{telemetryPullBusy=false;$('#telemetryPullSelected').disabled=false;progress.hidden=false;}
+};
 // v18.0.7: reorganize existing controls without duplicating forms or saved
 // settings. All four panes belong to the same metadata form.
 const metadataFormNode=$('#metadataForm');
@@ -1132,7 +1239,7 @@ const peerTags=document.querySelector('#metadataPeerTagsRow');if(peerTags)metada
 const offlineAction=document.createElement('button');offlineAction.className='btn';offlineAction.type='button';offlineAction.id='metadataOfflineMatchNow';offlineAction.textContent='Match missing metadata using offline database';offlineAction.disabled=true;metadataPanels.offline.append(offlineAction);
 const offlineInfo=document.createElement('p');offlineInfo.className='muted';offlineInfo.textContent='The offline database must be fully installed before matching. File and peer metadata remain read-only.';metadataPanels.offline.append(offlineInfo);
 const onlineAction=document.createElement('button');onlineAction.className='btn ghost';onlineAction.type='button';onlineAction.id='metadataOnlineRun';onlineAction.textContent='Scan missing metadata using online APIs';metadataPanels.online.append(onlineAction);
-const sharePanel=document.querySelector('#telemetryPullShortcut')?.closest('.card');if(sharePanel){metadataPanels.telemetry.prepend(sharePanel);sharePanel.querySelector('h2').textContent='Telemetry · Pull and Push';}
+const sharePanel=document.querySelector('#telemetryManualPull')?.closest('.card');if(sharePanel){metadataPanels.telemetry.prepend(sharePanel);sharePanel.querySelector('h2').textContent='Telemetry · Pull and Push';}
 const pushAction=document.createElement('button');pushAction.type='button';pushAction.className='btn ghost';pushAction.id='telemetryPushSettingsShortcut';pushAction.textContent='Configure PUSH / sharing in Crons';metadataPanels.telemetry.prepend(pushAction);
 metadataNav.addEventListener('click',e=>{const btn=e.target.closest('[data-metadata-tab]');if(!btn)return;for(const el of metadataNav.querySelectorAll('[data-metadata-tab]'))el.setAttribute('aria-selected',String(el===btn));for(const [key,pane] of Object.entries(metadataPanels))pane.hidden=key!==btn.dataset.metadataTab;});
 metadataNav.querySelector('[data-metadata-tab="offline"]').setAttribute('aria-selected','true');

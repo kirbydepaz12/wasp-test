@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.9">
+<link rel="stylesheet" href="/style.css?v=18.1.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -108,6 +108,7 @@
     <div class="vol"><button class="ib tip" id="mute" data-tip="Mute" aria-label="Mute"><svg id="muteI"><use href="#i-vol"/></svg></button><input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"></div>
   </div>
 </div>
+<div id="serverAnnouncements" class="server-announcements" aria-live="polite" aria-label="Server announcements"></div>
 <audio id="audio" preload="none"></audio>
 
 <dialog id="accountSettingsDialog" class="account-settings-dialog" aria-labelledby="accountSettingsTitle" aria-modal="true"><div id="accountSettingsMount"></div></dialog>
@@ -150,6 +151,6 @@
   </div>
 </dialog>
 <dialog id="playlistDialog" class="playlist-dialog" aria-label="Add to playlist"><div class="playlist-dialog-content"><h2>Add to playlist</h2><label for="playlistOptions">Existing playlist</label><select id="playlistOptions"></select><div class="playlist-dialog-divider">Or create a new playlist</div><label for="newPlaylistName">New playlist name</label><input id="newPlaylistName" maxlength="80" placeholder="New playlist"><label class="playlist-check"><input type="checkbox" id="newPlaylistPublic"> Public playlist</label><p class="msg err" id="playlistMessage" role="status"></p><div class="playlist-dialog-actions"><button class="btn ghost" id="playlistCancel" type="button">Cancel</button><button class="btn" id="playlistSave" type="button">Add</button></div></div></dialog>
-<script src="/app.js?v=18.0.9" type="module"></script>
+<script src="/app.js?v=18.1.0" type="module"></script>
 </body>
 </html>

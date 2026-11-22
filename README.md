@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md">Latest feature guide (v18.0.9)</a>
+    <a href="docs/V18-1-0-SERVER-IDENTITY-TELEMETRY-ANNOUNCEMENTS.md">Latest feature guide (v18.1.0)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.0.9 — Radio Genre Wheel Paging & Compact Spacing.** See the [v18.0.9 feature guide](docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.1.0 — Server Identity, Selective Telemetry & Local Announcements.** See the [v18.1.0 feature guide](docs/V18-1-0-SERVER-IDENTITY-TELEMETRY-ANNOUNCEMENTS.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -119,7 +119,7 @@ docker compose up -d --build
 - **HIVE Radio (`/#radio`):** any visitor can generate a temporary queue by artist, genre, decade or all-time top songs; select 20, 30, 50 or a custom 1–100 tracks. Signed-in users may save it as a personal playlist.
 - **HIVE Telemetry:** listening history, music-by-decade, artist origin, genres, top tracks/albums/artists, and individual Week/Month/Year/All time filters.
 - **Metadata intelligence:** incremental embedded-tag scanning, trusted peer metadata, historical telemetry reclassification, and optional offline MusicBrainz matching on Docker.
-- **Account and admin tools:** user profile/password settings, controlled peer publishing, scheduled jobs and an in-app read-only documentation viewer.
+- **Account and admin tools:** user profile/password settings, controlled peer publishing, server-local announcements with live preview, selective HIVE telemetry pulls, scheduled jobs and an in-app read-only documentation viewer.
 
 ## Feature documentation
 
@@ -129,6 +129,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.0 — Server identity, selective telemetry, local announcements | [Managed peer selection, duplicate-safe listening-event import and user notices](docs/V18-1-0-SERVER-IDENTITY-TELEMETRY-ANNOUNCEMENTS.md) |
 | v18.0.9 — Radio genre paging polish | [Compact genre pills and mouse-wheel page navigation](docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md) |
 | v18.0.8 — Most starred and rating polish | [Restored star-ranked charts and streamlined five-star controls](docs/V18-0-8-MOST-STARRED-RANKINGS.md) |
 | v18.0.7 — Picard metadata, ratings, playlist request review | [Release dates, artist origins, five-star voting, Radio and admin refinements](docs/V18-0-7-HIVE-PICARD-RATINGS-REQUEST-REVIEW.md) |

@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.9";
-const BUILD_LABEL = "Most Starred Rankings & Rating Polish";
+const BUILD_VERSION = "18.1.0";
+const BUILD_LABEL = "Server Identity, Selective Telemetry & Announcements";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1788,6 +1788,18 @@ async function telemetryScheduleTick(env,when=Date.now(),{skipTelemetry=false}={
   return {telemetry,requests};
 }
 
+// New server-local announcement data is never federated into peer catalogues.
+// No module-level in-flight DB promises: Workers cannot reuse request-bound IO.
+const announcementTablesReady=new WeakSet();
+async function ensureAnnouncementTable(DB){
+  if(announcementTablesReady.has(DB))return;
+  await DB.prepare(`CREATE TABLE IF NOT EXISTS server_announcements (
+    id TEXT PRIMARY KEY,title TEXT NOT NULL,body TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info',opacity REAL NOT NULL DEFAULT 0.87,
+    created_at INTEGER NOT NULL)`).run();
+  announcementTablesReady.add(DB);
+}
+const announcementTypes=new Set(['info','update','maintenance','upload','warning','critical']);
 async function api(req, env, url, ctx) {
   const path = url.pathname;
   const m = req.method;
@@ -1802,6 +1814,24 @@ async function api(req, env, url, ctx) {
   if(path==='/api/admin/telemetry/sync'){
     const info=await sessionInfo(req,env);
     return telemetryApi(req,env,url,{admin:info?.role==='admin'});
+  }
+  if(path==='/api/admin/telemetry/peers' && m==='GET'){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    const peers=(await DB.prepare('SELECT id,name,url,last_ok,last_error FROM peers ORDER BY added_at').all()).results;
+    return json({peers:peers.map(p=>({id:p.id,name:p.name||p.url,url:p.url,last_ok:p.last_ok||null,last_error:p.last_error||null}))});
+  }
+  if(path==='/api/admin/telemetry/pull' && m==='POST'){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    const body=await req.json().catch(()=>null);
+    if(!Array.isArray(body?.peers)||body.peers.length<1||body.peers.length>10||body.peers.some(x=>typeof x!=='string'))
+      return json({error:'Select between 1 and 10 connected peers per request.'},400);
+    const urls=[...new Set(body.peers)];
+    const managed=(await DB.prepare('SELECT url FROM peers').all()).results.map(x=>x.url);
+    if(urls.some(x=>!managed.includes(x)))return json({error:'Only administrator-connected peers may be selected.'},400);
+    const outcome=await syncTelemetryPeers(env,{force:true,selectedUrls:urls}).catch(e=>({error:String(e.message).slice(0,160)}));
+    return json(outcome,outcome.error?502:200);
   }
 
   // Admin-only manual Cron controls. An isolated run records authentic stage progress.
@@ -1886,7 +1916,7 @@ async function api(req, env, url, ctx) {
     if (!(await isSharing(DB))) return json({ error: "This library is not shared on the network." }, 403);
     const site = await siteSettings(DB);
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM tracks").first();
-    return json({ ok: true, name: site.name, title: site.title || site.name, tracks: n || 0, version: 1 });
+    return json({ ok: true, name: site.name, title: site.name, tracks: n || 0, version: 1 });
   }
   // List of peer base URLs this instance has added (so the front-end can pull their tracks).
   if (path === "/api/network/peers" && m === "GET") {
@@ -2616,6 +2646,15 @@ async function api(req, env, url, ctx) {
   }
 
   const auth = await sessionInfo(req, env);
+  if (path === '/api/user/announcements' && m === 'GET'){
+    if(!auth || auth.role!=='user')return json({error:'User login required.'},401);
+    await ensureAnnouncementTable(DB);
+    const created=(await DB.prepare('SELECT created_at FROM user_accounts WHERE id=?').bind(auth.user_id).first())?.created_at||0;
+    const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
+      WHERE created_at>=? AND created_at>=? ORDER BY created_at DESC LIMIT 20`)
+      .bind(Date.now()-30*86400000,created).all()).results;
+    return json({items},200,{'cache-control':'private, no-store'});
+  }
   if (path.startsWith("/api/user/")) {
     // Authenticated user operations; admin credentials are handled separately.
 
@@ -2898,6 +2937,28 @@ async function api(req, env, url, ctx) {
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
   if(path==="/api/admin/mobile-bridge" || path==="/api/admin/mobile-bridge/secret") return manageMobileBridge(req,env,"admin",null);
   if(path==="/api/admin/version" && m==="GET") return json({version:BUILD_VERSION,label:BUILD_LABEL},200,{"cache-control":"no-store"});
+  if(path==='/api/admin/announcements'){
+    await ensureAnnouncementTable(DB);
+    if(m==='GET'){
+      const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
+        ORDER BY created_at DESC LIMIT 30`).all()).results;
+      return json({items});
+    }
+    if(m==='POST'){
+      const input=await req.json().catch(()=>null);
+      if(!input || typeof input.title!=='string' || typeof input.body!=='string')return json({error:'Title and message are required.'},400);
+      const title=input.title.trim(),body=input.body.trim(),severity=String(input.severity||'info');
+      const opacity=Number(input.opacity);
+      if(!title||title.length>100||!body||body.length>2000)return json({error:'Provide a title (1–100 characters) and message (1–2000 characters).'},400);
+      if(!announcementTypes.has(severity)||!Number.isFinite(opacity)||opacity<0.5||opacity>0.98)
+        return json({error:'Invalid announcement type or opacity.'},400);
+      const id=crypto.randomUUID(),now=Date.now();
+      await DB.prepare(`INSERT INTO server_announcements(id,title,body,severity,opacity,created_at)
+        VALUES(?,?,?,?,?,?)`).bind(id,title,body,severity,Math.round(opacity*100)/100,now).run();
+      return json({ok:true,id,title,created_at:now},201);
+    }
+    return json({error:'Method not allowed'},405);
+  }
   if(path==="/api/admin/docs" && m==="GET") {
     const name=url.searchParams.get("name");
     if(!name)return json(RELEASE_DOCS.map(d=>({name:d.name})),200,{"cache-control":"private, no-store"});

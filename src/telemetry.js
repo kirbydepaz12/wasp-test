@@ -311,7 +311,7 @@ function validateEvent(row) {
     text(row.genre,80),validYear(row.release_year),validCountry(row.country_code)];
 }
 
-export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
+export async function syncTelemetryPeers(env,{fetcher=fetch,force=false,selectedUrls=null}={}) {
   await ensureTelemetrySchema(env);
   const db=env.DB, now=Date.now();
   // Lease prevents concurrent scheduled workers and dashboard sync requests from
@@ -328,14 +328,18 @@ export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
     LEFT JOIN user_peer_permissions p ON p.user_id=l.user_id
     WHERE COALESCE(p.enabled,(SELECT CAST(value AS INTEGER) FROM settings WHERE key='user_publish_default'),0)=1
     AND l.last_ok IS NOT NULL AND l.last_error IS NULL ORDER BY l.created_at LIMIT 60`).all()).map(x=>x.url);
-  const available=[...new Set([...admin,...published])].filter(Boolean);
+  // Manual selection is restricted to *administrator-connected* peers. Never
+  // allow an arbitrary URL, or silently turn community links into admin peers.
+  if(selectedUrls!==null && (!Array.isArray(selectedUrls) || selectedUrls.length>10 ||
+    selectedUrls.some(x=>typeof x!=='string'||!admin.includes(x))))throw Error('Invalid administrator-connected peer selection');
+  const available=selectedUrls===null?[...new Set([...admin,...published])].filter(Boolean):[...new Set(selectedUrls)];
   // Every eligible peer gets a turn, even when the HIVE has more peers than
   // can safely be polled in one Worker invocation. Never starve later peers.
-  const saved=await db.prepare("SELECT value FROM settings WHERE key='telemetry_sync_offset'").first();
+  const saved=selectedUrls===null?await db.prepare("SELECT value FROM settings WHERE key='telemetry_sync_offset'").first():null;
   const start=available.length?(Math.max(0,Number(saved?.value)||0)%available.length):0;
   const count=Math.min(10,available.length);
   const peers=Array.from({length:count},(_,i)=>available[(start+i)%available.length]);
-  if(available.length)await db.prepare("INSERT INTO settings(key,value) VALUES('telemetry_sync_offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+  if(selectedUrls===null && available.length)await db.prepare("INSERT INTO settings(key,value) VALUES('telemetry_sync_offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .bind(String((start+count)%available.length)).run();
   let imported=0,checked=0,errors=0;
   for(const url of peers) {
@@ -381,6 +385,9 @@ export async function syncTelemetryPeers(env,{fetcher=fetch,force=false}={}) {
         .bind(url,text(e.message,120)).run().catch(()=>{});
     }
   }
+  // A successful manual import must appear immediately in HIVE summaries;
+  // summaries otherwise remain cached for up to five minutes.
+  if(imported>0)await db.prepare('DELETE FROM telemetry_summary_cache').run();
   return {checked,imported,errors,totalPeers:available.length};
 }
 

@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.9">
+<link rel="stylesheet" href="/style.css?v=18.1.0">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -167,7 +167,7 @@
       <div class="card">
         <h2>Branding</h2>
         <div class="form" style="flex-direction:column;align-items:stretch;max-width:520px">
-          <label for="siteName" class="muted">Site name (top left of the site)</label>
+          <label for="siteName" class="muted">Server name (shown to other connected WASP servers; also used at top-left)</label>
           <input id="siteName" type="text" maxlength="60" placeholder="WASP">
           <label for="brandMode" class="muted">Top-left site name format</label>
           <select id="brandMode"><option value="text">Text</option><option value="image">Custom image</option></select>
@@ -179,7 +179,7 @@
           </div>
           <span class="muted">PNG, JPEG, WebP or GIF, up to 1 MB. This image replaces the top-left text when Image is chosen.</span>
           <label class="brand-icon-toggle" for="brandIconOn"><input id="brandIconOn" type="checkbox"> Show browser icon before site name</label>
-          <label for="tabTitle" class="muted">Browser tab name</label>
+          <label for="tabTitle" class="muted">Browser tab name (local display only; not shown as the peer server name)</label>
           <input id="tabTitle" type="text" maxlength="80" placeholder="Same as the site name if empty">
           <span class="muted">Browser icon</span>
           <div class="form">
@@ -331,7 +331,14 @@
         </div>
       </div>
       <div id="netTelemetryPanel" class="hidden" role="tabpanel" aria-labelledby="netTabTelemetry">
-        <div class="card"><h2>HIVE telemetry synchronization</h2><p class="muted">Pull confirmed listening events from connected peers using the existing bounded synchronization job.</p><button class="btn ghost" type="button" id="telemetryPullShortcut">Pull telemetry from connected peers</button><p class="muted">Opens Crons and starts the Grab telemetry now action. Your automatic schedule remains unchanged.</p></div>
+        <div class="card"><h2>HIVE telemetry synchronization</h2><p class="muted">Pull confirmed listening events from connected peers using the existing bounded synchronization job.</p><div class="peer-telemetry-pull" id="telemetryManualPull">
+          <div class="form" style="justify-content:space-between"><strong>Pull telemetry now</strong><button class="btn ghost" type="button" id="telemetrySelectAll">Select all peers</button></div>
+          <p class="muted">Select administrator-connected peers to import their confirmed listening events into this server's HIVE totals. Already imported plays are never counted twice. Automatic sharing and synchronization in Crons remain unchanged.</p>
+          <div id="telemetryPeerChoices" class="telemetry-peer-choices" aria-label="Connected peers">Open this tab to load peers.</div>
+          <div class="form" style="margin-top:12px"><button class="btn" type="button" id="telemetryPullSelected">Pull telemetry from selected peers now</button><button class="btn ghost" type="button" id="telemetryRefreshPeers">Refresh peers</button></div>
+          <progress id="telemetryPullProgress" max="100" value="0" style="width:100%;margin-top:8px" hidden></progress>
+          <p id="telemetryPullStatus" class="msg" role="status" aria-live="polite"></p>
+        </div></div>
         <div class="card"><h2>Telemetry &amp; Metadata</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
           <form id="metadataForm" class="metadata-form" autocomplete="off">
             <section class="metadata-coverage" id="metadataCoverageCard" aria-labelledby="metadataCoverageTitle">
@@ -449,6 +456,11 @@
     <!-- Read-only registered user statistics -->
     <section class="pane hidden" id="s-users">
       <h1>Users</h1>
+      <div class="tabs sub" role="tablist" aria-label="User administration">
+        <button class="tab active" id="usersTabAccounts" type="button" role="tab" aria-selected="true" aria-controls="usersAccountsPanel">Registered accounts</button>
+        <button class="tab" id="usersTabAnnouncements" type="button" role="tab" aria-selected="false" aria-controls="usersAnnouncementsPanel">Announcements</button>
+      </div>
+      <div id="usersAccountsPanel" role="tabpanel" aria-labelledby="usersTabAccounts">
       <div class="card users-summary">
         <h2>Registered accounts</h2>
         <p class="muted">Grant publishing permission per account (off by default). Submitted link addresses are not shown here—only counts and how many are online. Existing anonymous activity cannot always be attributed retroactively.</p>
@@ -459,6 +471,23 @@
         <p id="usersMsg" class="msg" role="status"></p>
         <div id="usersList" aria-live="polite">Open this page to load users.</div>
       </div>
+      </div>
+      <section id="usersAnnouncementsPanel" class="hidden" role="tabpanel" aria-labelledby="usersTabAnnouncements">
+        <div class="card">
+          <h2>Send an announcement to this server's users</h2>
+          <p class="muted">Announcements are available only to signed-in users registered on this WASP server. They do not propagate through HIVE. Each browser displays new messages for 30 seconds or until dismissed.</p>
+          <div class="announcement-template-list" id="announcementTemplates" aria-label="Announcement templates"></div>
+          <form id="announcementForm" class="announcement-editor" autocomplete="off">
+            <label for="announcementTitle">Title (required)</label><input id="announcementTitle" maxlength="100" required placeholder="Announcement title">
+            <label for="announcementBody">Message (required)</label><textarea id="announcementBody" maxlength="2000" rows="5" required placeholder="Message to your registered users"></textarea>
+            <div class="form announcement-options"><label for="announcementSeverity">Type <select id="announcementSeverity"><option value="info">Information</option><option value="update">Update</option><option value="maintenance">Maintenance</option><option value="upload">New uploads</option><option value="warning">Warning</option><option value="critical">Critical</option></select></label><label for="announcementOpacity">Opacity <input id="announcementOpacity" type="range" min="0.5" max="0.98" step="0.01" value="0.87"><output id="announcementOpacityValue">87%</output></label></div>
+            <h3>Live preview</h3><div class="announcement-preview-area"><div class="wasp-announcement" id="announcementLivePreview" data-severity="info"><div class="announcement-heading"><strong id="announcementPreviewTitle">Your announcement title</strong><span aria-hidden="true">×</span></div><div id="announcementPreviewBody" class="announcement-body">Your message appears here while you type.</div></div></div>
+            <div class="form" style="margin-top:16px"><button class="btn" id="announcementSend" type="submit">Send announcement to my users</button></div>
+            <p class="msg" id="announcementMessage" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+        <div class="card"><h2>Previously sent announcements</h2><div id="announcementHistory" class="muted">Open this tab to see announcements.</div></div>
+      </section>
     </section>
   </div>
 </div>
@@ -500,6 +529,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.0.9"></script>
+<script type="module" src="/admin.js?v=18.1.0"></script>
 </body>
 </html>

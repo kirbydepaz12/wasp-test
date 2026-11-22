@@ -9,12 +9,13 @@ html=re.sub(r'<script[^>]*src="/app.js(?:\?v=[^"]+)?"[^>]*></script>','',html)
 art=(P/'art.js').read_text().replace('export const ','const ').replace('const artistArt =','const _artistArt =').replace('const albumArt =','const _albumArt =')
 radio=(P/'radio.js').read_text().replace('import { artistsOf } from "./art.js";','').replace('export function ','function ').replace('const shuffle =','const radioShuffle =').replace('shuffle(','radioShuffle(')
 bb=re.sub(r'^export function ', 'function ', (P/'sidebar-bbcode.js').read_text(), flags=re.M)
-app=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),count=3,flags=re.M)
+app=re.sub(r'^import .*?;\n','',(P/'app.js').read_text(),flags=re.M)
 # Remote iframe navigation is unavailable in sandboxed browser tests; this test
 # checks the crucial parent audio lifecycle, not the iframe's networking.
-app=app.replace("frame.src='/telemetry.html';", "frame.src='about:blank';")
+app=app.replace("frame.src='/telemetry.html?v=18.1.0';", "frame.src='about:blank';")
 app=app.replace("},location.origin);", "},'*');")
-bundle=bb+'\n'+art+'\n'+radio+'\n'+app
+builder=(P/'radio-builder.js').read_text().replace('export const ','const ').replace('export function ','function ')
+bundle=bb+'\n'+art+'\n'+radio+'\n'+builder+'\n'+app
 mock=r'''
 window.__accountHTML = '';
 window.fetch=async(input,opts={})=>{

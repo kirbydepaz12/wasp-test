@@ -1050,7 +1050,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.9';
+  frame.src='/telemetry.html?v=18.1.0';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -2777,12 +2777,58 @@ async function refreshAccount(){
   $("#accountMenu").classList.toggle("signed-in",!!currentAccount?.authenticated);
   if(!currentAccount?.authenticated)$("#accountDrop").classList.add("hidden");
   updatePublishNoticeBadges();
+  const nextUser=currentAccount?.role==='user'?currentAccount.username.toLowerCase():'';
+  if(nextUser!==announcementAccount){
+    clearTimeout(announcementTimer);announcementTimer=null;announcementVisible=false;
+    $('#serverAnnouncements').replaceChildren();announcementQueue=[];
+    announcementAccount=nextUser;announcementPollTime=0;
+  }
+  if(nextUser)void pollServerAnnouncements();
   // Keep + visible to guests; it opens a themed sign-in requirement dialog.
   $("#playlistAdd").hidden = false;
   document.querySelectorAll(".album-add").forEach(b=>b.hidden=false);
 }
 const postJSON=(url,body,method="POST")=>fetch(url,{method,headers:{"content-type":"application/json"},body:JSON.stringify(body)});
 
+// v18.1.0: browser-cached, user-specific notices originating on THIS server.
+// No peer announcements are fetched, displayed or federated.
+let announcementTimer=null,announcementPollTime=0,announcementPolling=false;
+let announcementQueue=[],announcementVisible=false,announcementAccount='';
+function announcementKey(){return 'wasp-announcements-seen-v1810:'+String(currentAccount?.username||'').toLowerCase();}
+function showNextServerAnnouncement(){
+  if(announcementVisible||!announcementQueue.length||currentAccount?.role!=='user')return;
+  const notice=announcementQueue.shift(),box=$('#serverAnnouncements');
+  const card=document.createElement('div');card.className='wasp-announcement';card.dataset.severity=notice.severity||'info';
+  card.style.setProperty('--announcement-opacity',String(Number(notice.opacity)||0.87));
+  const titleRow=document.createElement('div');titleRow.className='announcement-heading';
+  const title=document.createElement('strong');title.textContent=notice.title;
+  const close=document.createElement('button');close.type='button';close.className='announcement-close';close.setAttribute('aria-label','Dismiss announcement');close.textContent='×';
+  const body=document.createElement('div');body.className='announcement-body';body.textContent=notice.body;
+  titleRow.append(title,close);card.append(titleRow,body);box.replaceChildren(card);
+  announcementVisible=true;
+  const key=announcementKey(),seen=store.get(key,[]);
+  if(!seen.includes(notice.id))store.set(key,[...seen,notice.id].slice(-150));
+  const dismiss=()=>{clearTimeout(announcementTimer);card.remove();announcementVisible=false;announcementTimer=null;showNextServerAnnouncement();};
+  close.onclick=dismiss;
+  announcementTimer=setTimeout(dismiss,30000);
+}
+async function pollServerAnnouncements(force=false){
+  if(!currentAccount?.authenticated||currentAccount.role!=='user'||announcementPolling)return;
+  if(!force && Date.now()-announcementPollTime<60000)return;
+  announcementPolling=true;announcementPollTime=Date.now();
+  try{
+    const r=await fetch('/api/user/announcements',{cache:'no-store'});
+    if(!r.ok)return;
+    const data=await r.json();
+    const seen=new Set(store.get(announcementKey(),[]));
+    const pending=(data.items||[]).filter(a=>a?.id&&!seen.has(a.id)).reverse();
+    // Do not requeue the same notice while other notices are being displayed.
+    const queued=new Set(announcementQueue.map(a=>a.id));
+    for(const notice of pending)if(!queued.has(notice.id)){announcementQueue.push(notice);queued.add(notice.id);}
+    showNextServerAnnouncement();
+  }catch{/* A temporary connection problem must not interrupt music playback. */}
+  finally{announcementPolling=false;}
+}
 // WASP v15.0.8 — settings are an independent HTML-backed dialog. The music
 // app, audio element, current page and scroll position are never remounted.
 let accountSettingsTemplate = null;
@@ -3121,4 +3167,4 @@ paintRepeat(); paintVol(); paintReact(); paintShuffle(); renderQueue();
 load();
 
 // Approval notices are lightweight, session-specific and never cached.
-setInterval(()=>{if(document.visibilityState==='visible'&&currentAccount?.role==='user')refreshAccount();},30000);
+setInterval(()=>{if(document.visibilityState==='visible'&&currentAccount?.role==='user'){refreshAccount();void pollServerAnnouncements();}},30000);
