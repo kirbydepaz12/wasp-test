@@ -1050,7 +1050,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.8';
+  frame.src='/telemetry.html?v=18.0.9';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1542,7 +1542,7 @@ window.addEventListener("message", (e) => { // the slider (a sandboxed frame) as
 // v18.0.6: Public, anonymous HIVE Radio. Generates an ephemeral player queue,
 // never writes a playlist until an authenticated user explicitly saves it.
 let radioMode='artist',radioSession=null,radioKnownGenres={},radioGenresLoaded=false,radioGenresLoading=false;
-let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set(),radioGenrePage=0;
+let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set(),radioGenrePage=0,radioGenreWheelAt=0;
 const RADIO_GENRE_PAGE_SIZE=24;
 async function fetchRadioGenres(){
   if(radioGenresLoaded||radioGenresLoading)return;
@@ -1610,6 +1610,22 @@ function radioPage(el){
     const dot=event.target.closest('[data-radio-genre-page]');if(!dot)return;
     radioGenrePage=Number(dot.dataset.radioGenrePage)||0;radioPage(el);
   });
+  // Wheel over the genre pills moves one page per gesture. Keep normal page
+  // scrolling at the first/last genre page, and throttle trackpad momentum.
+  const genrePage=el.querySelector('.radio-genre-page');
+  genrePage?.addEventListener('wheel',event=>{
+    if(radioMode!=='genre'||event.ctrlKey)return;
+    const delta=Math.abs(event.deltaY)>=Math.abs(event.deltaX)?event.deltaY:event.deltaX;
+    if(!delta)return;
+    const pageCount=el.querySelectorAll('[data-radio-genre-page]').length;
+    const next=Math.max(0,Math.min(pageCount-1,radioGenrePage+(delta>0?1:-1)));
+    if(next===radioGenrePage)return;
+    const now=Date.now();
+    event.preventDefault();
+    if(now-radioGenreWheelAt<450)return;
+    radioGenreWheelAt=now;
+    radioGenrePage=next;radioPage(el);
+  },{passive:false});
   paintRadioGenres();
   // Native datalist popups may open beside the input. Use an accessible, limited
   // listbox anchored directly below the search field instead.

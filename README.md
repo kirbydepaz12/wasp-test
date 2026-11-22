@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-0-8-MOST-STARRED-RANKINGS.md">Latest feature guide (v18.0.8)</a>
+    <a href="docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md">Latest feature guide (v18.0.9)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.0.8 — Most Starred Rankings & Rating Polish.** See the [v18.0.8 feature guide](docs/V18-0-8-MOST-STARRED-RANKINGS.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.0.9 — Radio Genre Wheel Paging & Compact Spacing.** See the [v18.0.9 feature guide](docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -129,6 +129,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.0.9 — Radio genre paging polish | [Compact genre pills and mouse-wheel page navigation](docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md) |
 | v18.0.8 — Most starred and rating polish | [Restored star-ranked charts and streamlined five-star controls](docs/V18-0-8-MOST-STARRED-RANKINGS.md) |
 | v18.0.7 — Picard metadata, ratings, playlist request review | [Release dates, artist origins, five-star voting, Radio and admin refinements](docs/V18-0-7-HIVE-PICARD-RATINGS-REQUEST-REVIEW.md) |
 | v18.0.6 — HIVE Radio form layout | [Centered genre selection, artist suggestions and aligned controls](docs/V18-0-6-HIVE-RADIO-UI-POLISH.md) |
