@@ -29,20 +29,23 @@ function parseCommit(item,base){
     committed_at:item?.commit?.committer?.date||null,url:`${base}/commit/${sha}`};
 }
 const ghHeaders={'accept':'application/vnd.github+json','user-agent':'WASP-admin-update-checker','x-github-api-version':'2022-11-28'};
-async function queryJSON(url,fetchImpl){
-  const r=await fetchImpl(url,{headers:ghHeaders,redirect:'manual',signal:AbortSignal.timeout(7000)});
+async function queryJSON(url,fetchImpl,token=''){
+  // Never log a token or expose it through the admin status endpoint.
+  const headers=token?{...ghHeaders,authorization:`Bearer ${token}`}:{...ghHeaders};
+  const r=await fetchImpl(url,{headers,redirect:'follow',signal:AbortSignal.timeout(7000)});
   if(!r.ok){const error=new Error(r.status===403||r.status===429?'GitHub rate-limited the request':`GitHub returned HTTP ${r.status}`);error.status=r.status;throw error;}
   return r.json();
 }
-export async function fetchUpstream(channel,{fetchImpl=fetch,force=false,now=Date.now()}={}){
+export async function fetchUpstream(channel,{fetchImpl=fetch,force=false,now=Date.now(),token=''}={}){
   const src=RELEASE_SOURCES[channel];if(!src)throw new Error('Invalid release channel');
-  const prev=memory.get(channel);
+  const cacheKey=channel+(token?':authenticated':':public');
+  const prev=memory.get(cacheKey);
   if(prev && (now-prev.checked_at<UPDATE_CHECK_INTERVAL) && (!force || now-prev.checked_at<PER_USER_FORCE_MINIMUM))return prev;
   const api=`https://api.github.com/repos/${src.owner}/${src.repo}`;
   const base=`https://github.com/${src.owner}/${src.repo}`;
   // A release is optional. The default branch HEAD is authoritative for commit-only updates.
   const [releases,commits]=await Promise.allSettled([
-    queryJSON(api+'/releases?per_page=12',fetchImpl),queryJSON(api+'/commits?per_page=1',fetchImpl)
+    queryJSON(api+'/releases?per_page=12',fetchImpl,token),queryJSON(api+'/commits?per_page=1',fetchImpl,token)
   ]);
   let release=null,commit=null;
   if(releases.status==='fulfilled'&&Array.isArray(releases.value)){
@@ -52,10 +55,12 @@ export async function fetchUpstream(channel,{fetchImpl=fetch,force=false,now=Dat
   if(!release&&!commit){
     // Do not poison the cache after a GitHub outage; keep the last good snapshot briefly.
     if(prev)return {...prev,warning:'GitHub is unavailable; showing last successful check.'};
+    const allNotFound=[releases,commits].every(p=>p.status==='rejected'&&p.reason?.status===404);
+    if(allNotFound)throw new Error(`GitHub cannot access ${src.owner}/${src.repo} (HTTP 404). Confirm the repository exists and is public; for a private repository, configure GITHUB_UPDATES_TOKEN on this WASP server.`);
     throw new Error([releases,commits].filter(p=>p.status==='rejected').map(p=>p.reason.message).join('; ')||'No release or commit found');
   }
   const result={channel,repository:`${src.owner}/${src.repo}`,repository_url:base,release,commit,checked_at:now};
-  memory.set(channel,result);return result;
+  memory.set(cacheKey,result);return result;
 }
 export function releaseDecision({upstream,installedVersion,deployedSha='',baselineSha=''}){
   const running=strip(installedVersion);

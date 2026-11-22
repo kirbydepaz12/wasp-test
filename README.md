@@ -130,6 +130,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.3a — Release Updates channel hotfix | [Test channel selection, 404 handling and optional private-repository access](docs/V18-1-3A-RELEASE-UPDATES-CHANNEL-FIX.md) |
 | v18.1.3 — GitHub Release Updates | [Stable/Test channels, GitHub release and commit notifications, opt-in admin guidance](docs/V18-1-3-GITHUB-RELEASE-UPDATES.md) |
 | v18.1.2a — Compact ranking sort control | [Icon toggle beside Most starred/hearted headings](docs/V18-1-2A-COMPACT-RANKING-TOGGLE.md) |
 | v18.1.2 — Running processes, audit logs and ranking sort | [Process monitoring, admin audit log export/clear, compact Users table and most/least rankings](docs/V18-1-2-ADMIN-PROCESSES-LOGS-RANKING-SORT.md) |

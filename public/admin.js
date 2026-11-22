@@ -865,16 +865,25 @@ $('#mobileBridgeCopyUrl').addEventListener('click',async()=>{
 });
 // ---------- instance-local GitHub release/update channel ----------
 let lastReleaseCheck=null;
-let releaseRequestRunning=false;
+let savedReleaseChannel='stable';
+// Invalidate in-flight checks when an admin changes or saves a channel. A slow
+// response for Stable must never repaint the Test selection with Stable data.
+let releaseRequestSerial=0;
 const releaseRepos={stable:'https://github.com/KNDPZ/WASP',test:'https://github.com/kirbydepaz12/wasp-test'};
 const releaseAcknowledged=key=>{try{return localStorage.getItem('wasp-release-dismissed:'+key)==='1';}catch{return false;}};
+const selectedReleaseChannel=()=>document.querySelector('input[name="releaseChannel"]:checked')?.value||'stable';
+function paintReleaseRepository(channel){
+  const url=releaseRepos[channel]||releaseRepos.stable;
+  $('#releaseRepoLink').href=url;
+  $('#releaseRepoLink').textContent=url.slice('https://github.com/'.length);
+}
 function showSettingsSubtab(which='general'){
   const updates=which==='release-updates';
   $('#settingsGeneralPanel').classList.toggle('hidden',updates);
   $('#settingsUpdatesPanel').classList.toggle('hidden',!updates);
   $('#settingsTabGeneral').setAttribute('aria-selected',String(!updates));
   $('#settingsTabUpdates').setAttribute('aria-selected',String(updates));
-  if(updates)void checkReleases();
+  if(updates && (!lastReleaseCheck || selectedReleaseChannel()===savedReleaseChannel))void checkReleases();
 }
 $('#settingsTabGeneral').onclick=()=>{location.hash='settings';showSettingsSubtab('general');};
 $('#settingsTabUpdates').onclick=()=>{location.hash='settings/release-updates';showSettingsSubtab('release-updates');};
@@ -895,50 +904,91 @@ function paintReleaseAlert(info){
     node.classList.add('hidden');
   };
 }
-function paintReleaseStatus(info){
+function paintReleaseStatus(info,failed=false){
   lastReleaseCheck=info;
   const channel=info.channel==='test'?'test':'stable';
+  savedReleaseChannel=channel;
   const chosen=document.querySelector(`input[name="releaseChannel"][value="${channel}"]`);
   if(chosen)chosen.checked=true;
-  $('#releaseRepoLink').href=releaseRepos[channel];$('#releaseRepoLink').textContent=info.repository||'';
+  paintReleaseRepository(channel);
   $('#releaseInstalled').textContent='v'+(info.installed_version||'?');
-  $('#releaseLatestVersion').textContent=info.release?.tag||'No published release';
+  $('#releaseLatestVersion').textContent=failed?'Unavailable':info.release?.tag||'No published release';
   $('#releaseLatestCommit').href=info.commit?.url||releaseRepos[channel];
-  $('#releaseLatestCommit').textContent=info.commit?.short_sha||'Unavailable';
+  $('#releaseLatestCommit').textContent=failed?'Unavailable':info.commit?.short_sha||'Unavailable';
   $('#releaseLastChecked').textContent=info.checked_at?new Date(info.checked_at).toLocaleString():'—';
   const message=$('#releaseResult');
-  if(info.decision?.available){
+  if(failed){
+    $('#releaseSettingsMsg').textContent=info.error||'Could not check GitHub.';
+    message.textContent=`Could not check ${channel==='test'?'Test / Preview':'Stable / Main'}. The selected repository is saved. Existing WASP services are unaffected.`;
+  }else if(info.decision?.available){
     message.textContent=info.decision.kind==='release'?`New release: ${info.decision.version}. ${info.decision.title}`:
       `New commit available: ${info.commit?.short_sha||''} · ${info.decision.details||''}`;
   }else message.textContent=info.detection==='first-observed-commit'?
     'No newer release found. Commit-only monitoring is active from this server’s first observed GitHub commit.':'No new updates detected for this channel.';
+  if(!failed && info.warning)$('#releaseSettingsMsg').textContent=info.warning;
   paintReleaseAlert(info);
 }
+for(const option of document.querySelectorAll('input[name="releaseChannel"]'))option.addEventListener('change',()=>{
+  ++releaseRequestSerial;
+  $('#releaseCheck').disabled=false;
+  const channel=selectedReleaseChannel();
+  paintReleaseRepository(channel); // Preview the selected channel immediately.
+  $('#releaseLatestVersion').textContent='—';
+  $('#releaseLatestCommit').href=releaseRepos[channel];
+  $('#releaseLatestCommit').textContent='—';
+  $('#releaseLastChecked').textContent='—';
+  $('#adminReleaseAlert').classList.add('hidden');
+  $('#releaseResult').textContent=channel===savedReleaseChannel?'Select Check now to refresh this channel.':
+    'Channel change not yet saved. Save channel, or use Check now to save and check it.';
+  $('#releaseSettingsMsg').textContent=channel===savedReleaseChannel?'':'Unsaved channel selection.';
+});
 async function checkReleases(force=false){
-  if(releaseRequestRunning || $('#panel').classList.contains('hidden'))return;
-  releaseRequestRunning=true;$('#releaseCheck').disabled=true;
+  if($('#panel').classList.contains('hidden'))return;
+  if(selectedReleaseChannel()!==savedReleaseChannel)return;
+  const serial=++releaseRequestSerial;
+  $('#releaseCheck').disabled=true;
   if(force)$('#releaseSettingsMsg').textContent='Checking GitHub…';
   try{
     const response=await fetch('/api/admin/release-updates'+(force?'?refresh=1':''),{cache:'no-store'});
     const info=await response.json();
-    if(!response.ok)throw Error(info.error||'Could not check GitHub.');
-    paintReleaseStatus(info);
-    if(force)$('#releaseSettingsMsg').textContent='GitHub check complete.';
-  }catch(e){if(force||!lastReleaseCheck){$('#releaseSettingsMsg').textContent=e.message;$('#releaseResult').textContent='GitHub check unavailable. Existing WASP services are unaffected.';}}
-  finally{releaseRequestRunning=false;$('#releaseCheck').disabled=false;}
+    if(serial!==releaseRequestSerial)return; // Superseded by selection or another check.
+    if(info.channel!==savedReleaseChannel)throw Error('Server returned an unexpected release channel.');
+    paintReleaseStatus(info,!response.ok);
+    if(force&&response.ok)$('#releaseSettingsMsg').textContent=info.warning||'GitHub check complete.';
+  }catch(e){
+    if(serial!==releaseRequestSerial)return;
+    $('#releaseSettingsMsg').textContent=e.message;
+    $('#releaseResult').textContent='GitHub check unavailable. Existing WASP services are unaffected.';
+    $('#adminReleaseAlert').classList.add('hidden');
+  }finally{if(serial===releaseRequestSerial)$('#releaseCheck').disabled=false;}
 }
-$('#releaseSave').onclick=async()=>{
-  const channel=document.querySelector('input[name="releaseChannel"]:checked')?.value;
-  const btn=$('#releaseSave');btn.disabled=true;
-  try{const response=await post('/api/admin/release-updates',{channel},'PUT');const data=await response.json();
+async function saveReleaseChannel(force=false){
+  const channel=selectedReleaseChannel();
+  ++releaseRequestSerial; // Old checks cannot overwrite the new choice.
+  const btn=$('#releaseSave');btn.disabled=true;$('#releaseCheck').disabled=true;
+  const options=document.querySelectorAll('input[name="releaseChannel"]');
+  for(const option of options)option.disabled=true;
+  try{
+    const response=await post('/api/admin/release-updates',{channel},'PUT');
+    const data=await response.json();
     if(!response.ok)throw Error(data.error||'Could not save the channel');
-    $('#adminReleaseAlert').classList.add('hidden'); lastReleaseCheck=null;
+    savedReleaseChannel=data.channel;
+    $('#adminReleaseAlert').classList.add('hidden');lastReleaseCheck=null;
+    paintReleaseRepository(savedReleaseChannel);
     $('#releaseSettingsMsg').textContent='Release channel saved for this WASP server. No deployment changes made.';
-    await checkReleases();
-  }catch(e){$('#releaseSettingsMsg').textContent=e.message;}finally{btn.disabled=false;}
-};
-$('#releaseCheck').onclick=()=>checkReleases(true);
-setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden'))void checkReleases();},6*60*60*1000);
+    await checkReleases(force);
+  }catch(e){
+    $('#releaseSettingsMsg').textContent=e.message;
+    $('#releaseResult').textContent='Channel not saved. Existing WASP services are unaffected.';
+  }finally{
+    for(const option of options)option.disabled=false;
+    btn.disabled=false;$('#releaseCheck').disabled=false;
+  }
+}
+$('#releaseSave').onclick=()=>saveReleaseChannel();
+// Check now checks the radio selection, not a previously saved channel.
+$('#releaseCheck').onclick=()=>selectedReleaseChannel()===savedReleaseChannel?checkReleases(true):saveReleaseChannel(true);
+setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden')&&selectedReleaseChannel()===savedReleaseChannel)void checkReleases();},6*60*60*1000);
 
 // ---------- general settings: branding + advertising ----------
 let site = null;

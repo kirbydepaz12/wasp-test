@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import worker from '../src/index.js';
 import {RELEASE_SOURCES,compareVersions,fetchUpstream,releaseDecision,clearCachedChecks} from '../src/release-updates.js';
+import {writeDevVars} from '../docker/write-dev-vars.mjs';
+import {mkdtempSync,readFileSync,statSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const SHA_A='a'.repeat(40),SHA_B='b'.repeat(40),SHA_C='c'.repeat(40);
 const response=(obj,status=200)=>new Response(JSON.stringify(obj),{status,headers:{'content-type':'application/json'}});
 const fakeGithub=(sha=SHA_A,release=[])=>async url=>{
@@ -47,6 +51,30 @@ test('v18.1.3 invalid channel rejected and partial GitHub failure still checks a
  const data=await fetchUpstream('stable',{fetchImpl:mock,now:Date.now()});
  assert.equal(data.commit.sha,SHA_A);assert.equal(data.release,null);
 });
+test('v18.1.3a Test channel 404 explains inaccessible/private repository; token is used server-side and not returned',async()=>{
+ clearCachedChecks();const secret='github_pat_a-private-example';let calls=0;
+ const github=async(u,opts)=>{
+   calls++;assert.match(String(u),/^https:\/\/api\.github\.com\/repos\/kirbydepaz12\/wasp-test\//);
+   return opts.headers.authorization===`Bearer ${secret}`?fakeGithub(SHA_B)(u):response({message:'Not Found'},404);
+ };
+ await assert.rejects(()=>fetchUpstream('test',{fetchImpl:github,now:1000000}),/404.*GITHUB_UPDATES_TOKEN/);
+ const result=await fetchUpstream('test',{fetchImpl:github,token:secret,now:1000001});
+ assert.equal(result.repository,'kirbydepaz12/wasp-test');
+ assert.equal(result.commit.sha,SHA_B);
+ assert.ok(!JSON.stringify(result).includes(secret),'Never include credentials in status responses');
+ assert.equal(calls,4);
+ // Public and authenticated snapshots must not share the same cache entry.
+ await assert.rejects(()=>fetchUpstream('test',{fetchImpl:github,now:1000002}),/404/);
+});
+test('v18.1.3a optional Docker GitHub token is passed through private Wrangler dev vars with restricted file permissions',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'wasp-release-secret-'));
+ try{
+  writeDevVars({env:{GITHUB_UPDATES_TOKEN:'private-token-test'},directory:dir});
+  const file=join(dir,'.dev.vars');
+  assert.match(readFileSync(file,'utf8'),/^GITHUB_UPDATES_TOKEN="private-token-test"\n$/);
+  assert.equal(statSync(file).mode&0o777,0o600);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
 async function fixture(){
  const sqlite=new DatabaseSync(':memory:');
  class Q{constructor(sql,params=[]){this.sql=sql;this.params=params}bind(...p){return new Q(this.sql,p)}async first(){return sqlite.prepare(this.sql).get(...this.params)||null}async all(){return {results:sqlite.prepare(this.sql).all(...this.params)}}async run(){return {meta:{changes:sqlite.prepare(this.sql).run(...this.params).changes}}}}
@@ -78,5 +106,32 @@ test('v18.1.3 admin-only channel persists per server; guests cannot change it; c
   assert.equal(f.sqlite.prepare("SELECT value FROM settings WHERE key='release_update_baseline_test'").get().value,SHA_A);
   assert.equal(f.sqlite.prepare("SELECT value FROM settings WHERE key='release_update_baseline_stable'").get().value,SHA_A);
   const other=await fixture();try{assert.equal((await other.api('/api/admin/release-updates','GET',undefined,other.admin)).body.channel,'stable');}finally{other.sqlite.close();}
+ }finally{f.sqlite.close();globalThis.fetch=previous;clearCachedChecks();}
+});
+test('v18.1.3a Test repository remains selected in a failed check; credentials are never exposed',async()=>{
+ const previous=globalThis.fetch;clearCachedChecks();
+ const secret='private-token-placeholder';
+ let authenticated=false;
+ globalThis.fetch=async(u,opts)=>{
+  if(String(u).includes('/repos/kirbydepaz12/wasp-test/')){
+    if(opts.headers.authorization===`Bearer ${secret}`){authenticated=true;return fakeGithub(SHA_C)(u);}
+    return response({message:'Not Found'},404);
+  }
+  return fakeGithub(SHA_A)(u);
+ };
+ const f=await fixture();try{
+  assert.equal((await f.api('/api/admin/release-updates','PUT',{channel:'test'},f.admin)).status,200);
+  const failed=await f.api('/api/admin/release-updates','GET',undefined,f.admin);
+  assert.equal(failed.status,503);
+  assert.equal(failed.body.channel,'test');
+  assert.equal(failed.body.repository,'kirbydepaz12/wasp-test');
+  assert.match(failed.body.error,/404.*GITHUB_UPDATES_TOKEN/);
+  assert.equal(failed.body.release,undefined);
+  f.env.GITHUB_UPDATES_TOKEN=secret;
+  const working=await f.api('/api/admin/release-updates','GET',undefined,f.admin);
+  assert.equal(working.status,200);assert.equal(working.body.channel,'test');
+  assert.equal(working.body.commit.sha,SHA_C);
+  assert.equal(authenticated,true);
+  assert.ok(!JSON.stringify(working.body).includes(secret));
  }finally{f.sqlite.close();globalThis.fetch=previous;clearCachedChecks();}
 });

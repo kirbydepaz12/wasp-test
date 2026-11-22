@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 export function writeDevVars({env=process.env,directory='/app'}={}) {
   const file=path.join(directory,'.dev.vars');
-  const keys=['METADATA_SETTINGS_KEY','LASTFM_API_KEY','LASTFM_SHARED_SECRET'];
+  const keys=['METADATA_SETTINGS_KEY','LASTFM_API_KEY','LASTFM_SHARED_SECRET','GITHUB_UPDATES_TOKEN'];
   // Keep existing Spotify binding behavior; changing the Spotify encryption key here
   // could make older installations unable to decrypt their saved Spotify credentials.
   if(env.SPOTIFY_CLIENT_ID&&env.SPOTIFY_CLIENT_SECRET)keys.push('SPOTIFY_CLIENT_ID','SPOTIFY_CLIENT_SECRET');

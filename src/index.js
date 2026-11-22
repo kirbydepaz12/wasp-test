@@ -14,8 +14,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.3";
-const BUILD_LABEL = "GitHub Release Update Channels";
+const BUILD_VERSION = "18.1.3a";
+const BUILD_LABEL = "Release Updates Channel Hotfix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -3019,7 +3019,7 @@ async function api(req, env, url, ctx) {
     const deployedSha=[env.WASP_BUILD_SHA,env.WORKERS_CI_COMMIT_SHA,env.GITHUB_SHA,BUILD_COMMIT].find(v=>/^[a-f0-9]{40}$/i.test(v||''))||'';
     const base={channel,repository:`${source.owner}/${source.repo}`,repository_url:`https://github.com/${source.owner}/${source.repo}`,installed_version:BUILD_VERSION,deployed_sha:deployedSha||null};
     try{
-      const upstream=await fetchUpstream(channel,{force:url.searchParams.get('refresh')==='1'});
+      const upstream=await fetchUpstream(channel,{force:url.searchParams.get('refresh')==='1',token:env.GITHUB_UPDATES_TOKEN||''});
       const k='release_update_baseline_'+channel;
       let baselineSha=settings[k]||'';
       // Unknown build SHA: pin the first observed HEAD only once per server

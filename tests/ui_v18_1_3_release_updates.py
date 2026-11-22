@@ -57,7 +57,7 @@ def run(browser,width):
  assert p.locator('#releaseRepoLink').get_attribute('href')=='https://github.com/KNDPZ/WASP'
  assert p.locator('#adminReleaseAlertLink').get_attribute('href').endswith('/releases/tag/v18.1.4')
  p.locator('input[value="test"][name="releaseChannel"]').check();p.locator('#releaseSave').click()
- p.wait_for_function("document.querySelector('#releaseRepoLink').textContent.includes('kirbydepaz12')")
+ p.wait_for_function("window.__channel==='test' && document.querySelector('#adminReleaseAlertChannel').textContent==='Test'")
  assert p.locator('#adminReleaseAlertChannel').inner_text()=='Test'
  assert p.evaluate('window.__channel')=='test'
  assert p.locator('#adminReleaseAlert').is_visible()
