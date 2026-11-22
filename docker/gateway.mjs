@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {parseFile} from 'music-metadata';
+import {parseFileTags} from '../src/file-metadata.js';
 import {proxyToWorker} from './proxy.mjs';
 import {createPeerRelay} from './peer-relay.mjs';
 import {folderFallbackCover} from './folder-art.mjs';
@@ -20,6 +21,7 @@ const cacheFile=process.env.WASP_FOLDER_INDEX_CACHE||'/app/.wrangler/state/folde
 let persisted=await loadFileIndex(cacheFile);
 const peerRelay=createPeerRelay({worker});
 const supported=/\.(mp3|flac|m4a|mp4|ogg|opus|wav|aac)$/i;
+async function picardFromFile(full,size){if(!/\.mp3$/i.test(full))return {};let fd;try{fd=await fs.promises.open(full,'r');const len=Math.min(size,6*1024*1024);const buf=Buffer.allocUnsafe(len);const {bytesRead}=await fd.read(buf,0,len,0);return parseFileTags(buf.subarray(0,bytesRead));}catch{return {};}finally{await fd?.close().catch(()=>{});}}
 function fileId(p){return 'folder-'+crypto.createHash('sha1').update(p).digest('hex');}
 async function walk(root,found,force=false){
  let entries;try{entries=await fs.promises.readdir(root,{withFileTypes:true});}catch{return;}
@@ -31,8 +33,9 @@ async function walk(root,found,force=false){
   try{
    const stat=await fs.promises.stat(full),id=fileId(full);
    const previous=catalogue.get(id)||persisted.tracks.get(id);
-   if(!force&&unchanged(previous,stat)){found.set(id,previous);continue;}
+   if(!force&&unchanged(previous,stat)&&previous?.tagVersion===2){found.set(id,previous);continue;}
    const meta=await parseFile(full,{duration:true,skipCovers:false});
+   const tags=await picardFromFile(full,stat.size);
    const pic=meta.common.picture?.find(p=>p.type==='Cover (front)')||meta.common.picture?.[0];
    // Replaced files can lose their APIC frame; don't retain an old cover.
    covers.delete(id);
@@ -40,7 +43,7 @@ async function walk(root,found,force=false){
      covers.set(id,{data:Buffer.from(pic.data),type:pic.format});
    found.set(id,{id,path:full,mtime:stat.mtimeMs,size:stat.size,title:meta.common.title||path.parse(full).name,
     artist:meta.common.artist||meta.common.albumartist||'Unknown Artist',album:meta.common.album||'Unknown Album',
-    duration:meta.format.duration||0,track_no:meta.common.track?.no||0,release_year:meta.common.year||0,genre:meta.common.genre?.[0]||'',hasCover:covers.has(id)});
+    duration:meta.format.duration||0,track_no:meta.common.track?.no||0,release_year:tags.release_year||meta.common.year||0,genre:tags.genre||meta.common.genre?.[0]||'',original_date:tags.original_date||'',release_date:tags.release_date||'',artist_names:tags.artist_names||[],musicbrainz_artist_ids:tags.musicbrainz_artist_ids||[],artist_origins:tags.artist_origins||[],tagVersion:2,hasCover:covers.has(id)});
   }catch(e){console.warn('Skipping unreadable file',full,e.message);}
  }
 }
@@ -54,7 +57,7 @@ async function scan(){
   const found=new Map();for(const root of roots)await walk(root,found,force);
   // Never commit the cache until all changed tracks were acknowledged; a failed
   // database write must be retried on the next directory poll.
-  const changed=[...found.values()].filter(t=>force||!unchanged(catalogue.get(t.id)||persisted.tracks.get(t.id),{mtimeMs:t.mtime,size:t.size}));
+  const changed=[...found.values()].filter(t=>force||t.tagVersion!==1&&!unchanged(catalogue.get(t.id)||persisted.tracks.get(t.id),{mtimeMs:t.mtime,size:t.size})||(catalogue.get(t.id)||persisted.tracks.get(t.id))?.tagVersion!==2);
   for(let i=0;i<changed.length;i+=250){
    const response=await fetch(worker+'/api/internal/folder-index',{method:'POST',headers:{'content-type':'application/json','x-scanner-secret':secret},body:JSON.stringify({tracks:changed.slice(i,i+250)})});
    if(!response.ok)throw Error('Index update failed: '+response.status+' '+await response.text());

@@ -44,7 +44,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const audio = $("#audio");
-const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", radio: "Radio", hearts: "Most hearted", likes: "Most liked", dislikes: "Most disliked", user: "My playlists", settings: "Account settings", request: "Request" };
+const TABS = { recent: "Recently added", top: "Most listened", listened: "Recently listened", artists: "Artists", playlists: "Playlists", radio: "Radio", hearts: "Most hearted", user: "My playlists", settings: "Account settings", request: "Request" };
 // Icon assets are the original user-supplied images; dark glyphs get a light CSS treatment.
 const NAV_ICONS = Object.fromEntries(Object.keys(TABS).map((key) => [key, `/nav-icons/${key}.png`]));
 let sidebarCollapsed = store.get('sidebarCollapsed', false) === true;
@@ -655,10 +655,46 @@ let entity = { artist: {}, playlist: {} };
 let ratedPlaylistCache = []; // Locally voted peer playlists remain listed when a peer is offline.
 const ownedPlaylistIndex = new Map(); // Private playlist data is only available to the owner.
 const ecount = (type, key) => (entity[type] && has(entity[type], key) ? entity[type][key] : { hearts: 0, likes: 0, dislikes: 0 });
+// v18.0.7: five-star votes are separate from existing heart and legacy reactions.
+// Fetch only on-screen ratings and never request a complete voter ledger.
+const starCache=new Map(),starKey=(type,key)=>type+'\x1f'+key;
+function starsMarkup(type,key){
+  const state=starCache.get(starKey(type,key))||{mine:0,average:0,votes:0};
+  const mine=Math.max(0,Math.min(5,Number(state.mine)||0));
+  return `<span class="rating-stars" data-star-type="${esc(type)}" data-star-key="${esc(key)}" role="group" aria-label="Rate ${type} from one to five stars"><img class="rating-symbol" src="/star.png" alt="" aria-hidden="true">${Array.from({length:5},(_,i)=>`<button type="button" class="rate-star${i<mine?' filled':''}" data-star-value="${i+1}" aria-pressed="${i+1===mine}" aria-label="Rate ${i+1} of 5 stars" title="${i+1} of 5 stars">${i<mine?'★':'☆'}</button>`).join('')}<small class="rating-avg" title="Average rating across voters">${state.votes?Number(state.average).toFixed(1)+' ('+state.votes+')':''}</small></span>`;
+}
+let starsTimer=0,starsBusy=false;
+function scheduleStarRefresh(){clearTimeout(starsTimer);starsTimer=setTimeout(refreshVisibleStars,250);}
+async function refreshVisibleStars(){if(starsBusy)return;const nodes=[...document.querySelectorAll('.rating-stars')].slice(0,115);const entries=[...new Map(nodes.map(el=>[starKey(el.dataset.starType,el.dataset.starKey),{type:el.dataset.starType,key:el.dataset.starKey}])).values()];
+ if(!entries.length)return;starsBusy=true;
+ try{const res=await fetch('/api/stars/batch',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify({targets:entries}),cache:'no-store'});if(!res.ok)return;
+ const data=await res.json();const keys=new Map((data.items||[]).map(x=>[starKey(x.type,x.key),x]));
+ for(const target of entries)starCache.set(starKey(target.type,target.key),keys.get(starKey(target.type,target.key))||{votes:0,average:0,mine:0});
+ for(const el of nodes){const state=starCache.get(starKey(el.dataset.starType,el.dataset.starKey))||{};const mine=Number(state.mine)||0;
+  el.querySelectorAll('[data-star-value]').forEach(button=>{const n=Number(button.dataset.starValue);button.classList.toggle('filled',n<=mine);if(button.textContent!==(n<=mine?'★':'☆'))button.textContent=n<=mine?'★':'☆';button.setAttribute('aria-pressed',String(n===mine));});
+  const avg=el.querySelector('.rating-avg');if(avg){const next=state.votes?Number(state.average).toFixed(1)+' ('+state.votes+')':'';if(avg.textContent!==next)avg.textContent=next;}
+ }
+ }catch{}finally{starsBusy=false;}
+}
+async function setStarVote(button){const host=button.closest('.rating-stars'),type=host?.dataset.starType,key=host?.dataset.starKey;
+ if(!type||!key)return;const score=Number(button.dataset.starValue),prev=starCache.get(starKey(type,key))||{};
+ const stars=Number(prev.mine)===score?0:score;
+ const item={type,key,stars};
+ if(type==='track'){
+   const t=tracks.find(t=>String(t.id)===key)||peerTrackLookup.get(key)||byId[key];if(t?.origin){item.origin=registeredPeerOrigin(t.origin);item.remote_id=t.remote_id||String(t.id).split('|').at(-1);item.key=item.origin+'|'+item.remote_id;}
+ }else if(type==='artist'){const t=tracks.find(t=>t.origin&&artistsOf(t).includes(key));if(t)item.origin=registeredPeerOrigin(t.origin);
+ }else if(type==='playlist'){const p=lookupReactedPlaylist(key);if(p?.origin)item.origin=registeredPeerOrigin(p.origin);}
+ button.disabled=true;
+ try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);scheduleStarRefresh();
+ }catch(e){popup('Rating not saved',e.message||'Please retry.');}finally{button.disabled=false;}
+}
+document.addEventListener('click',e=>{const star=e.target.closest('[data-star-value]');if(!star)return;e.preventDefault();e.stopPropagation();void setStarVote(star);},true);
+const starObserver=new MutationObserver(()=>scheduleStarRefresh());
+starObserver.observe(document.querySelector('#list'),{childList:true,subtree:true});
 function reactCircles(type, key) {
   const c = ecount(type, key), m = mine[type[0] + ":" + key] || {};
   const one = ([k, icon, label, cnt]) => `<span class="rc"><button type="button" class="circ tip${m[k] ? " on" : ""}" data-ent="${type}" data-key="${esc(key)}" data-r="${k}" data-tip="${m[k] ? "Remove " + label.toLowerCase() : label}" aria-label="${label}" aria-pressed="${!!m[k]}"><svg><use href="#${icon}"/></svg></button><small>${c[cnt] || 0}</small></span>`;
-  return `<span class="rcircles" role="group" aria-label="Rate this ${type}" data-type="${type}" data-key="${esc(key)}">${[["heart", "i-heart", "Heart", "hearts"], ["like", "i-up", "Like", "likes"], ["dislike", "i-down", "Dislike", "dislikes"]].map(one).join("")}</span>`;
+  return `<span class="rcircles" role="group" aria-label="Heart and rate this ${type}" data-type="${type}" data-key="${esc(key)}">${one(["heart","i-heart","Heart","hearts"])}${starsMarkup(type,key)}</span>`;
 }
 async function reactEntity(type, key, kind) {
   const mk = type[0] + ":" + key, m = (mine[mk] ??= {}), on = !m[kind];
@@ -966,7 +1002,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.0.6';
+  frame.src='/telemetry.html?v=18.0.7';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1458,7 +1494,8 @@ window.addEventListener("message", (e) => { // the slider (a sandboxed frame) as
 // v18.0.6: Public, anonymous HIVE Radio. Generates an ephemeral player queue,
 // never writes a playlist until an authenticated user explicitly saves it.
 let radioMode='artist',radioSession=null,radioKnownGenres={},radioGenresLoaded=false,radioGenresLoading=false;
-let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set();
+let radioCount='20',radioCustomCount='20',radioArtist='',radioDecade='1980',radioSelections=new Set(),radioGenrePage=0;
+const RADIO_GENRE_PAGE_SIZE=24;
 async function fetchRadioGenres(){
   if(radioGenresLoaded||radioGenresLoading)return;
   radioGenresLoading=true;
@@ -1475,7 +1512,9 @@ function radioOptions(){
   }
   if(radioMode==='decade')return `<label class="radio-field">Decade<select id="radioDecade"><option value="pre" ${radioDecade==='pre'?'selected':''}>Pre-1960</option>${Array.from({length:Math.floor(new Date().getFullYear()/10)*10/10-1960/10+1},(_,i)=>1960+i*10).map(y=>`<option value="${y}" ${radioDecade===String(y)?'selected':''}>${y}s</option>`).join('')}</select></label><p class="muted radio-hint">Only songs with verified release years are eligible.</p>`;
   if(radioMode==='genre'){
-    const options=radioGenreOptions();return `<fieldset class="radio-genres"><legend>Choose one or more genres</legend>${options.length?options.map(g=>`<label><input type="checkbox" name="radioGenre" value="${esc(g)}" ${radioSelections.has(g)?'checked':''}>${esc(g)}</label>`).join(''):'<p class="muted">No tagged genres found. Try another mode or refresh the music catalogue.</p>'}</fieldset>`;
+    const options=radioGenreOptions();const pages=Math.max(1,Math.ceil(options.length/RADIO_GENRE_PAGE_SIZE));radioGenrePage=Math.min(radioGenrePage,pages-1);
+    const visible=options.slice(radioGenrePage*RADIO_GENRE_PAGE_SIZE,(radioGenrePage+1)*RADIO_GENRE_PAGE_SIZE);
+    return `<fieldset class="radio-genres"><legend>Choose one or more genres</legend><div class="radio-genre-page" role="group" aria-label="Genre page ${radioGenrePage+1} of ${pages}">${visible.length?visible.map(g=>`<label class="radio-genre-pill${radioSelections.has(g)?' selected':''}"><input type="checkbox" name="radioGenre" value="${esc(g)}" ${radioSelections.has(g)?'checked':''}><span>${esc(g)}</span></label>`).join(''):'<p class="muted">No tagged genres found. Try another mode or refresh the music catalogue.</p>'}</div><div class="radio-genre-pages" role="group" aria-label="Genre pages">${Array.from({length:pages},(_,i)=>`<button type="button" class="radio-genre-dot${i===radioGenrePage?' on':''}" aria-label="Genre page ${i+1}" aria-current="${i===radioGenrePage?'page':'false'}" data-radio-genre-page="${i}"></button>`).join('')}</div></fieldset>`;
   }
   return `<p class="muted radio-hint">All-time most-played tracks from the HIVE's confirmed, deduplicated telemetry. Unavailable catalogue tracks are excluded.</p>`;
 }
@@ -1502,20 +1541,26 @@ function radioPage(el){
   const genreContainer=el.querySelector('#radioSelectedGenres');
   const paintRadioGenres=()=>{
     if(!genreContainer||radioMode!=='genre')return;
-    const selections=[...el.querySelectorAll('input[name="radioGenre"]:checked')].map(c=>c.value);
-    radioSelections=new Set(selections);
+    const selections=[...radioSelections];
     genreContainer.innerHTML=selections.map(genre=>`<button type="button" class="radio-genre-chip" data-selected-genre="${esc(genre)}" aria-label="Remove ${esc(genre)} from radio"><span>${esc(genre)}</span><span class="radio-chip-x" aria-hidden="true">×</span></button>`).join('');
     genreContainer.hidden=!selections.length;
   };
   el.querySelector('#radioOptions').addEventListener('change',event=>{
-    if(event.target.matches('input[name="radioGenre"]'))paintRadioGenres();
+    if(event.target.matches('input[name="radioGenre"]')){
+      event.target.checked?radioSelections.add(event.target.value):radioSelections.delete(event.target.value);
+      event.target.closest('.radio-genre-pill')?.classList.toggle('selected',event.target.checked);paintRadioGenres();
+    }
   });
   genreContainer.addEventListener('click',event=>{
     const chip=event.target.closest('[data-selected-genre]');if(!chip)return;
     const genre=chip.dataset.selectedGenre;
     const input=[...el.querySelectorAll('input[name="radioGenre"]')].find(x=>x.value===genre);
-    if(input)input.checked=false;
-    paintRadioGenres();
+    if(input){input.checked=false;input.closest(".radio-genre-pill")?.classList.remove("selected");}
+    radioSelections.delete(genre);paintRadioGenres();
+  });
+  el.querySelector('#radioOptions').addEventListener('click',event=>{
+    const dot=event.target.closest('[data-radio-genre-page]');if(!dot)return;
+    radioGenrePage=Number(dot.dataset.radioGenrePage)||0;radioPage(el);
   });
   paintRadioGenres();
   // Native datalist popups may open beside the input. Use an accessible, limited
@@ -1556,7 +1601,7 @@ function radioPage(el){
     artistInput.addEventListener('blur',close);
   }
   el.querySelectorAll('[data-radio-mode]').forEach(b=>b.onclick=()=>{
-    const f=el.querySelector('#radioBuilder');if(f){if(f.querySelector('#radioArtist'))radioArtist=f.querySelector('#radioArtist').value.trim();radioDecade=f.querySelector('#radioDecade')?.value||radioDecade;if(radioMode==='genre')radioSelections=new Set([...f.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));}
+    const f=el.querySelector('#radioBuilder');if(f){if(f.querySelector('#radioArtist'))radioArtist=f.querySelector('#radioArtist').value.trim();radioDecade=f.querySelector('#radioDecade')?.value||radioDecade;/* radioSelections persists across genre pages */}
     radioMode=b.dataset.radioMode;radioPage(el);
   });
   el.querySelector('#radioCount').onchange=e=>{radioCount=e.target.value;el.querySelector('#radioCustomLabel').hidden=radioCount!=='custom';};
@@ -1566,7 +1611,7 @@ function radioPage(el){
     if(!Number.isInteger(count)||count<1||count>100){message.textContent='Custom radio size must be between 1 and 100.';return;}
     radioCustomCount=String(count);if(el.querySelector('#radioArtist'))radioArtist=el.querySelector('#radioArtist').value.trim();
     radioDecade=el.querySelector('#radioDecade')?.value||radioDecade;
-    if(radioMode==='genre')radioSelections=new Set([...el.querySelectorAll('input[name=radioGenre]:checked')].map(n=>n.value));
+    /* radioSelections persists across genre pages */
     if(radioMode==='artist'&&!radioArtist){message.textContent='Choose an artist.';return;}
     if(radioMode==='genre'&&!radioSelections.size){message.textContent='Choose at least one genre.';return;}
     btn.disabled=true;message.textContent='Selecting eligible songs from HIVE…';
@@ -1818,10 +1863,9 @@ function reactedPlaylists(el, tab) {
 // On playlist detail pages keep the original Heart icon + word, with
 // icon-only thumbs-up and thumbs-down. All votes belong to this server.
 function playlistReactControls(p) {
-  const type="playlist", key=p.id, c=ecount(type,key),m=mine["p:"+key]||{};
-  const heart=`<span class="rc"><button type="button" class="btn ghost playlist-heart${m.heart?' on':''}" data-ent="playlist" data-key="${esc(key)}" data-r="heart" aria-label="Heart playlist" aria-pressed="${!!m.heart}">${m.heart?'♥':'♡'} Heart</button><small>${c.hearts||0}</small></span>`;
-  const reaction=(kind,icon,label,field)=>`<span class="rc"><button type="button" class="circ tip${m[kind]?' on':''}" data-ent="playlist" data-key="${esc(key)}" data-r="${kind}" data-tip="${label}" title="${label} playlist" aria-label="${label} playlist" aria-pressed="${!!m[kind]}"><svg><use href="#${icon}"/></svg></button><small>${c[field]||0}</small></span>`;
-  return `<span class="rcircles playlist-ratings" role="group" aria-label="Rate this playlist" data-type="playlist" data-key="${esc(key)}">${heart}${reaction('like','i-up','Like','likes')}${reaction('dislike','i-down','Dislike','dislikes')}</span>`;
+  const type='playlist',key=p.id,c=ecount(type,key),m=mine['p:'+key]||{};
+  const heart=`<span class="rc"><button type="button" class="circ tip${m.heart?' on':''}" data-ent="playlist" data-key="${esc(key)}" data-r="heart" aria-label="Heart playlist" aria-pressed="${!!m.heart}"><svg><use href="#i-heart"/></svg></button><small>${c.hearts||0}</small></span>`;
+  return `<span class="rcircles playlist-ratings" role="group" aria-label="Heart and rate playlist" data-type="playlist" data-key="${esc(key)}">${heart}${starsMarkup(type,key)}</span>`;
 }
 
 function playlistHero(p,ids,subtitle){
@@ -2223,7 +2267,8 @@ function markRows() { document.querySelectorAll("#list [data-id]").forEach((r) =
 function renderQueue() {
   const up = [];
   for (let k = 1; k < queue.length && up.length < 50; k++) up.push(byId[queue[(qi + k) % queue.length]]);
-  $("#uql").textContent = qLabel;
+  const queueLabel=$("#uql");queueLabel.replaceChildren();
+  if(playlistScope?.id){const link=document.createElement('a');link.href='#playlist/'+encodeURIComponent(playlistScope.id);link.textContent=qLabel;link.title='Open playlist';queueLabel.append(link);}else queueLabel.textContent=qLabel;
   $("#uplist").innerHTML = up.length ? up.filter(Boolean).map((t) =>
     `<button class="qrow" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span></button>`).join("")
     : empty(queue.length ? "That's the last song." : "Play a song to see what's next.");
@@ -2341,6 +2386,7 @@ document.addEventListener("visibilitychange",()=>{if(!document.hidden)refreshCur
 // ---------- reactions ----------
 function paintReact() {
   const t=cur(),remote=!!t?.origin;
+  const starEl=$("#playerStars");if(starEl){starEl.innerHTML=t?starsMarkup("track",remote?registeredPeerOrigin(t.origin)+"|"+(t.remote_id||String(t.id).split("|").at(-1)):t.id):"";scheduleStarRefresh();}
   const key=t ? (remote?peerReactionKey(t):t.id):"";
   const m=(t&&mine[key])||{};
   const counts=remote?(peerReactionCounts.get(key)||{hearts:0,likes:0,dislikes:0}):t;

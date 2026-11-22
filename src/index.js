@@ -1,4 +1,4 @@
-import {metadataAdmin, metadataFeed, runMetadata, rememberFileFacts} from './hive-metadata.js';
+import {metadataAdmin, metadataFeed, runMetadata, rememberFileFacts, rememberPicardFacts} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
@@ -11,8 +11,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.0.6";
-const BUILD_LABEL = "HIVE Radio & Playlist Refinement";
+const BUILD_VERSION = "18.0.7";
+const BUILD_LABEL = "Picard Metadata, Stars & Request Review";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1128,14 +1128,23 @@ const libraryRows = async (DB) => (await DB.prepare("SELECT id, title, artist, a
 // duplicating content. An exact match is required; a matching playlist name
 // by itself never proves all its songs are available.
 function titleIndex(list){const out=new Map();for(const row of list){const key=core(row.title);if(!out.has(key))out.set(key,[]);out.get(key).push(row);}return out;}
-async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null}={}){
+// Reviewed, explicit cross-peer song matching (not automatic fuzzy replacement).
+import { suggestRequestCandidates, safeManualMatches, requestSongKey } from './request-playlist-match.js';
+function requestActiveTracks(meta){const skipped=new Set(meta?.skipped_indices||[]);return (meta?.tracks||[]).map((song,i)=>({...song,request_index:i})).filter(x=>!skipped.has(x.request_index));}
+function stableRequestSelections(before,next){
+  const old=before?.tracks||[];if(old.length!==next.length)return false;
+  return old.every((x,i)=>requestSongKey(x)===requestSongKey(next[i]));
+}
+async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null,manual_matches={}}={}){
   const {local,remote}=catalogue||await spotifyImportCatalogue(env.DB);
   const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
   const matched=[],missing=[],refs=[];let localCount=0,peerCount=0;
-  for(const song of requested){
-    const key=core(song.t);let hit=(localIndex.get(key)||[]).find(r=>sourceMatch(r,song)),isRemote=false;
+  for(const [i,song] of requested.entries()){
+    const choice=manual_matches[String(song.request_index??i)];
+    const explicit=choice&&[...local,...remote].find(r=>String(r.origin||'')===choice.origin&&String(r.remote_id||r.id)===choice.id);
+    const key=core(song.t);let hit=explicit||(localIndex.get(key)||[]).find(r=>sourceMatch(r,song)),isRemote=!!explicit?.origin;
     if(!hit){hit=(remoteIndex.get(key)||[]).find(r=>sourceMatch(r,song));isRemote=true;}
-    if(!hit){missing.push(song);continue;}
+    if(!hit){missing.push({...song,request_index:song.request_index??i});continue;}
     if(isRemote){
       peerCount++;
       const ref=register?'peer:'+await sha256(hit.origin+'\n'+hit.remote_id):'peer-match:'+hit.remote_id;
@@ -1164,7 +1173,7 @@ async function reconcileHIVERequests(env){
     }else if(req.meta){
       let meta;try{meta=JSON.parse(req.meta);}catch{continue;}
       if(!Array.isArray(meta.tracks)||!meta.tracks.length)continue;
-      const result=await matchPlaylistHIVE(env,meta.tracks,{catalogue:{local,remote}});
+      const result=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue:{local,remote},manual_matches:safeManualMatches(meta)});
       const next={...meta,matched:result.matched.length,matched_local:result.local_count,matched_peer:result.peer_count,matched_missing:result.missing,availability_checked_at:Date.now()};
       await env.DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(next),req.id).run();
       // Do not auto-close a request just because one peer reports a partial
@@ -2012,7 +2021,7 @@ async function api(req, env, url, ctx) {
           .bind(track.title,track.artist,track.album,track.track_no,track.duration,track.size,track.id),
         ...artistIndexStatements(DB,track),
       ]);
-      if(t.release_year||t.genre){await rememberTrackMetadata(env,track.id,{release_year:t.release_year,genre:t.genre}).catch(()=>{});await rememberFileFacts(env,track,{release_year:t.release_year,genre:t.genre}).catch(()=>{});}
+      if(t.release_year||t.genre){await rememberTrackMetadata(env,track.id,{release_year:t.release_year,genre:t.genre}).catch(()=>{});await rememberFileFacts(env,track,{release_year:t.release_year,genre:t.genre}).catch(()=>{});} if(t.artist_origins||t.original_date)await rememberPicardFacts(env,track,t).catch(()=>{});
     }
     return json({ok:true,indexed:body.tracks.length});
   }
@@ -2328,6 +2337,48 @@ async function api(req, env, url, ctx) {
     } catch { return json({ error: "That's already in the queue.", code: "in_queue" }, 409); }
     const { n } = await DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE status = 'active'").first();
     return json({ ok: true, position: n }, 201);
+  }
+  // v18.0.7: independent 1–5 star votes. Legacy likes/dislikes stay in the
+  // database for reversibility; they are no longer displayed or written here.
+  if(path==='/api/stars/batch' && m==='POST'){
+    const b=await req.json().catch(()=>({}));const targets=Array.isArray(b.targets)?b.targets:[];
+    if(targets.length>120||targets.some(t=>!['track','artist','playlist'].includes(t.type)||typeof t.key!=='string'||!t.key||t.key.length>512))return json({error:'Invalid rating lookup'},400);
+    await DB.prepare(`CREATE TABLE IF NOT EXISTS star_votes(target_type TEXT NOT NULL,target_key TEXT NOT NULL,voter TEXT NOT NULL,stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),updated_at INTEGER NOT NULL,PRIMARY KEY(target_type,target_key,voter))`).run();
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_star_votes_target ON star_votes(target_type,target_key)').run();
+    const visitor=req.headers.get('X-Visitor')||'';
+    const signedIn=await sessionInfo(req,env);
+    const voter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):/^[\w-]{8,64}$/.test(visitor)?await sha256(visitor):'';
+    const keys=[...new Set(targets.map(t=>t.type+'\x1f'+t.key))];if(!keys.length)return json({items:[]});
+    const ph=keys.map(()=>'?').join(',');
+    const rs=(await DB.prepare(`SELECT target_type AS type,target_key AS key,COUNT(*) AS votes,AVG(stars) AS average,MAX(CASE WHEN voter=? THEN stars ELSE 0 END) AS mine FROM star_votes WHERE target_type||char(31)||target_key IN (${ph}) GROUP BY target_type,target_key`).bind(voter,...keys).all()).results||[];
+    return json({items:rs});
+  }
+  if(path==='/api/stars' && m==='POST'){
+    const b=await req.json().catch(()=>({})),type=b.type,key=clean(b.key,512),score=Number(b.stars);
+    const visitor=req.headers.get('X-Visitor')||'';
+    if(!/^[\w-]{8,64}$/.test(visitor)||!['track','artist','playlist'].includes(type)||!key||!Number.isInteger(score)||score<0||score>5)return json({error:'Invalid star rating.'},400);
+    const origin=clean(b.origin,250).replace(/\/$/,'');
+    let trusted=false;if(origin)trusted=!!(await knownPeer(DB,origin));
+    if(type==='track'){
+      if(origin){const remoteId=clean(b.remote_id,120);if(!trusted||!remoteId||key!==origin+'|'+remoteId)return json({error:'Unknown peer track'},404);}
+      else if(!/^[\w-]{1,120}$/.test(key)||!(await DB.prepare('SELECT 1 FROM tracks WHERE id=?').bind(key).first()))return json({error:'Unknown track'},404);
+    }else if(type==='artist'){
+      if(!await libraryHasArtist(DB,key) && !trusted)return json({error:'Artist unavailable'},404);
+    }else{
+      const server=await DB.prepare('SELECT 1 FROM playlists WHERE id=?').bind(key).first();
+      const user=await DB.prepare('SELECT user_id,is_public FROM user_playlists WHERE id=?').bind(key).first();
+      const account=await sessionInfo(req,env);
+      const owned=!!user&&(user.is_public||account&&(account.role==='admin'||account.user_id===user.user_id));
+      if(!server&&!owned&&!(trusted&&key.startsWith(origin+'|')))return json({error:'Playlist unavailable'},404);
+    }
+    await DB.prepare(`CREATE TABLE IF NOT EXISTS star_votes(target_type TEXT NOT NULL,target_key TEXT NOT NULL,voter TEXT NOT NULL,stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),updated_at INTEGER NOT NULL,PRIMARY KEY(target_type,target_key,voter))`).run();
+    await DB.prepare('CREATE INDEX IF NOT EXISTS idx_star_votes_target ON star_votes(target_type,target_key)').run();
+    const signedIn=await sessionInfo(req,env);
+    const voter=signedIn?.role==='user'&&signedIn.user_id?accountReactionVoter(signedIn):await sha256(visitor);
+    if(score===0)await DB.prepare('DELETE FROM star_votes WHERE target_type=? AND target_key=? AND voter=?').bind(type,key,voter).run();
+    else await DB.prepare('INSERT INTO star_votes(target_type,target_key,voter,stars,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(target_type,target_key,voter) DO UPDATE SET stars=excluded.stars,updated_at=excluded.updated_at').bind(type,key,voter,score,Date.now()).run();
+    const row=await DB.prepare('SELECT COUNT(*) AS votes,COALESCE(AVG(stars),0) AS average FROM star_votes WHERE target_type=? AND target_key=?').bind(type,key).first();
+    return json({...row,mine:score});
   }
   // A small, public, read-only snapshot of the currently playing song's
   // reactions. Browsers poll it for near-real-time counts; no user session is
@@ -3068,6 +3119,53 @@ async function api(req, env, url, ctx) {
     }
     return json({ error: "Method not allowed." }, 405);
   }
+  // Playlist request recovery: read-only candidate search and explicit reviewed overrides.
+  if ((x=path.match(/^\/api\/admin\/requests\/([\w-]+)\/candidates$/)) && m==='GET'){
+    const row=await DB.prepare("SELECT id,kind,meta FROM requests WHERE id=? AND kind='playlist' AND status='active'").bind(x[1]).first();
+    if(!row)return json({error:'Local playlist request not found.'},404);
+    const mt=JSON.parse(row.meta||'{}'),index=Number(url.searchParams.get('index'));
+    if(!Number.isSafeInteger(index)||index<0||index>=mt.tracks?.length)return json({error:'Invalid source song index.'},400);
+    const cat=await spotifyImportCatalogue(DB),query=clean(url.searchParams.get('q'),120);
+    return json({index,source:mt.tracks[index],candidates:suggestRequestCandidates(mt.tracks[index],cat,{query,rejected:mt.rejected_candidates?.[index]||[],limit:12})});
+  }
+  if ((x=path.match(/^\/api\/admin\/requests\/([\w-]+)\/match$/)) && m==='POST'){
+    const row=await DB.prepare("SELECT * FROM requests WHERE id=? AND kind='playlist' AND status='active'").bind(x[1]).first();
+    if(!row)return json({error:'Local playlist request not found.'},404);
+    const body=await req.json().catch(()=>null),mt=JSON.parse(row.meta||'{}');
+    if(!body||!['accept','reject','clear','skip','restore','add'].includes(body.action))return json({error:'Invalid action'},400);
+    let idx=Number(body.index);
+    if(body.action==='add'){
+      if(!Array.isArray(mt.tracks)||mt.tracks.length>=1500)return json({error:'Request has too many entries'},400);
+      const t=clean(body.title,200),a=clean(body.artist,200);
+      if(!t||!a)return json({error:'Title and artist are required.'},400);
+      mt.tracks.push({t,a,manual_added:true});idx=mt.tracks.length-1;mt.total=mt.tracks.length;
+    }else{
+      if(!Number.isSafeInteger(idx)||idx<0||idx>=mt.tracks?.length)return json({error:'Invalid source song index'},400);
+      const id=clean(body.id,110),origin=clean(body.origin,300),key=origin+'|'+id;
+      if(['accept','reject'].includes(body.action)){
+        if(!id)return json({error:'Select an existing song'},400);
+        const cat=await spotifyImportCatalogue(DB),exists=[...cat.local,...cat.remote].find(t=>String(t.origin||'')===origin&&String(t.remote_id||t.id)===id);
+        if(!exists)return json({error:'Song is not available in the current HIVE catalogue. Refresh and try again.'},409);
+        if(body.action==='accept'){
+          mt.manual_matches={...safeManualMatches(mt),[idx]:{id,origin}};
+          const rejects={...(mt.rejected_candidates||{})};rejects[idx]=(rejects[idx]||[]).filter(v=>v!==key);mt.rejected_candidates=rejects;
+        }else{
+          delete (mt.manual_matches||{})[idx];
+          const rejects={...(mt.rejected_candidates||{})};rejects[idx]=[...new Set([...(rejects[idx]||[]),key])].slice(-40);mt.rejected_candidates=rejects;
+        }
+      }
+      if(body.action==='clear')delete (mt.manual_matches||{})[idx];
+      if(body.action==='skip'||body.action==='restore'){
+        const skipped=new Set(mt.skipped_indices||[]);body.action==='skip'?skipped.add(idx):skipped.delete(idx);mt.skipped_indices=[...skipped].sort((a,b)=>a-b);
+      }
+    }
+    // State and review are retained even if the admin closes the browser.
+    const cat=await spotifyImportCatalogue(DB);
+    const found=await matchPlaylistHIVE(env,requestActiveTracks(mt),{catalogue:cat,manual_matches:safeManualMatches(mt)});
+    Object.assign(mt,{matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,matched_missing:found.missing,availability_checked_at:Date.now()});
+    await DB.prepare('UPDATE requests SET meta=? WHERE id=? AND status=\'active\'').bind(JSON.stringify(mt),row.id).run();
+    return json({ok:true,index:idx,matched:mt.matched,missing:found.missing,skipped_count:(mt.skipped_indices||[]).length});
+  }
   if (path === "/api/admin/requests" && m === "GET") {
     const rows = (await DB.prepare("SELECT id, kind, title, artist, album, image, url, created_at, CASE WHEN json_valid(meta) THEN json_remove(meta,'$.tracks') ELSE NULL END AS meta, CASE WHEN json_valid(meta) THEN json_type(meta,'$.tracks')='array' ELSE 0 END AS has_tracks FROM requests WHERE status = 'active' ORDER BY created_at, rowid").all()).results;
     const local=[];
@@ -3078,7 +3176,7 @@ async function api(req, env, url, ctx) {
       local.push({...r,total:mt.total,partial:!!mt.partial,
         source_total:Number.isSafeInteger(mt.source_total)?mt.source_total:null,
         source_status:mt.source_status||'unverified',matched:checked?mt.matched:null,
-        matched_local:checked?mt.matched_local:null,matched_peer:checked?mt.matched_peer:null,missing:checked?mt.matched_missing:null,availability_checked_at:checked?mt.availability_checked_at:null});
+        matched_local:checked?mt.matched_local:null,matched_peer:checked?mt.matched_peer:null,missing:checked?mt.matched_missing:null,skipped:(mt.skipped_indices||[]).map(i=>({...mt.tracks?.[i],request_index:i})).filter(x=>x.t).slice(0,50),skipped_count:(mt.skipped_indices||[]).length,manual_match_count:Object.keys(mt.manual_matches||{}).length,availability_checked_at:checked?mt.availability_checked_at:null});
     }
     // Remote requests retain origin ownership; local admins can dismiss copies.
     const remote=await hiveRequestsForDisplay(env,{admin:true});
@@ -3118,9 +3216,10 @@ async function api(req, env, url, ctx) {
         stats={matched_local:own.size,matched_peer:other.size,availability_checked_at:Date.now()};
       }else if(row.kind==='playlist'){
         const sid=String(row.url||'').match(/^https:\/\/open\.spotify\.com\/playlist\/([A-Za-z0-9]{10,40})$/)?.[1];
-        if(sid)try{const embed=await spotifyEmbed(sid);if(embed.tracks.length>=(meta.tracks||[]).length)meta=playlistMeta(embed.tracks,embed.sourceTotal);}catch{}
+        if(sid)try{const embed=await spotifyEmbed(sid);if(embed.tracks.length>=(meta.tracks||[]).length){const replacement=playlistMeta(embed.tracks,embed.sourceTotal);
+          if(stableRequestSelections(meta,replacement.tracks))Object.assign(replacement,{manual_matches:meta.manual_matches,rejected_candidates:meta.rejected_candidates,skipped_indices:meta.skipped_indices});meta=replacement;}}catch{}
         if(!meta.tracks?.length){result.push({id,error:'Spotify song list unavailable.'});continue;}
-        const found=await matchPlaylistHIVE(env,meta.tracks,{catalogue});stats={total:meta.total,partial:!!meta.partial,source_total:meta.source_total??null,source_status:meta.source_status,matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,missing:found.missing,availability_checked_at:Date.now()};
+        const found=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue,manual_matches:safeManualMatches(meta)});stats={total:meta.total,partial:!!meta.partial,source_total:meta.source_total??null,source_status:meta.source_status,matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,missing:found.missing,availability_checked_at:Date.now()};
         Object.assign(meta,{matched:stats.matched,matched_local:stats.matched_local,matched_peer:stats.matched_peer,matched_missing:stats.missing,availability_checked_at:stats.availability_checked_at});
       }
       if(remote)await reviewRemoteRequest(env,id,{stats,done});else{
@@ -3146,14 +3245,13 @@ async function api(req, env, url, ctx) {
     }
     if (!meta || !meta.tracks || !meta.tracks.length) return json({ error: "The song list of this playlist isn't available." }, 400);
     const isCompletion=x[2]==='complete';
-    const {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,meta.tracks,{register:isCompletion});
+    let {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:false,manual_matches:safeManualMatches(meta)});
     meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;meta.matched_missing=missing;meta.availability_checked_at=Date.now();
     const reportedTotal=Number.isSafeInteger(meta.source_total)?meta.source_total:null;
     const confirmedIncomplete=reportedTotal!==null && reportedTotal>meta.tracks.length;
     let requestBody={};
     if(isCompletion)requestBody=await req.json().catch(()=>({}));
-    const acceptedUnverified=isCompletion && !!meta.partial && !confirmedIncomplete &&
-      requestBody?.confirm_unverified===true;
+    const acceptedUnverified=isCompletion && !!meta.partial && (requestBody?.confirm_unverified===true || confirmedIncomplete&&requestBody?.confirm_incomplete===true);
     if(acceptedUnverified){
       // An explicit admin decision, not a claim that all Spotify songs were
       // fetched. Persist the acknowledgement with the completed request.
@@ -3161,14 +3259,16 @@ async function api(req, env, url, ctx) {
       meta.completed_at=Date.now();
     }
     await DB.prepare("UPDATE requests SET meta = ?, image = COALESCE(image, ?) WHERE id = ?").bind(JSON.stringify(meta), r.image || null, r.id).run();
-    if(isCompletion && missing.length)return json({error:`${missing.length} Spotify songs are still missing from this server and its connected peers. Refresh after peers add them.`,matched:matched.length,missing},409);
+    if(isCompletion && missing.length && requestBody.confirm_missing!==true)return json({error:`${missing.length} Spotify songs are still missing. Confirm explicitly to finish with only available songs.`,code:'missing_confirmation',matched:matched.length,missing,requires_confirmation:true},409);
     if(isCompletion && !matched.length)return json({error:'None of the songs are available yet.'},409);
-    if(isCompletion && confirmedIncomplete)return json({error:`Spotify reports ${reportedTotal} songs, but WASP retrieved only ${meta.tracks.length}. The known missing part of the Spotify playlist cannot be finalized.`,code:'spotify_list_incomplete',source_total:reportedTotal},409);
-    if(isCompletion && meta.partial && !acceptedUnverified)return json({
+    if(isCompletion && confirmedIncomplete && requestBody.confirm_incomplete!==true)return json({error:`Spotify reports ${reportedTotal} songs, but only ${meta.tracks.length} were retrieved. Explicitly confirm completing this incomplete list.`,code:'spotify_list_incomplete',source_total:reportedTotal,requires_confirmation:true},409);
+    if(isCompletion && meta.partial && !acceptedUnverified && !confirmedIncomplete)return json({
       error:`Spotify exposed ${meta.tracks.length} songs, but its complete playlist length cannot be verified. Explicitly finalize only the retrieved songs to continue.`,
       code:'spotify_list_unverified',requires_confirmation:true,retrieved:meta.tracks.length
     },409);
     if(isCompletion){
+      ({matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:true,manual_matches:safeManualMatches(meta)}));
+      meta.completed_missing=missing;meta.completed_with_missing=!!missing.length;meta.completed_incomplete=confirmedIncomplete;await DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(meta),r.id).run();
       const pid=await completePlaylistRequest(env,r,matched);
       return json({status:'done',playlist_id:pid,total:meta.total,matched:matched.length,
         local:local_count,peer:peer_count,completed_unverified:acceptedUnverified});
@@ -3297,7 +3397,7 @@ async function api(req, env, url, ctx) {
       track_no: parseInt(meta.track, 10) || 0,
       duration: Number(meta.duration) || 0,
     };
-    t.artists = splitArtists(t.artist);
+    t.artists = Array.isArray(meta.artists)&&meta.artists.length ? meta.artists.slice(0,30).map(a=>clean(a,120)).filter(Boolean) : splitArtists(t.artist);
     const now = Date.now();
     const stmts = [DB.prepare(
       "INSERT INTO tracks (id, title, artist, album, track_no, duration, size, created_at, hash, artists) VALUES (?,?,?,?,?,?,?,?,?,?)")
@@ -3305,7 +3405,7 @@ async function api(req, env, url, ctx) {
     if (pid) stmts.push(DB.prepare("INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?,?,?)").bind(pid, id, now));
     stmts.push(...artistIndexStatements(DB,t));
     await DB.batch(stmts);
-    if(meta.year||meta.genre){await rememberTrackMetadata(env,t.id,{release_year:meta.year,genre:meta.genre}).catch(()=>{});await rememberFileFacts(env,t,{release_year:meta.year,genre:meta.genre}).catch(()=>{});}
+    if(meta.year||meta.genre){await rememberTrackMetadata(env,t.id,{release_year:meta.year,genre:meta.genre}).catch(()=>{});await rememberFileFacts(env,t,{release_year:meta.year,genre:meta.genre}).catch(()=>{});}await rememberPicardFacts(env,t,{...meta,artist_names:meta.artists}).catch(e=>console.warn('Picard fact extraction delayed:',e.message));
     await fulfil(env, t).catch(() => {}); // takes matching requests out of the queue
     // Automatically warm biography and artwork for new artists/albums. Never
     // fail an upload because a third-party artwork service is unavailable.

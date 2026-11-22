@@ -462,23 +462,64 @@ async function loadRequests() {
     return `<tr data-r="${esc(r.id)}">
     <td style="width:76px"><label class="request-pick"><input type="checkbox" data-request-select="${esc(r.id)}" aria-label="Select ${esc(r.title)}" ${selectedRequests.has(r.id)?'checked':''}>${mini(r.image, r.title)}</label></td>
     <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${r.remote&&r.origin_status==='offline'?'<br><span class="muted">Requestee is offline</span>':''}${r.remote&&r.origin_domain?`<br><span class="muted">Origin: ${esc(r.origin_domain)} · ${esc(r.origin_status||'unknown')}</span>`:''}${progress ? `<br><span class="muted">${esc(progress)}${r.availability_checked_at?` · Checked ${esc(new Date(r.availability_checked_at).toLocaleString())}`:""}</span>` : ""}</td>
-    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}<button class="btn ghost" data-a="${pl&&!r.remote?'refresh':'review-refresh'}" ${small}>Refresh</button> ${['artist','album'].includes(r.kind)?`<button class="btn ghost" data-a="review-done" ${small}>Mark as done</button> `:''}${r.remote?`<button class="btn ghost" data-a="locate" ${small}>Locate origin</button> `:''}<button class="btn ghost" data-a="${r.remote&&r.origin_status==='offline'?'hide-offline':'remove'}" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">${r.remote&&r.origin_status==='offline'?'Remove until online':'Remove'}</button></td></tr>
+    <td style="text-align:right;white-space:nowrap">${has ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}<button class="btn ghost" data-a="${pl&&!r.remote?'refresh':'review-refresh'}" ${small}>Refresh</button> ${pl&&!r.remote?`<button class="btn ghost" data-a="scan-matches" ${small}>Scan potential matches</button> <button class="btn ghost" data-a="done" ${small}>Mark as done</button>`:''} ${['artist','album'].includes(r.kind)?`<button class="btn ghost" data-a="review-done" ${small}>Mark as done</button> `:''}${r.remote?`<button class="btn ghost" data-a="locate" ${small}>Locate origin</button> `:''}<button class="btn ghost" data-a="${r.remote&&r.origin_status==='offline'?'hide-offline':'remove'}" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">${r.remote&&r.origin_status==='offline'?'Remove until online':'Remove'}</button></td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
-      ${miss ? `<ul class="missing">${r.missing.map((x) => `<li>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
+      ${miss ? `<ul class="missing req-missing">${r.missing.map((x) => `<li class="req-match-entry" data-req-index="${Number.isInteger(x.request_index)?x.request_index:-1}"><div class="req-miss-header"><span>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</span>${!r.remote?` <button class="btn ghost" data-a="match-scan" ${small}>Find potential match</button> <button class="btn ghost" data-a="match-skip" ${small}>Remove from request</button>`:''}</div><div class="req-match-results"></div></li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
+      ${!r.remote?`<div class="request-manual-add"><label>Manually add a song to this request</label><input aria-label="Song title to add" data-req-song-title placeholder="Song title"><input aria-label="Artist to add" data-req-song-artist placeholder="Artist"><button type="button" class="btn ghost" data-a="match-add" ${small}>Add and find match</button></div>`:''}
+      ${r.skipped?.length?`<details class="request-skipped"><summary>${r.skipped.length} removed request entries (restorable)</summary>${r.skipped.map(x=>`<div data-req-index="${x.request_index}">${esc(x.t)} · ${esc(x.a)} <button type="button" class="btn ghost" data-a="match-restore" ${small}>Undo removal</button></div>`).join('')}</details>`:''}
       ${knownIncomplete ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${sourceCount} songs, but only ${r.total} were retrieved. Fetch the full song list before completion; known missing Spotify songs cannot be skipped.</p>` :
         unverifiedBoundary ? `<p class="muted" style="margin:4px 0;font-size:13px">${r.total} Spotify songs retrieved; full playlist length unverified. More songs may exist beyond those retrieved.</p>` :
         r.source_status==='verified' ? `<p class="muted" style="margin:4px 0;font-size:13px">Spotify reports ${r.total} songs; all ${r.total} were retrieved.</p>` : ""}
       ${r.remote ? `<span class="muted">Completion is managed by the originating WASP.</span>` : miss ? `<span class="muted" style="font-size:13px">Waiting for ${miss} missing song${miss===1?'':'s'} before completion.</span>` :
         knownIncomplete ? `<span class="muted" style="font-size:13px">Cannot finish: complete Spotify song list unavailable.</span>` :
-        unverifiedBoundary ? `<button class="btn ghost" data-a="done-unverified" ${small}>Finalize ${r.total} retrieved songs…</button>` :
-        `<button class="btn ghost" data-a="done" ${small}>Mark as done</button>`}</td></tr>` : ""}`;
+        unverifiedBoundary ? `<span class="muted">Review and finish with the Mark as done button above.</span>` :
+        `<span class="muted">Use Mark as done above to complete.</span>`}</td></tr>` : ""}`;
   }).join("")}</tbody></table>` : "The queue is empty.";
+}
+async function requestMatchAction(id,action,index,extra={}){
+  try{const response=await post(`/api/admin/requests/${encodeURIComponent(id)}/match`,{action,index,...extra});
+    const result=await response.json();if(!response.ok)throw Error(result.error||'Request match failed');
+    openReq.add(id);await loadRequests();return result;
+  }catch(e){flashMsg('#reqMsg',e.message,true);return null;}
+}
+async function requestFindCandidates(entry,id,query=''){
+  const index=Number(entry.dataset.reqIndex),pane=entry.querySelector('.req-match-results');
+  if(index<0){pane.textContent='Refresh the request first to locate its original song index.';return;}
+  pane.textContent='Searching local music and connected peer snapshots…';
+  try{const res=await fetch(`/api/admin/requests/${encodeURIComponent(id)}/candidates?index=${index}&q=${encodeURIComponent(query)}`,{cache:'no-store'});const data=await res.json();if(!res.ok)throw Error(data.error||'Search unavailable');
+    pane.innerHTML=`<div class="req-match-search"><input aria-label="Search song or artist in library" placeholder="Search local music or HIVE peers" value="${esc(query)}"><button type="button" class="btn ghost" data-a="match-query" ${small}>Search</button></div>`+
+      (data.candidates.length?data.candidates.map(c=>`<div class="req-candidate" data-origin="${esc(c.origin)}" data-candidate-id="${esc(c.id)}"><button type="button" data-a="match-reject" class="req-reject" title="Reject this suggestion" aria-label="Reject ${esc(c.title)}">❌</button><button type="button" data-a="match-accept" class="req-accept" title="Confirm this match" aria-label="Confirm ${esc(c.title)}">✅</button><span>${esc(c.title)} <small>· ${esc(c.artist)}${c.album?' · '+esc(c.album):''} · ${c.origin?'HIVE peer':'Local'} · ${c.score}% match</small></span></div>`).join(''):`<p class="muted">No possible matches. Try a different search term, or remove this entry from the request.</p>`);
+  }catch(e){pane.textContent=e.message;}
 }
 $("#reqRows").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
   const tr = b.closest("tr"), id = tr.dataset.r || tr.dataset.d, act = b.dataset.a;
   const r = (window.__reqs || []).find((x) => x.id === id) || {};
-  if(act==='review-refresh'||act==='locate'||act==='hide-offline'||act==='review-done'){
+  const entry=b.closest('[data-req-index]'),index=entry?Number(entry.dataset.reqIndex):-1;
+  if(act==='scan-matches'){
+    openReq.add(id);const detail=document.querySelector(`tr[data-d="${CSS.escape(id)}"]`);detail?.classList.remove('hidden');
+    for(const item of [...(detail?.querySelectorAll('.req-match-entry')||[])].slice(0,8))await requestFindCandidates(item,id);
+    return;
+  }
+  if(act==='match-scan'||act==='match-query'){
+    await requestFindCandidates(entry,id,act==='match-query'?entry.querySelector('.req-match-search input')?.value||'':'');return;
+  }
+  if(act==='match-reject'||act==='match-accept'){
+    const candidate=b.closest('.req-candidate');if(!candidate)return;
+    if(act==='match-accept'&&!confirm(`Match this Spotify entry to "${candidate.querySelector('span')?.textContent?.trim()}"? Review carefully before confirming.`))return;
+    const saved=await requestMatchAction(id,act==='match-accept'?'accept':'reject',index,{origin:candidate.dataset.origin,id:candidate.dataset.candidateId});
+    if(saved)flashMsg('#reqMsg',act==='match-accept'?'Match confirmed. Request counts updated.':'Candidate rejected.');return;
+  }
+  if(act==='match-skip'||act==='match-restore'){
+    if(act==='match-skip'&&!confirm('Remove this Spotify entry from the local requested playlist? It can be restored later. This will not delete any MP3.'))return;
+    await requestMatchAction(id,act==='match-skip'?'skip':'restore',index);return;
+  }
+  if(act==='match-add'){
+    const detail=tr.closest('tr.reqdetail'),title=detail.querySelector('[data-req-song-title]')?.value.trim(),artist=detail.querySelector('[data-req-song-artist]')?.value.trim();
+    if(!title||!artist){flashMsg('#reqMsg','Enter both song title and artist.',true);return;}
+    await requestMatchAction(id,'add',0,{title,artist});return;
+  }
+  if(act==='review-refresh' ||act==='locate'||act==='hide-offline'||act==='review-done'){
     if(act==='review-done'&&!confirm(`Mark ${r.title} as done?${r.remote?' This completes it on this WASP only; the origin retains ownership.':''}`))return;
     if(act==='hide-offline'&&!confirm('Hide until the verified origin reconnects?'))return;
     await reviewRequests({'review-refresh':'refresh','review-done':'complete',locate:'locate','hide-offline':'hide-offline'}[act],[id],act==='review-done');return;
@@ -491,11 +532,11 @@ $("#reqRows").addEventListener("click", async (e) => {
   if (act === "refresh" || act === "done" || act === "done-unverified") {
     const isDone=act !== "refresh", unverified=act === "done-unverified";
     if (unverified && !confirm(`Spotify provided ${r.total} retrieved songs for "${r.title}", but WASP cannot verify the full Spotify playlist length.\n\nFinalize ONLY these ${r.total} retrieved songs? Any additional Spotify songs will NOT be included. This moves the request to Previous requests.`)) return;
-    if (act === "done" && !confirm(`Add "${r.title}" to the Playlists tab with the ${r.matched || 0} songs we have, and move it to Previous requests?`)) return;
+    if (act === "done" && !confirm(`Finalize "${r.title}" with ${r.matched || 0} available songs and ${r.missing?.length||0} known missing?\n\nMissing songs will not be added now. You can add them later. This moves the request to Previous requests.${r.partial?'\n\nSpotify may have withheld additional songs not in the retrieved list.':''}`)) return;
     b.disabled = true; const label = b.textContent; b.textContent = isDone ? "Working…" : "Refreshing…";
     try {
       const res = await fetch(`/api/admin/requests/${id}/${isDone ? "complete" : "refresh"}`, {
-        method: "POST", ...(unverified ? {headers:{"content-type":"application/json"},body:JSON.stringify({confirm_unverified:true})} : {})
+        method: "POST", ...(isDone ? {headers:{"content-type":"application/json"},body:JSON.stringify({confirm_unverified:true,confirm_incomplete:true,confirm_missing:true})} : {})
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { flashMsg("#reqMsg", j.error || `${isDone ? "Completion" : "Refresh"} failed (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}).`, true); return; }
@@ -1063,6 +1104,41 @@ $('#netTabPeers').onclick=()=>{location.hash='network';showNetworkTab('peers');}
 $('#netTabMobile').onclick=()=>{location.hash='network/mobile';showNetworkTab('mobile');};
 $('#netTabTelemetry').onclick=()=>{location.hash='network/telemetry';showNetworkTab('telemetry');};
 $('#telemetryPullShortcut').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');const button=$('[data-run-cron="telemetry"]');if(button&&!button.disabled)button.click();};
+// v18.0.7: reorganize existing controls without duplicating forms or saved
+// settings. All four panes belong to the same metadata form.
+const metadataFormNode=$('#metadataForm');
+const metadataSections=[...metadataFormNode.querySelectorAll(':scope > section')];
+const metadataNav=document.createElement('div');metadataNav.className='metadata-subtabs';metadataNav.setAttribute('role','tablist');metadataNav.setAttribute('aria-label','Telemetry and metadata sections');
+const metadataPanels={};
+for(const [key,label] of [['offline','Offline Metadata'],['online','Online Metadata'],['telemetry','Telemetry'],['others','Others']]){
+ const btn=document.createElement('button');btn.type='button';btn.textContent=label;btn.dataset.metadataTab=key;btn.className='btn ghost';btn.setAttribute('role','tab');metadataNav.append(btn);
+ const pane=document.createElement('div');pane.dataset.metadataPane=key;pane.className='metadata-subpane';pane.setAttribute('role','tabpanel');pane.hidden=key!=='offline';metadataPanels[key]=pane;metadataFormNode.append(pane);
+}
+metadataFormNode.before(metadataNav);
+[metadataSections[1]].forEach(el=>metadataPanels.offline.append(el));
+[metadataSections[2],metadataSections[3],metadataSections[4]].forEach(el=>metadataPanels.online.append(el));
+metadataPanels.telemetry.append(metadataSections[0]);
+[metadataSections[5],metadataSections[6]].forEach(el=>metadataPanels.others.append(el));
+// Keep Save settings and the status message visible on every metadata tab.
+const saveActions=metadataSections[5]?.querySelector('.metadata-actions:has(button[type="submit"])');
+const saveStatus=document.querySelector('#metadataStatus');
+const metadataFooter=document.createElement('div');metadataFooter.className='metadata-global-footer';
+if(saveActions)metadataFooter.append(saveActions);
+if(saveStatus)metadataFooter.append(saveStatus);
+metadataFormNode.append(metadataFooter);
+// Peer-tag extraction is a form of offline metadata enrichment.
+const peerTags=document.querySelector('#metadataPeerTagsRow');if(peerTags)metadataPanels.offline.append(peerTags);
+
+const offlineAction=document.createElement('button');offlineAction.className='btn';offlineAction.type='button';offlineAction.id='metadataOfflineMatchNow';offlineAction.textContent='Match missing metadata using offline database';offlineAction.disabled=true;metadataPanels.offline.append(offlineAction);
+const offlineInfo=document.createElement('p');offlineInfo.className='muted';offlineInfo.textContent='The offline database must be fully installed before matching. File and peer metadata remain read-only.';metadataPanels.offline.append(offlineInfo);
+const onlineAction=document.createElement('button');onlineAction.className='btn ghost';onlineAction.type='button';onlineAction.id='metadataOnlineRun';onlineAction.textContent='Scan missing metadata using online APIs';metadataPanels.online.append(onlineAction);
+const sharePanel=document.querySelector('#telemetryPullShortcut')?.closest('.card');if(sharePanel){metadataPanels.telemetry.prepend(sharePanel);sharePanel.querySelector('h2').textContent='Telemetry · Pull and Push';}
+const pushAction=document.createElement('button');pushAction.type='button';pushAction.className='btn ghost';pushAction.id='telemetryPushSettingsShortcut';pushAction.textContent='Configure PUSH / sharing in Crons';metadataPanels.telemetry.prepend(pushAction);
+metadataNav.addEventListener('click',e=>{const btn=e.target.closest('[data-metadata-tab]');if(!btn)return;for(const el of metadataNav.querySelectorAll('[data-metadata-tab]'))el.setAttribute('aria-selected',String(el===btn));for(const [key,pane] of Object.entries(metadataPanels))pane.hidden=key!==btn.dataset.metadataTab;});
+metadataNav.querySelector('[data-metadata-tab="offline"]').setAttribute('aria-selected','true');
+$('#telemetryPushSettingsShortcut').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');document.querySelector('#cron-telemetry')?.scrollIntoView({block:'center'});};
+$('#metadataOfflineMatchNow').onclick=()=>$('#metadataScan').click();
+$('#metadataOnlineRun').onclick=()=>{if(!metadataReady||metadataDirty){metadataStatus('Save your metadata settings first.',true);return;}$('#metadataForm').dispatchEvent(new CustomEvent('metadata-online-run'));};
 const metadataFields={lastfm:'metadataLastfm',musicbrainz:'metadataMusicbrainz',enabled:'metadataEnabled',fallback:'metadataFallback',trustPeers:'metadataTrust',shareLastfm:'metadataShareLastfm',wikidata:'metadataWikidata',prioritizePlayed:'metadataPriority',readPeerTags:'metadataPeerTags',offlineFallback:'metadataOfflineFallback'};
 let metadataBusy=false,metadataDirty=false,metadataReady=false,metadataLoading=null,metadataRuntime='cloudflare',metadataScanState='idle',metadataPollBusy=false,metadataLastMetrics=0;
 const metadataStatus=(text,error=false)=>{const el=$('#metadataStatus');el.textContent=text;el.classList.toggle('err',error);};
@@ -1074,7 +1150,7 @@ function renderMetadataScan(d){
  if(d.runtime){metadataRuntime=d.runtime;$('#metadataRuntime').textContent=metadataRuntime==='docker'?'Docker · local metadata processing':'Cloudflare · bounded resource mode';$('#metadataCloudWarning').classList.toggle('hidden',metadataRuntime!=='cloudflare');}
  $('#metadataPeerTagsRow').classList.toggle('hidden',metadataRuntime!=='docker');
  $('#metadataOfflinePanel').classList.toggle('hidden',metadataRuntime!=='docker');
- if(metadataRuntime!=='docker')return;
+ if(metadataRuntime!=='docker'){offlineAction.disabled=true;return;}
  const fs=d.fileScan;if(fs){$('#metadataFileProgress').classList.remove('hidden');const done=Number(fs.processed)||0,left=Number(fs.remaining)||0;$('#metadataFileBar').value=fs.state==='complete'?100:done+left?100*done/(done+left):0;$('#metadataFileText').textContent=`${done.toLocaleString()} files checked · ${left.toLocaleString()} pending · ${fs.verified||0} tag fields indexed · ${fs.errors||0} file read errors · ${fs.pendingRetries||0} awaiting retry`;}
  const s=d.scan||{state:'idle'};metadataScanState=s.state||'idle';const active=['running','paused'].includes(metadataScanState);$('#metadataScanControls').classList.toggle('hidden',!active);$('#metadataScanProgress').classList.toggle('hidden',metadataScanState==='idle');$('#metadataScan').textContent=metadataScanState==='paused'?'Resume scan':metadataScanState==='running'?'Scanning metadata…':'Scan missing metadata';$('#metadataPause').textContent='Pause scan';$('#metadataPause').disabled=metadataBusy||metadataScanState!=='running';$('#metadataStop').disabled=metadataBusy||!active;$('#metadataScan').disabled=metadataBusy||metadataScanState==='running';$('#metadataRescanFiles').disabled=metadataBusy||metadataScanState==='running';
  const n=Number(s.processed)||0,left=Number(s.remaining)||0,bar=$('#metadataScanBar');if(metadataScanState==='running'&&['discovering','offline','offline download'].includes(s.phase))bar.removeAttribute('value');else bar.value=metadataScanState==='complete'?100:(n+left?100*n/(n+left):0);
@@ -1086,7 +1162,7 @@ async function pollMetadataScan(){if(metadataPollBusy||metadataBusy||metadataRun
 setInterval(pollMetadataScan,5000);
 let offlineBusy=false,offlineLoading=false;
 const offlineGiB=n=>Number.isFinite(n)?(n/1073741824).toFixed(1)+' GiB':'unknown';
-function renderOffline(d){
+function renderOffline(d){offlineAction.disabled=!d.installed?.version||metadataBusy;
  const active=!!d.active,installed=d.installed,stage=d.state||'not-installed',bar=$('#metadataOfflineBar');
  if(stage==='downloading'&&d.totalBytes>0)bar.value=Math.min(100,100*d.bytes/d.totalBytes);
  else if(stage==='indexing'&&d.totalUncompressedBytes>0)bar.value=Math.min(100,100*d.uncompressedBytes/d.totalUncompressedBytes);
@@ -1111,6 +1187,11 @@ $('#metadataForm').addEventListener('submit',async e=>{e.preventDefault();if(met
 $('#metadataForm').addEventListener('click',async e=>{const provider=e.target.dataset.metadataTest;if(!provider&&!['metadataRun','metadataScan','metadataPause','metadataStop','metadataPull','metadataRescanFiles'].includes(e.target.id))return;if(metadataBusy)return;if(!metadataReady){metadataStatus('Settings could not be loaded. Reopen the Telemetry tab and retry.',true);return;}if(!provider&&metadataDirty&&!['metadataPause','metadataStop'].includes(e.target.id)){metadataStatus('Save your settings before running enrichment.',true);$('#metadataCoverageStatus').textContent='Save your settings below before scanning.';return;}if(e.target.id==='metadataRescanFiles'&&!confirm('Rescan all file metadata? Original music files will remain unchanged. Stop the active scanner first.'))return;const scanAction=metadataRuntime==='docker'?({metadataScan:'start',metadataPause:'pause',metadataStop:'stop',metadataRescanFiles:'rescan-files'}[e.target.id]):null;
 if(scanAction){metadataLock(true);try{const d=await metadataResponse(await post('/api/admin/telemetry/metadata/'+scanAction,{}));renderMetadataScan({scan:d});}catch(err){metadataStatus(err.message,true);}finally{metadataLock(false);}return;}
 const pull=e.target.id==='metadataPull';metadataLock(true);if(provider)providerStatus(provider,'Testing…');else{$('#metadataProgressWrap').classList.remove('hidden');$('#metadataProgress').removeAttribute('value');$('#metadataProgressText').textContent='Running a bounded metadata batch…';metadataStatus('Running batch…');$('#metadataCoverageStatus').textContent='Scanning a bounded batch…';}try{const body=provider?{provider,...(provider==='lastfm'?{apiKey:$('#metadataKey').value}:{contact:$('#metadataContact').value})}:{};const d=await metadataResponse(await post('/api/admin/telemetry/metadata/'+(provider?'test':pull?'pull':'run'),body));if(provider){providerStatus(provider,d.source==='entered'?'Connection successful · entered value, not saved':'Connection successful · saved configuration','ok');}else{const skipped=d.skipped||d.disabled,failed=Number(d.errors)>0||!!d.error;const message=skipped?((d.reason||'Batch skipped')+(d.retryAt?' · retry after '+new Date(d.retryAt).toLocaleTimeString():'')):d.error||`Batch complete: ${d.verified||0} verified, ${d.imported||0} imported, ${d.errors||0} errors.`;$('#metadataProgress').value=skipped||failed?0:100;$('#metadataProgressText').textContent=message;metadataStatus(message,failed);$('#metadataCoverageStatus').textContent=message+(skipped?'':' Enable scheduled enrichment to continue automatically.');await loadMetadataSettings({force:true});}}catch(e){if(provider)providerStatus(provider,e.message,'err');else{$('#metadataProgress').value=0;$('#metadataProgressText').textContent='Batch not confirmed complete.';$('#metadataCoverageStatus').textContent=e.message;metadataStatus(e.message,true);}}finally{metadataLock(false);}});
+$('#metadataForm').addEventListener('metadata-online-run',async()=>{
+ if(metadataBusy||!metadataReady||metadataDirty)return;metadataLock(true);metadataStatus('Scanning online metadata in a bounded batch…');
+ try{const d=await metadataResponse(await post('/api/admin/telemetry/metadata/online-scan',{}));const msg=d.error||d.skipped?d.error||d.reason:`Online batch finished · ${d.verified||0} verified · ${d.errors||0} errors`;metadataStatus(msg,!!d.error);await loadMetadataSettings({force:true});}
+ catch(e){metadataStatus(e.message,true);}finally{metadataLock(false);}
+});
 $('#netTabCrons').onclick=()=>{location.hash='network/crons';showNetworkTab('crons');};
 function cronJobTemplate(key){
   const id="cron-"+key;

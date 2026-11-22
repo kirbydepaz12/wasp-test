@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.0.6">
+<link rel="stylesheet" href="/style.css?v=18.0.7">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -332,7 +332,7 @@
       </div>
       <div id="netTelemetryPanel" class="hidden" role="tabpanel" aria-labelledby="netTabTelemetry">
         <div class="card"><h2>HIVE telemetry synchronization</h2><p class="muted">Pull confirmed listening events from connected peers using the existing bounded synchronization job.</p><button class="btn ghost" type="button" id="telemetryPullShortcut">Pull telemetry from connected peers</button><p class="muted">Opens Crons and starts the Grab telemetry now action. Your automatic schedule remains unchanged.</p></div>
-        <div class="card"><h2>HIVE metadata intelligence</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
+        <div class="card"><h2>Telemetry &amp; Metadata</h2><p class="muted">Enrich existing and new listening history in bounded batches. No metadata API is called when listeners open Telemetry. API keys stay on this server.</p>
           <form id="metadataForm" class="metadata-form" autocomplete="off">
             <section class="metadata-coverage" id="metadataCoverageCard" aria-labelledby="metadataCoverageTitle">
               <h3 id="metadataCoverageTitle">Metadata coverage</h3>
@@ -500,6 +500,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.0.6"></script>
+<script type="module" src="/admin.js?v=18.0.7"></script>
 </body>
 </html>
