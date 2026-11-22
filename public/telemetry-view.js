@@ -5,7 +5,7 @@ const safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 const n=v=>Number(v||0).toLocaleString();
 const clip=s=>String(s||'').slice(0,190);
 function localToday(){const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
-const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0};
+const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0,rankingSort:'most'};
 const names={top:'Most listened',hearts:'Most hearted',stars:'Most starred',likes:'Most liked',dislikes:'Most disliked'};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const tagColors=['#c8f169','#49d8be','#7ba7ff','#a88bff','#ffba67','#ec86b6','#62bfed','#89b8a0'];
@@ -253,12 +253,23 @@ async function showHive({quiet=false,keep=false}={}){
   finally{if(request===state.request)telemetryBusy=false;}
   resized();
 }
-function showRanking(){++state.request;telemetryBusy=false;const rows=state.items;const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
-  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':state.mode==='stars'?'Ranked by total stars given on this WASP server. Average rating and number of votes appear on each item.':'Reactions recorded for local and available peer music.'}</p></div></div>
+function showRanking(){
+  ++state.request;telemetryBusy=false;
+  const rankable=['stars','hearts'].includes(state.mode);
+  const sorted=[...state.items].sort((a,b)=>{
+    const av=Number(a.score)||0,bv=Number(b.score)||0;
+    return (state.rankingSort==='least'?av-bv:bv-av)||String(a.title||'').localeCompare(String(b.title||''));
+  });
+  const rows=rankable?sorted:state.items;
+  const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
+  const sortLabel=state.mode==='stars'?'stars':'hearts';
+  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':state.mode==='stars'?'Ranked by total stars given on this WASP server. Average rating and number of votes appear on each item.':'Reactions recorded for local and available peer music.'}</p></div>
+    ${rankable?`<label class="ranking-sort-label" for="rankingSort">Sort by<select id="rankingSort" aria-label="Sort ${sortLabel} ranking"><option value="most" ${state.rankingSort==='most'?'selected':''}>Most ${sortLabel}</option><option value="least" ${state.rankingSort==='least'?'selected':''}>Least ${sortLabel}</option></select></label>`:''}</div>
     ${rows.length?`<div class="browse-grid">${rows.map((r,i)=>`<button type="button" class="browse-tile" data-kind="${safe(r.kind)}" data-id="${safe(r.id)}"><span class="picture">${r.cover?`<img loading="lazy" src="${safe(r.cover)}" alt="" onerror="this.style.display='none'">`:''}</span><b>${safe(r.title)}</b><small>${safe(r.subtitle||'')}</small><small>${state.mode==='stars'?`★ ${n(r.score)} stars · ${Number(r.average||0).toFixed(1)}/5 · ${n(r.votes)} vote${Number(r.votes)===1?'':'s'}`:n(r.score)+' '+safe(r.scoreLabel||'votes')}</small></button>`).join('')}</div>`:
       '<p class="message">Nothing here yet. Results appear when songs are played or rated.</p>'}`;
   resized();
 }
+
 function resized(){requestAnimationFrame(()=>tell('wasp:telemetry-height',{height:Math.ceil(document.body.scrollHeight)}));}
 function movePeriod(delta){
   if(state.period==='all')return;
@@ -285,6 +296,7 @@ root.addEventListener('focusin',e=>{
 });
 root.addEventListener('focusout',()=>{showTooltip(null,'');updateTagFocus(null);});
 root.addEventListener('change',e=>{
+  if(e.target.id==='rankingSort'){state.rankingSort=e.target.value==='least'?'least':'most';showRanking();tell('wasp:telemetry-rank-sort',{sort:state.rankingSort});return;}
   if(e.target.id==='year')state.year=int(e.target.value,2000,2100);
   else if(e.target.id==='month')state.month=int(e.target.value,1,12);
   else if(e.target.id==='scope')state.scope=e.target.value==='local'?'local':'hive';
@@ -310,7 +322,9 @@ window.addEventListener('message',event=>{
   if(event.origin!==location.origin||event.source!==window.parent||event.data?.type!=='wasp:telemetry-data')return;
   const data=event.data;
   const wasTelemetry=state.mode==='top'&&state.sub==='telemetry';
-  state.mode=['top','hearts','stars','likes','dislikes'].includes(data.mode)?data.mode:'top';
+  const nextMode=['top','hearts','stars','likes','dislikes'].includes(data.mode)?data.mode:'top';
+  if(state.mode!==nextMode||state.sub!==data.sub)state.rankingSort='most';
+  state.mode=nextMode;
   state.sub=typeof data.sub==='string'?data.sub:'ranked';
   state.items=Array.isArray(data.items)?data.items.slice(0,100):[];
   state.query=String(data.query||'');

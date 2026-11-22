@@ -18,7 +18,7 @@ const mini = (src, label) => `<span class="art" data-i="${esc((label || "?").tri
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
 
 // ---------- sections (left menu) ----------
-const PANES = { collection: "Music collection", duplicates: "Duplicate management", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network", danger: "Danger", users: "Users", docs: "Update documentations" };
+const PANES = { collection: "Music collection", duplicates: "Duplicate management", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network, Metadata, Telemetry", processes: "Running processes", danger: "Danger", users: "Users & Announcements", docs: "Update documentations" };
 function showPane() {
   const route = location.hash.slice(1);
   const section = route.split("/")[0];
@@ -28,6 +28,7 @@ function showPane() {
   adminPublishNotificationBadge(pendingPublishCount);
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
   if (k === "duplicates") loadDuplicates();
+  if (k === "processes") showOperationsTab(route.split("/")[1] === "logs" ? "logs" : "running");
   if (k === "users") showUsersTab(route.split("/")[1] === "announcements" ? "announcements" : "accounts");
   $("#docsNav").setAttribute("aria-current",k==="docs"?"page":"false");
   if (k === "docs") loadDocs();
@@ -88,11 +89,11 @@ $('#announcementForm').onsubmit=async e=>{
   e.preventDefault();const btn=$('#announcementSend'),status=$('#announcementMessage');
   const title=$('#announcementTitle').value.trim(),body=$('#announcementBody').value.trim();
   if(!title||!body){status.textContent='Title and message are required.';return;}
-  if(!confirm('Send this announcement to signed-in users on this WASP server only?'))return;
+  if(!confirm('Send this announcement to everyone visiting this WASP server?'))return;
   btn.disabled=true;status.textContent='Sending…';
   try{const r=await post('/api/admin/announcements',{title,body,severity:$('#announcementSeverity').value,opacity:Number($('#announcementOpacity').value)});
     const d=await r.json();if(!r.ok)throw Error(d.error||'Could not send');
-    status.textContent='Announcement saved. Signed-in users on this server will receive it when their browser checks for updates.';
+    status.textContent='Announcement saved. Visitors on this server will receive it when their browser checks for updates.';
     await loadAnnouncementHistory();
   }catch(err){status.textContent='Unable to send: '+err.message;}finally{btn.disabled=false;}
 };
@@ -137,22 +138,23 @@ function renderUsersTable(){
       return usersSortDescending?-difference:difference;
     });
   }
-  const heading=USER_COLUMNS.map(([key,title])=>{
-    const active=usersSortKey===key;
-    return `<th scope="col" aria-sort="${active?(usersSortDescending?'descending':'ascending'):'none'}"><button type="button" class="users-sort" data-sort="${key}" aria-label="Sort by ${title}">${title}<span class="users-sort-indicator" aria-hidden="true">${active?(usersSortDescending?' ▼':' ▲'):' ↕'}</span></button></th>`;
-  }).join('')+'<th scope="col">Actions</th>';
+  const sortControl=(key,title)=>{const active=usersSortKey===key;
+    return `<button type="button" class="users-sort" data-sort="${key}" title="Sort by ${title}" aria-label="Sort by ${title}">${title}<span class="users-sort-indicator">${active?(usersSortDescending?' ▼':' ▲'):' ↕'}</span></button>`;};
+  const heading=`<th>${sortControl('username','Username')}</th><th>${sortControl('heart_songs','Hearts')}<div class="users-subhead">${sortControl('like_songs','Likes')} / ${sortControl('dislike_songs','Dislikes')}</div></th><th>${sortControl('private_playlists','Private')}<div class="users-subhead">${sortControl('public_playlists','Published')}</div></th><th>${sortControl('provided_links','Provided')}<div class="users-subhead">${sortControl('online_links','Online')}</div></th><th>${sortControl('created_at','Joined')}</th><th>${sortControl('can_publish','Publish')}</th><th>Actions</th>`;
   const content=rows.map(u=>{
-    const date=Number(u.created_at)?new Date(Number(u.created_at)).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'—';
+    const date=Number(u.created_at)?new Date(Number(u.created_at)).toLocaleDateString(undefined,{year:'2-digit',month:'short',day:'numeric'}):'—';
     const requested=!!u.publish_requested;
-    const cell=USER_COLUMNS.map(([key])=>{
-      if(key==='username')return `<td><span class="users-name">${requested?'<span class="publish-request-dot" aria-label="Publishing permission requested" title="Request to publish pending"></span>':''}<b>${esc(u.username)}</b></span></td>`;
-      if(key==='can_publish')return `<td><label class="check"><input type="checkbox" data-user-publish="${esc(u.id)}" ${u.can_publish?'checked':''} aria-label="Allow ${esc(u.username)} to publish WASP links"> Allow</label></td>`;
-      if(key==='created_at')return `<td><time datetime="${Number(u.created_at)?new Date(Number(u.created_at)).toISOString():''}">${esc(date)}</time></td>`;
-      return `<td>${Number(u[key])||0}</td>`;
-    }).join('');
-    return `<tr data-user-id="${esc(u.id)}">${cell}<td><button class="btn danger" type="button" data-delete-user="${esc(u.id)}" data-delete-name="${esc(u.username)}">Delete user</button></td></tr>`;
+    return `<tr data-user-id="${esc(u.id)}">
+      <td data-label="Username"><span class="users-name">${requested?'<span class="publish-request-dot" title="Publishing permission requested"></span>':''}<b>${esc(u.username)}</b></span></td>
+      <td data-label="Reactions"><b>${Number(u.heart_songs)||0}</b><span class="users-small">L ${Number(u.like_songs)||0} · D ${Number(u.dislike_songs)||0}</span></td>
+      <td data-label="Playlists"><b>${Number(u.private_playlists)||0}</b><span class="users-small">Public ${Number(u.public_playlists)||0}</span></td>
+      <td data-label="Links"><b>${Number(u.provided_links)||0}</b><span class="users-small">Online ${Number(u.online_links)||0}</span></td>
+      <td data-label="Joined"><time datetime="${Number(u.created_at)?new Date(Number(u.created_at)).toISOString():''}">${esc(date)}</time></td>
+      <td data-label="Can publish"><label class="check"><input type="checkbox" data-user-publish="${esc(u.id)}" ${u.can_publish?'checked':''} aria-label="Allow ${esc(u.username)} to publish WASP links"><span>Allow</span></label></td>
+      <td data-label="Actions"><button class="btn danger" type="button" data-delete-user="${esc(u.id)}" data-delete-name="${esc(u.username)}">Delete</button></td>
+    </tr>`;
   }).join('');
-  el.innerHTML=registeredUsers.length?`<div class="table-scroll"><table><thead><tr>${heading}</tr></thead><tbody>${content||`<tr><td colspan="11" class="muted">No usernames match the search.</td></tr>`}</tbody></table></div>`:'<p class="muted">No registered users yet.</p>';
+  el.innerHTML=registeredUsers.length?`<div class="users-fitted"><table><thead><tr>${heading}</tr></thead><tbody>${content||'<tr><td colspan="7" class="muted">No usernames match the search.</td></tr>'}</tbody></table></div>`:'<p class="muted">No registered users yet.</p>';
 }
 async function loadUsers(){
   const el=$('#usersList');
@@ -220,6 +222,55 @@ $("#deleteUserForm").onsubmit=async e=>{
     $("#deleteUserDlg").close();$("#usersMsg").textContent="User and attributed data deleted.";pendingDeleteUser=null;await loadUsers();
   }catch(err){$("#deleteUserMsg").textContent=err.message;}finally{btn.disabled=false;}
 };
+
+// v18.1.2 — processes and administrator audit history.
+let operationsTab='running',opsCursor=null,opsLogRows=[],opsPollTimer=null;
+function showOperationsTab(which='running'){
+  operationsTab=which==='logs'?'logs':'running';
+  $('#opsRunningPanel').classList.toggle('hidden',operationsTab!=='running');
+  $('#opsLogsPanel').classList.toggle('hidden',operationsTab!=='logs');
+  for(const [key,id] of [['running','opsTabRunning'],['logs','opsTabLogs']]){
+    const selected=key===operationsTab;const btn=$('#'+id);btn.classList.toggle('active',selected);btn.setAttribute('aria-selected',String(selected));
+  }
+  if(operationsTab==='logs')void loadOperationsLogs();else void loadOperations();
+}
+$('#opsTabRunning').onclick=()=>{location.hash='processes';showOperationsTab('running');};
+$('#opsTabLogs').onclick=()=>{location.hash='processes/logs';showOperationsTab('logs');};
+const opsDate=ms=>Number(ms)?new Date(Number(ms)).toLocaleString():'—';
+async function loadOperations(){
+  try{const r=await fetch('/api/admin/processes',{cache:'no-store'});if(!r.ok)throw Error('Unable to load processes');const data=await r.json();
+    $('#opsObserved').textContent='Last updated '+opsDate(data.observed_at);
+    $('#opsProcessList').innerHTML=data.processes?.length?data.processes.map(p=>`<div class="ops-item"><div class="form" style="justify-content:space-between;gap:8px"><strong>${esc(p.name)}</strong><span class="ops-state" data-state="${esc(p.state)}">${esc(p.state)}</span></div><small>${esc(p.category||'Operation')} · ${opsDate(p.started_at||p.updated_at)}</small>${p.message?`<p class="muted">${esc(p.message)}</p>`:''}${p.progress!==null&&p.progress!==undefined?`<progress max="100" value="${Math.max(0,Math.min(100,Number(p.progress)||0))}"></progress>`:''}</div>`).join(''):'<p class="muted">No tracked operations yet. New jobs appear here as they run.</p>';
+  }catch(e){$('#opsProcessList').textContent=e.message;}
+}
+$('#opsRefresh').onclick=loadOperations;
+async function loadOperationsLogs(more=false){
+  const target=$('#opsLogList');if(!more){opsCursor=null;opsLogRows=[];target.textContent='Loading…';}
+  try{const url='/api/admin/processes/logs'+(more&&opsCursor?'?before='+encodeURIComponent(opsCursor):'');const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw Error('Unable to load logs');const data=await r.json();
+    opsLogRows.push(...(data.entries||[]));opsCursor=data.next||null;
+    target.innerHTML=opsLogRows.length?`<div class="ops-log-list">${opsLogRows.map(x=>`<div class="ops-log"><time>${opsDate(x.happened_at)}</time><span>${esc(x.actor)}</span><code>${esc(x.method)} ${esc(x.action)}</code><b class="${x.status>=400?'ops-error':'ops-ok'}">HTTP ${Number(x.status)||0}</b></div>`).join('')}</div>`:'<p class="muted">No logged actions yet.</p>';
+    $('#opsLogsMore').classList.toggle('hidden',!opsCursor);
+  }catch(e){$('#opsLogsMessage').textContent=e.message;}
+}
+$('#opsLogsRefresh').onclick=()=>loadOperationsLogs(false);
+$('#opsLogsMore').onclick=()=>loadOperationsLogs(true);
+$('#opsLogsClear').onclick=async()=>{
+  if(!confirm('Clear this server’s administrative action history? This cannot be undone.'))return;
+  const phrase=prompt('Type clear logs to confirm deleting the history:');if(phrase!=='clear logs')return;
+  try{const r=await post('/api/admin/processes/logs/clear',{confirm:phrase},'DELETE');if(!r.ok)throw Error((await r.json()).error||'Failed');
+    $('#opsLogsMessage').textContent='Logs cleared. This action remains as the first new entry.';await loadOperationsLogs(false);
+  }catch(e){$('#opsLogsMessage').textContent=e.message;}
+};
+$('#opsLogsDownload').onclick=async()=>{
+  const btn=$('#opsLogsDownload');btn.disabled=true;$('#opsLogsMessage').textContent='Preparing text export…';
+  try{let cursor='',entries=[],pages=0;
+    do{const r=await fetch('/api/admin/processes/logs'+(cursor?'?before='+encodeURIComponent(cursor):''),{cache:'no-store'});if(!r.ok)throw Error('Unable to export logs');const data=await r.json();entries.push(...(data.entries||[]));cursor=data.next||'';pages++;if(pages>500)throw Error('Export too large; ask admin to clear old logs or export smaller intervals.');}while(cursor);
+    const text=['WASP administrative action log','Exported: '+new Date().toISOString(),'Includes admin actions recorded since v18.1.2; no passwords or request bodies.','',...entries.map(x=>`${new Date(x.happened_at).toISOString()} | ${x.actor} | ${x.method} ${x.action} | HTTP ${x.status}`)].join('\n');
+    const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='wasp-admin-logs-'+new Date().toISOString().slice(0,10)+'.txt';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);
+    $('#opsLogsMessage').textContent=`Downloaded ${entries.length} logged actions.`;
+  }catch(e){$('#opsLogsMessage').textContent=e.message;}finally{btn.disabled=false;}
+};
+setInterval(()=>{if(location.hash.split('/')[0]==='#processes'&&operationsTab==='running'&&!document.hidden&&!$('#panel').classList.contains('hidden'))void loadOperations();},5000);
 
 async function show() {
   const { admin } = await (await fetch("/api/me")).json();

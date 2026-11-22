@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.1.1">
+<link rel="stylesheet" href="/style.css?v=18.1.2">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -241,7 +241,7 @@
 
     <!-- Network (peer-to-peer) -->
     <section class="pane hidden" id="s-network">
-      <h1>Network</h1>
+      <h1>Network, Metadata, Telemetry</h1>
       <div class="tabs sub" role="tablist" aria-label="Network administration">
         <button class="tab" id="netTabPeers" type="button" role="tab" aria-selected="true" aria-controls="netPeersPanel">Connected peers</button>
         <button class="tab" id="netTabMobile" type="button" role="tab" aria-selected="false" aria-controls="netMobilePanel">Mobile Bridge</button>
@@ -443,6 +443,37 @@
       <article class="card markdown-view" id="docsBody" aria-label="Release documentation">Choose a release note.</article>
     </section>
 
+    <!-- v18.1.2: administrator-only processes and actions log -->
+    <section class="pane hidden" id="s-processes">
+      <h1>Running processes</h1>
+      <div class="tabs sub" role="tablist" aria-label="Process monitoring">
+        <button class="tab active" id="opsTabRunning" type="button" role="tab" aria-controls="opsRunningPanel" aria-selected="true">Processes</button>
+        <button class="tab" id="opsTabLogs" type="button" role="tab" aria-controls="opsLogsPanel" aria-selected="false">Logs</button>
+      </div>
+      <section id="opsRunningPanel" role="tabpanel" aria-labelledby="opsTabRunning">
+        <div class="card">
+          <div class="form" style="justify-content:space-between;align-items:center"><h2 style="margin:0">WASP processes</h2><button type="button" class="btn ghost" id="opsRefresh">Refresh</button></div>
+          <p class="muted">Current and recently completed application operations: metadata scanning, file hashing, administrative requests, and manual Cron jobs. This is not an operating-system process list. Only tracked WASP jobs are shown; Cloudflare cannot expose host-level processes.</p>
+          <p class="muted" id="opsObserved"></p>
+          <div id="opsProcessList" aria-live="polite">Open this tab to load processes.</div>
+        </div>
+      </section>
+      <section class="hidden" id="opsLogsPanel" role="tabpanel" aria-labelledby="opsTabLogs">
+        <div class="card">
+          <h2>Administrative action logs</h2>
+          <p class="muted">Actions taken on this WASP server since installing this update. Logs record time, administrator, API action, and result. Passwords, session tokens, uploaded files, and request bodies are never recorded. These logs are not shared with HIVE peers.</p>
+          <div class="form ops-toolbar">
+            <button class="btn ghost" type="button" id="opsLogsRefresh">Refresh logs</button>
+            <button class="btn ghost" type="button" id="opsLogsDownload">Download logs (.txt)</button>
+            <button class="btn danger" type="button" id="opsLogsClear">Clear logs</button>
+          </div>
+          <p class="msg" id="opsLogsMessage" role="status"></p>
+          <div id="opsLogList" aria-live="polite"></div>
+          <button class="btn ghost hidden" id="opsLogsMore" type="button">Load older logs</button>
+        </div>
+      </section>
+    </section>
+
     <!-- Danger -->
     <section class="pane hidden" id="s-danger">
       <h1>Danger</h1>
@@ -455,7 +486,7 @@
     </section>
     <!-- Read-only registered user statistics -->
     <section class="pane hidden" id="s-users">
-      <h1>Users</h1>
+      <h1>Users &amp; Announcements</h1>
       <div class="tabs sub" role="tablist" aria-label="User administration">
         <button class="tab active" id="usersTabAccounts" type="button" role="tab" aria-selected="true" aria-controls="usersAccountsPanel">Registered accounts</button>
         <button class="tab" id="usersTabAnnouncements" type="button" role="tab" aria-selected="false" aria-controls="usersAnnouncementsPanel">Announcements</button>
@@ -475,7 +506,7 @@
       <section id="usersAnnouncementsPanel" class="hidden" role="tabpanel" aria-labelledby="usersTabAnnouncements">
         <div class="card">
           <h2>Send an announcement to this server's users</h2>
-          <p class="muted">Announcements are available only to signed-in users registered on this WASP server. They do not propagate through HIVE. Each browser displays new messages for 30 seconds or until dismissed.</p>
+          <p class="muted">Announcements are available to all visitors, signed in or not, on this WASP server. They do not propagate through HIVE. Each browser displays new messages for 30 seconds or until dismissed.</p>
           <div class="announcement-template-list" id="announcementTemplates" aria-label="Announcement templates"></div>
           <form id="announcementForm" class="announcement-editor" autocomplete="off">
             <label for="announcementTitle">Title (required)</label><input id="announcementTitle" maxlength="100" required placeholder="Announcement title">
@@ -529,6 +560,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.1.1"></script>
+<script type="module" src="/admin.js?v=18.1.2"></script>
 </body>
 </html>

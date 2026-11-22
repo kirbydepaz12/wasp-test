@@ -686,7 +686,7 @@ async function setStarVote(button){const host=button.closest('.rating-stars'),ty
  }else if(type==='artist'){const t=tracks.find(t=>t.origin&&artistsOf(t).includes(key));if(t)item.origin=registeredPeerOrigin(t.origin);
  }else if(type==='playlist'){const p=lookupReactedPlaylist(key);if(p?.origin)item.origin=registeredPeerOrigin(p.origin);}
  button.disabled=true;
- try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);starRankingCache.delete(type);scheduleStarRefresh();if(parse().a==='stars')void refreshStarRankings(document.querySelector('#list'),parse().arg.split('/')[0]||'songs');
+ try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);starRankingCache.delete(type+':most');starRankingCache.delete(type+':least');scheduleStarRefresh();if(parse().a==='stars')void refreshStarRankings(document.querySelector('#list'),parse().arg.split('/')[0]||'songs');
  }catch(e){popup('Rating not saved',e.message||'Please retry.');}finally{button.disabled=false;}
 }
 document.addEventListener('click',e=>{const star=e.target.closest('[data-star-value]');if(!star)return;e.preventDefault();e.stopPropagation();void setStarVote(star);},true);
@@ -965,7 +965,7 @@ function songList(el) {
 // A persistent player lives in index.html. The separate telemetry document
 // receives display-only rows and sends explicit, origin-checked play/navigation
 // messages to this existing player. No iframe is allowed to own audio.
-function telemetryRankRows(tab,sub){
+function telemetryRankRows(tab,sub,sort='most'){
   const field=tab;
   if(tab==='top' && sub==='telemetry')return [];
   if(tab==='top'||sub==='songs'){
@@ -973,7 +973,7 @@ function telemetryRankRows(tab,sub){
     const totals=tab==='top'?null:peerRankingTotals();
     const score=t=>tab==='top'?(Number(t.plays)||0):chartScore(t,field,totals);
     if(tab!=='top')rows=rows.filter(t=>score(t)>0);
-    rows.sort((a,b)=>score(b)-score(a)||(Number(b.created_at)||0)-(Number(a.created_at)||0));
+    rows.sort((a,b)=>(sort==='least'?score(a)-score(b):score(b)-score(a))||(Number(b.created_at)||0)-(Number(a.created_at)||0));
     rows=rows.slice(0,LIMIT[tab]);
     view={ids:rows.map(t=>t.id),label:TABS[tab],pl:null};
     return rows.map(t=>({kind:'song',id:t.id,title:t.title,subtitle:artistLine(t),
@@ -982,11 +982,11 @@ function telemetryRankRows(tab,sub){
   noView();
   if(sub==='artists')return Object.keys(entity.artist).map(name=>({name,score:Number(entity.artist[name]?.[field])||0}))
     .filter(r=>r.score>0&&(!query||r.name.toLowerCase().includes(query)))
-    .sort((a,b)=>b.score-a.score).slice(0,LIMIT[tab])
+    .sort((a,b)=>(sort==='least'?a.score-b.score:b.score-a.score)||String(a.name||'').localeCompare(String(b.name||''))).slice(0,LIMIT[tab])
     .map(r=>({kind:'artist',title:r.name,id:r.name,cover:artistArt(r.name),score:r.score,scoreLabel:field}));
   return allRatedPlaylists().map(p=>({p,score:Number(ecount('playlist',p.id)[field])||0}))
     .filter(r=>r.score>0&&(!query||r.p.name.toLowerCase().includes(query)))
-    .sort((a,b)=>b.score-a.score).slice(0,LIMIT[tab])
+    .sort((a,b)=>(sort==='least'?a.score-b.score:b.score-a.score)||String(a.p.name||'').localeCompare(String(b.p.name||''))).slice(0,LIMIT[tab])
     .map(r=>({kind:'playlist',id:r.p.id,title:r.p.name,cover:playlistCoverUrl(r.p),
       subtitle:r.p.username?`By ${r.p.username}`:'WASP',score:r.score,scoreLabel:field}));
 }
@@ -994,15 +994,17 @@ function telemetryRankRows(tab,sub){
 // Keep a short client-side snapshot to avoid repeated Cloudflare D1 reads while
 // switching Songs / Artists / Playlists. No voter identities are requested.
 const starRankingCache=new Map();
-async function refreshStarRankings(el,sub){
+async function refreshStarRankings(el,sub,sort='most'){
+  sort=sort==='least'?'least':'most';
   if(!el||!['songs','artists','playlists'].includes(sub))return;
   const type={songs:'track',artists:'artist',playlists:'playlist'}[sub];
-  let cached=starRankingCache.get(type);
+  const cacheKey=type+':'+sort;
+  let cached=starRankingCache.get(cacheKey);
   if(!cached||Date.now()-cached.at>15000){
     try{
-      const res=await fetch('/api/stars/rankings?type='+encodeURIComponent(type),{cache:'no-store'});
+      const res=await fetch('/api/stars/rankings?type='+encodeURIComponent(type)+'&sort='+sort,{cache:'no-store'});
       if(!res.ok)throw Error('Star rankings unavailable');
-      const data=await res.json();cached={at:Date.now(),rows:Array.isArray(data.items)?data.items:[]};starRankingCache.set(type,cached);
+      const data=await res.json();cached={at:Date.now(),rows:Array.isArray(data.items)?data.items:[]};starRankingCache.set(cacheKey,cached);
     }catch(e){
       const current=parse();if(current.a==='stars'&&(current.arg.split('/')[0]||'songs')===sub){
         const frame=el.querySelector(':scope > iframe.wasp-telemetry-frame');
@@ -1034,10 +1036,10 @@ async function refreshStarRankings(el,sub){
   const frame=el.querySelector(':scope > iframe.wasp-telemetry-frame');
   if(frame)frame.contentWindow?.postMessage({type:'wasp:telemetry-data',mode:'stars',sub,query,items:rows},location.origin);
 }
-function sendTelemetryRows(frame,tab,sub){
+function sendTelemetryRows(frame,tab,sub,sort='most'){
   if(!frame?.contentWindow)return;
   frame.contentWindow.postMessage({type:'wasp:telemetry-data',mode:tab,sub,
-    query,items:tab==='stars'?[]:telemetryRankRows(tab,sub)},location.origin);
+    query,items:tab==='stars'?[]:telemetryRankRows(tab,sub,sort)},location.origin);
 }
 function renderTelemetryMount(el,tab,sub){
   // Preserve the already-loaded feature document when changing telemetry tabs.
@@ -1050,7 +1052,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.1.0';
+  frame.src='/telemetry.html?v=18.1.2';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1063,6 +1065,13 @@ window.addEventListener('message',event=>{
   if(data.type==='wasp:telemetry-ready'){
     const {a,arg}=parse();
     if(a==='top'||RX.includes(a)){const sub=arg.split('/')[0]||(a==='top'?'ranked':'songs');if(a==='stars')void refreshStarRankings(document.querySelector('#list'),sub);else sendTelemetryRows(frame,a,sub);}
+  } else if(data.type==='wasp:telemetry-rank-sort'){
+    const {a,arg}=parse(),sub=arg.split('/')[0]||'songs';
+    if(['stars','hearts'].includes(a)&&['songs','artists','playlists'].includes(sub)){
+      const sort=data.sort==='least'?'least':'most';
+      if(a==='stars')void refreshStarRankings(document.querySelector('#list'),sub,sort);
+      else sendTelemetryRows(frame,a,sub,sort);
+    }
   } else if(data.type==='wasp:telemetry-height'){
     const h=Number(data.height);
     if(Number.isFinite(h))frame.style.height=Math.max(250,Math.min(15000,h+8))+'px';

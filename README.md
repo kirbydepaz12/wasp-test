@@ -119,7 +119,7 @@ docker compose up -d --build
 - **HIVE Radio (`/#radio`):** any visitor can generate a temporary queue by artist, genre, decade or all-time top songs; select 20, 30, 50 or a custom 1–100 tracks. Signed-in users may save it as a personal playlist.
 - **HIVE Telemetry:** listening history, music-by-decade, artist origin, genres, top tracks/albums/artists, and individual Week/Month/Year/All time filters.
 - **Metadata intelligence:** incremental embedded-tag scanning, trusted peer metadata, historical telemetry reclassification, and optional offline MusicBrainz matching on Docker.
-- **Account and admin tools:** user profile/password settings, controlled peer publishing, server-local public announcements with live preview, selective HIVE telemetry pulls and a local telemetry refresh, scheduled jobs and an in-app read-only documentation viewer.
+- **Account and admin tools:** user profile/password settings, controlled peer publishing, server-local public announcements with live preview, selective HIVE telemetry pulls and a local telemetry refresh, scheduled jobs, a protected running-process dashboard with auditable administrator actions/text export, and an in-app read-only documentation viewer.
 
 ## Feature documentation
 
@@ -129,6 +129,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.2 — Running processes, audit logs and ranking sort | [Process monitoring, admin audit log export/clear, compact Users table and most/least rankings](docs/V18-1-2-ADMIN-PROCESSES-LOGS-RANKING-SORT.md) |
 | v18.1.1 — Public live announcements and telemetry refresh | [Anonymous and registered visitor notices, quiet ding, refresh persistence, local cache rebuild](docs/V18-1-1-PUBLIC-ANNOUNCEMENTS-TELEMETRY-REFRESH.md) |
 | v18.1.0 — Server identity, selective telemetry, local announcements | [Managed peer selection, duplicate-safe listening-event import and user notices](docs/V18-1-0-SERVER-IDENTITY-TELEMETRY-ANNOUNCEMENTS.md) |
 | v18.0.9 — Radio genre paging polish | [Compact genre pills and mouse-wheel page navigation](docs/V18-0-9-RADIO-GENRE-WHEEL-PAGING.md) |

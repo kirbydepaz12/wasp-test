@@ -1,3 +1,4 @@
+import {ensureAdminOperations, startAdminOperation, finishAdminOperation, clearAdminLog, readAdminLog, parseAdminCursor, readAdminProcesses} from './admin-operations.js';
 import {metadataAdmin, metadataFeed, runMetadata, rememberFileFacts, rememberPicardFacts} from './hive-metadata.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
@@ -11,8 +12,8 @@ import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedd
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.1";
-const BUILD_LABEL = "Public Live Announcements & Telemetry Refresh";
+const BUILD_VERSION = "18.1.2";
+const BUILD_LABEL = "Admin Processes, Audit Logs & Ranking Sort";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1805,6 +1806,34 @@ async function api(req, env, url, ctx) {
   const m = req.method;
   const DB = env.DB;
   let x;
+  // v18.1.2 — administrator-only process monitor and audit history.
+  if(path.startsWith('/api/admin/processes')){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    if(path==='/api/admin/processes'&&m==='GET'){
+      const processes=await readAdminProcesses(DB);
+      if(env.SCANNER_SECRET){
+        try{const response=await fetch('http://127.0.0.1:8788/_internal/offline-metadata/status',{
+          headers:{'x-scanner-secret':env.SCANNER_SECRET},signal:AbortSignal.timeout(2000)
+        });
+          if(response.ok){const status=await response.json();if(status.active||['checking','downloading','indexing','building-indexes'].includes(status.state)){
+            processes.unshift({id:'offline-db',name:'MusicBrainz offline database update',category:'Metadata',state:status.state||'running',updated_at:status.updated||Date.now(),progress:status.progress?.percent??null,message:status.phase||status.message||'Downloading or indexing MusicBrainz'});
+          }}
+        }catch{}
+      }
+      return json({processes,observed_at:Date.now()});
+    }
+    if(path==='/api/admin/processes/logs'&&m==='GET'){
+      const page=await readAdminLog(DB,{limit:150,...parseAdminCursor(url.searchParams.get('before'))});
+      return json(page);
+    }
+    if(path==='/api/admin/processes/logs/clear'&&m==='DELETE'){
+      const body=await req.json().catch(()=>null);
+      if(body?.confirm!=='clear logs')return json({error:'Type clear logs to confirm.'},400);
+      await clearAdminLog(DB,info.username||'admin');return json({ok:true});
+    }
+    return json({error:'Not found'},404);
+  }
   if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
   if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull|rescan-files|offline-status|offline-download|offline-cancel))?$/.test(path)){
     const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
@@ -2405,6 +2434,7 @@ async function api(req, env, url, ctx) {
   // an explicitly registered server. Sum of stars is the ranking score.
   if(path==='/api/stars/rankings' && m==='GET'){
     const type=clean(url.searchParams.get('type'),20);
+    const least=url.searchParams.get('sort')==='least';
     if(!['track','artist','playlist'].includes(type))return json({error:'Invalid star ranking type'},400);
     const visible=type==='track'?
       `AND (EXISTS(SELECT 1 FROM tracks t WHERE t.id=target_key) OR EXISTS(SELECT 1 FROM peers p WHERE instr(target_key,p.url||'|')=1))`:
@@ -2413,7 +2443,7 @@ async function api(req, env, url, ctx) {
     try{
       const rows=(await DB.prepare(`SELECT target_key AS key,COALESCE(SUM(stars),0) AS score,COUNT(*) AS votes,ROUND(AVG(stars),2) AS average
         FROM star_votes WHERE target_type=? ${visible} GROUP BY target_key
-        ORDER BY score DESC,votes DESC,average DESC,target_key ASC LIMIT 100`).bind(type).all()).results||[];
+        ORDER BY score ${least?'ASC':'DESC'},votes ${least?'ASC':'DESC'},average ${least?'ASC':'DESC'},target_key ASC LIMIT 100`).bind(type).all()).results||[];
       return json({items:rows});
     }catch(e){
       // Fresh installations may not yet have received their first star vote.
@@ -3845,7 +3875,22 @@ export default {
       if (url.pathname.startsWith("/audio/")) return withCors(await serveAudio(req, env, url.pathname.slice(7)), share);
       if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return withCors(await serveArt(env, url), share);
       if (url.pathname.startsWith("/api/")) {
-        const res = await api(req, env, url, ctx);
+        // Persist an audit record and expose in-flight admin operations.
+        // Failed log writes never roll back music/user actions. All request bodies,
+        // cookies, credentials and query values are deliberately omitted.
+        let operation=null;
+        const audited=req.method!=='GET'&&url.pathname.startsWith('/api/admin/')&&url.pathname!=='/api/admin/processes/logs/clear';
+        if(audited){
+          try{const admin=await sessionInfo(req,env);
+            if(admin?.role==='admin'){const label=(await env.DB.prepare("SELECT value FROM settings WHERE key='admin_username'").first())?.value||'admin';operation=await startAdminOperation(env.DB,label,req.method,url.pathname);}
+          }catch(error){console.warn('Unable to start admin audit',String(error.message).slice(0,80));}
+        }
+        let res;
+        try{res=await api(req, env, url, ctx);}catch(error){
+          if(operation)try{await finishAdminOperation(env.DB,operation,500);}catch{}
+          throw error;
+        }
+        if(operation)try{await finishAdminOperation(env.DB,operation,res.status);}catch(error){console.warn('Unable to complete admin audit',String(error.message).slice(0,80));}
         // CORS only on public read endpoints (not admin)
         const publicPeer = share && (url.pathname === "/api/tracks" || url.pathname === "/api/playlists" || url.pathname === "/api/user-playlists" || url.pathname === "/api/site" || url.pathname === "/api/peer" || url.pathname === "/api/network/peers" || url.pathname === "/api/catalog-version" || url.pathname === "/api/peer-plays" || url.pathname === "/api/recent-listens" || url.pathname === "/api/active-streams" || url.pathname === "/api/telemetry/feed" || url.pathname === "/api/telemetry/metadata/feed");
         const output=withCors(res,publicPeer);
