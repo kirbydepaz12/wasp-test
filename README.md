@@ -129,6 +129,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.2a — Compact ranking sort control | [Icon toggle beside Most starred/hearted headings](docs/V18-1-2A-COMPACT-RANKING-TOGGLE.md) |
 | v18.1.2 — Running processes, audit logs and ranking sort | [Process monitoring, admin audit log export/clear, compact Users table and most/least rankings](docs/V18-1-2-ADMIN-PROCESSES-LOGS-RANKING-SORT.md) |
 | v18.1.1 — Public live announcements and telemetry refresh | [Anonymous and registered visitor notices, quiet ding, refresh persistence, local cache rebuild](docs/V18-1-1-PUBLIC-ANNOUNCEMENTS-TELEMETRY-REFRESH.md) |
 | v18.1.0 — Server identity, selective telemetry, local announcements | [Managed peer selection, duplicate-safe listening-event import and user notices](docs/V18-1-0-SERVER-IDENTITY-TELEMETRY-ANNOUNCEMENTS.md) |

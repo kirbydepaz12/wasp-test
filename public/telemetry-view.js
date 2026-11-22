@@ -263,8 +263,7 @@ function showRanking(){
   const rows=rankable?sorted:state.items;
   const header=(state.mode==='top'?names.top:names[state.mode]||'Rankings')+(state.mode==='top'?'':` · ${state.sub}`);
   const sortLabel=state.mode==='stars'?'stars':'hearts';
-  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><h1>${safe(header)}</h1><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':state.mode==='stars'?'Ranked by total stars given on this WASP server. Average rating and number of votes appear on each item.':'Reactions recorded for local and available peer music.'}</p></div>
-    ${rankable?`<label class="ranking-sort-label" for="rankingSort">Sort by<select id="rankingSort" aria-label="Sort ${sortLabel} ranking"><option value="most" ${state.rankingSort==='most'?'selected':''}>Most ${sortLabel}</option><option value="least" ${state.rankingSort==='least'?'selected':''}>Least ${sortLabel}</option></select></label>`:''}</div>
+  root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · MUSIC RANKINGS</span><div class="ranking-title-row"><h1>${safe(header)}</h1>${rankable?`<button type="button" class="ranking-sort-toggle" data-ranking-sort-toggle aria-label="Show ${state.rankingSort==='most'?'least':'most'} ${sortLabel} first" title="Toggle most/least ${sortLabel}" aria-pressed="${state.rankingSort==='least'}"><img src="/nav-icons/up-and-down-arrows.png" alt="" aria-hidden="true"></button>`:''}</div><p>${state.mode==='top'?'Most listened tracks available on this server and its connected peers.':state.mode==='stars'?'Ranked by total stars given on this WASP server. Average rating and number of votes appear on each item.':'Reactions recorded for local and available peer music.'}</p></div></div>
     ${rows.length?`<div class="browse-grid">${rows.map((r,i)=>`<button type="button" class="browse-tile" data-kind="${safe(r.kind)}" data-id="${safe(r.id)}"><span class="picture">${r.cover?`<img loading="lazy" src="${safe(r.cover)}" alt="" onerror="this.style.display='none'">`:''}</span><b>${safe(r.title)}</b><small>${safe(r.subtitle||'')}</small><small>${state.mode==='stars'?`★ ${n(r.score)} stars · ${Number(r.average||0).toFixed(1)}/5 · ${n(r.votes)} vote${Number(r.votes)===1?'':'s'}`:n(r.score)+' '+safe(r.scoreLabel||'votes')}</small></button>`).join('')}</div>`:
       '<p class="message">Nothing here yet. Results appear when songs are played or rated.</p>'}`;
   resized();
@@ -296,7 +295,6 @@ root.addEventListener('focusin',e=>{
 });
 root.addEventListener('focusout',()=>{showTooltip(null,'');updateTagFocus(null);});
 root.addEventListener('change',e=>{
-  if(e.target.id==='rankingSort'){state.rankingSort=e.target.value==='least'?'least':'most';showRanking();tell('wasp:telemetry-rank-sort',{sort:state.rankingSort});return;}
   if(e.target.id==='year')state.year=int(e.target.value,2000,2100);
   else if(e.target.id==='month')state.month=int(e.target.value,1,12);
   else if(e.target.id==='scope')state.scope=e.target.value==='local'?'local':'hive';
@@ -305,6 +303,7 @@ root.addEventListener('change',e=>{
 });
 root.addEventListener('keydown',e=>{const c=e.target.closest?.('[data-chart-country]');if(c&&['Enter',' '].includes(e.key)){e.preventDefault();setChartSelection('country',c.dataset.chartCountry);}});
 root.addEventListener('click',e=>{
+  if(e.target.closest('[data-ranking-sort-toggle]')){state.rankingSort=state.rankingSort==='most'?'least':'most';showRanking();tell('wasp:telemetry-rank-sort',{sort:state.rankingSort});return;}
   if(e.target.closest('[data-refresh-telemetry]')){void showHive({quiet:true});return;}
   const c=e.target.closest('[data-chart-country]');if(c){setChartSelection('country',c.dataset.chartCountry);return;}
   const d=e.target.closest('[data-chart-decade]');if(d){setChartSelection('decade',d.dataset.chartDecade);return;}

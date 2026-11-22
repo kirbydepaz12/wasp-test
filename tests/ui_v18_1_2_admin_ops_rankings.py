@@ -70,11 +70,18 @@ with sync_playwright() as pw:
   for mode in ('stars','hearts'):
    for sub in ('songs','artists','playlists'):
     show(mode,sub)
-    p.locator('#rankingSort').wait_for(timeout=3000)
+    p.locator('[data-ranking-sort-toggle]').wait_for(timeout=3000)
+    assert p.locator('.ranking-title-row h1').count()==1
+    assert p.locator('.ranking-title-row [data-ranking-sort-toggle]').count()==1
+    assert p.locator('[data-ranking-sort-toggle] img').get_attribute('src')=='/nav-icons/up-and-down-arrows.png'
+    assert p.locator('#rankingSort').count()==0
     assert p.locator('.browse-tile').first.locator('b').inner_text()=='One',(mode,sub)
-    p.locator('#rankingSort').select_option('least')
+    p.locator('[data-ranking-sort-toggle]').click()
     assert p.locator('.browse-tile').first.locator('b').inner_text()=='Two',(mode,sub)
-    assert p.locator('#rankingSort').input_value()=='least'
+    assert p.locator('[data-ranking-sort-toggle]').get_attribute('aria-pressed')=='true'
+    p.locator('[data-ranking-sort-toggle]').click()
+    assert p.locator('.browse-tile').first.locator('b').inner_text()=='One',(mode,sub,'toggle back')
+    assert p.locator('[data-ranking-sort-toggle]').get_attribute('aria-pressed')=='false'
   assert not errors,errors
   p.close();print(f'PASS rankings {width}px: most/least sorting for Songs, Artists, Playlists in Hearts and Stars',flush=True)
  b.close()
