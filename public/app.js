@@ -1052,7 +1052,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.1.5a';
+  frame.src='/telemetry.html?v=18.1.5b';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));

@@ -24,7 +24,9 @@ def check(browser,width,pc):
   if(p==='/api/admin/pc-source/status')return window.__pc?Response.json({local_pc:true,folder:'D:\\\\MUSIC',scan:window.__scanning,entries:200}):Response.json({error:'Forbidden'},403);
   if(p==='/api/admin/pc-source/scan') {window.__scanning={state:'running',processed:20,discovered:100,changed:20,skipped:0,errors:0};return Response.json({ok:true,scan:window.__scanning});}
   if(p==='/api/admin/metadata-bank/sources')return Response.json({sources:[{name:'PC Picard',url:'https://metadata.example.test'}]});
+  if(p==='/api/admin/metadata-bank/pull/progress')return Response.json({ok:true,cursor:0});
   if(p==='/api/admin/metadata-bank/pull')return Response.json({ok:true,staged:1,unchanged:0,count:1,cursor:1,more:false});
+  if(p==='/api/admin/metadata-bank/rematch')return Response.json({ok:true,processed:1,matched:1,review:0,unchanged:0,cursor:1,more:false});
   if(p==='/api/admin/metadata-bank/pending')return Response.json({count:1,audio_matches:1,review:0,unresolved:0,items:[{entry_id:'file-1',seq:1,tags:{title:'Corrected Song',artist:'New Artist',album:'Correct Album',genre:['Rock']},track_id:'track-1',match_type:'audio',old_title:'Track 01',old_artist:'Unknown Artist',old_album:'Unknown Album'}]});
   if(p==='/api/admin/metadata-bank/history')return Response.json({batches:[]});
   if(p==='/api/admin/metadata-bank/apply')return Response.json({ok:true,applied:1,batch_id:'abc-0000'});
@@ -53,6 +55,8 @@ def check(browser,width,pc):
  page.locator('[data-metadata-tab="online"]').click()
  page.locator('#metadataBankSources input').wait_for(state='visible')
  assert page.locator('#metadataBankSources input').count()==1
+ page.locator('#metadataBankRematch').click()
+ page.wait_for_function("window.__log.some(x=>x[0]==='/api/admin/metadata-bank/rematch')")
  page.locator('#metadataBankPull').click()
  page.locator('[data-bank-approve="file-1"]').wait_for(state='visible')
  assert 'Corrected Song' in page.locator('#metadataBankRows').inner_text()
@@ -61,6 +65,7 @@ def check(browser,width,pc):
  page.wait_for_timeout(900)
  assert 'Applied 1 track updates' in page.locator('#metadataBankStatus').inner_text()
  assert any(x==['/api/admin/metadata-bank/apply','POST'] for x in page.evaluate('window.__log'))
+ assert any(x==['/api/admin/metadata-bank/pull/progress','GET'] for x in page.evaluate('window.__log'))
  assert not errors,errors
  print(f'PASS {width}px PC={pc}: scanner gating, scan progress, online source, preview, manual apply')
  page.close()

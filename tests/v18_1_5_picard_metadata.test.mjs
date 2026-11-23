@@ -56,3 +56,84 @@ test('v18.1.5a authenticated admin metadata-source route resolves implementation
   const guests=await request('/api/admin/metadata-bank/sources');assert.equal(guests.status,403);
  }finally{sqlite.close();}
 });
+
+
+test('v18.1.5b Cloudflare pull requests two records and resumes from existing v18.1.5a stages',async()=>{
+ const f=setup();try{
+  const es=Array.from({length:5},(_,i)=>entry({id:'file-'+(i+1),seq:i+1,audio_sha256:(i+1).toString(16).padStart(64,'0')}));
+  const fetcher=async(url,opts)=>{
+   const u=new URL(url);assert.equal(u.searchParams.get('limit'),'2');
+   assert.equal(opts.headers['x-wasp-metadata-token'],token);
+   const cursor=Number(u.searchParams.get('cursor'));
+   const candidates=es.filter(x=>x.seq>cursor);const page=candidates.slice(0,2);
+   return Response.json({ok:true,protocol:2,entries:page,cursor:page.at(-1)?.seq||cursor,more:candidates.length>page.length});
+  };
+  let r=await f.api('pull','POST',{source,cursor:0},fetcher);
+  assert.equal(r.staged,2);assert.equal(r.more,true);assert.equal(r.limit,2);
+  const p=await f.api('pull/progress?source='+encodeURIComponent(source));assert.equal(p.cursor,2);
+  // Simulate a Worker being killed before the next response. The checkpoint
+  // must work even if no ephemeral JS state survived the failed request.
+  r=await f.api('pull','POST',{source,cursor:p.cursor},fetcher);
+  assert.equal(r.staged,2);assert.equal(r.cursor,4);
+  r=await f.api('pull','POST',{source,cursor:r.cursor},fetcher);
+  assert.equal(r.staged,1);assert.equal(r.more,false);
+  assert.equal((await f.api('pull/progress?source='+encodeURIComponent(source))).cursor,5);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM pc_metadata_pending').get().n,5);
+  assert.equal(f.sqlite.prepare('SELECT title FROM tracks').get().title,'Track 01');
+  const smaller=await f.api('pull','POST',{source,cursor:0,batch_size:1},async(url)=>{assert.equal(new URL(url).searchParams.get('limit'),'1');return Response.json({ok:true,protocol:2,entries:es.slice(0,1),cursor:1,more:true});});
+  assert.equal(smaller.limit,1);
+ }finally{f.sqlite.close();}
+});
+
+test('v18.1.5b Docker uses larger bounded pages without changing Cloudflare default',async()=>{
+ const f=setup();try{
+  f.env.WASP_RUNTIME='docker';const e=entry();let requested=0;
+  const mocked=async(url)=>{requested=Number(new URL(url).searchParams.get('limit'));return Response.json({ok:true,protocol:2,entries:[e],cursor:1,more:false});};
+  const r=await f.api('pull','POST',{source,cursor:0},mocked);
+  assert.equal(requested,25);assert.equal(r.limit,25);
+ }finally{f.sqlite.close();}
+});
+
+test('v18.1.5b rematch reuses pending data after fingerprint backfill without refetch or auto-apply',async()=>{
+ const f=setup();try{
+  const e=entry({id:'file-42',seq:42,audio_sha256:hash});
+  assert.equal((await f.api('pull','POST',{source,cursor:0},feed([e]))).staged,1);
+  assert.equal((await f.api('pending?source='+encodeURIComponent(source))).audio_matches,0);
+  await ensureBank(f.env);
+  f.sqlite.prepare('INSERT INTO pc_metadata_audio_hashes(track_id,audio_hash,state,updated_at) VALUES(?,?,?,?)').run('track-1',hash,'done',Date.now());
+  const r=await f.api('rematch','POST',{source,after:0});
+  assert.equal(r.status,200);assert.equal(r.matched,1);
+  const pending=await f.api('pending?source='+encodeURIComponent(source));
+  assert.equal(pending.audio_matches,1);assert.equal(pending.items[0].track_id,'track-1');
+  assert.equal(f.sqlite.prepare('SELECT title,plays FROM tracks').get().title,'Track 01');
+  assert.equal(f.sqlite.prepare('SELECT title,plays FROM tracks').get().plays,123);
+  const retry=await f.api('rematch','POST',{source,after:0});assert.equal(retry.processed,0);
+  assert.equal((await f.api('rematch','POST',{source:'https://attacker.example',after:0})).status,403);
+ }finally{f.sqlite.close();}
+});
+
+test('v18.1.5b rematch never overwrites a manually confirmed link',async()=>{
+ const f=setup();try{
+  const e=entry({id:'file-manual',seq:5,audio_sha256:hash});
+  await f.api('pull','POST',{source,cursor:0},feed([e]));
+  assert.equal((await f.api('assign','POST',{source,entry_id:'file-manual',track_id:'track-1',confirm:'match manually'})).status,200);
+  await ensureBank(f.env);f.sqlite.prepare('INSERT INTO pc_metadata_audio_hashes VALUES(?,?,?,?)').run('track-1',hash,'done',Date.now());
+  const r=await f.api('rematch','POST',{source,after:0});assert.equal(r.processed,0);
+  const row=f.sqlite.prepare('SELECT match_type,track_id FROM pc_metadata_pending WHERE entry_id=?').get('file-manual');
+  assert.equal(row.match_type,'manual');assert.equal(row.track_id,'track-1');
+ }finally{f.sqlite.close();}
+});
+
+test('v18.1.5b rematch preserves ambiguous identical audio and does not auto-approve',async()=>{
+ const f=setup();try{
+  await ensureBank(f.env);
+  f.sqlite.prepare('INSERT INTO tracks VALUES(?,?,?,?,?,?,?,?,?)').run('track-2','Other title','Other artist','[]','Other album',0,190,0,2);
+  f.sqlite.prepare('INSERT INTO pc_metadata_audio_hashes VALUES(?,?,?,?)').run('track-1',hash,'done',Date.now());
+  f.sqlite.prepare('INSERT INTO pc_metadata_audio_hashes VALUES(?,?,?,?)').run('track-2',hash,'done',Date.now());
+  await f.api('pull','POST',{source,cursor:0},feed([entry()]));
+  const before=await f.api('pending?source='+encodeURIComponent(source));assert.equal(before.items[0].match_type,'ambiguous');
+  await f.api('rematch','POST',{source,after:0});
+  assert.equal((await f.api('pending?source='+encodeURIComponent(source))).items[0].match_type,'ambiguous');
+  assert.equal((await f.api('apply','POST',{source,ids:['file-1'],confirm:'apply metadata'})).applied,0);
+ }finally{f.sqlite.close();}
+});

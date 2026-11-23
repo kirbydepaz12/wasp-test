@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.1.5a">
+<link rel="stylesheet" href="/style.css?v=18.1.5b">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -426,8 +426,9 @@
                 <p class="muted">Select an authorized source and manually import its Picard metadata. Each record is matched against tracks hosted on this server. No audio moves between WASP installations. Nothing is applied until reviewed.</p>
                 <div class="metadata-source-header"><strong>Authorized metadata sources</strong><button class="btn ghost" type="button" id="metadataBankSelectAll" disabled>Select all sources</button></div>
                 <div id="metadataBankSources" class="metadata-source-list" role="group" aria-label="Authorized metadata sources"><p class="muted">Loading configured metadata sources…</p></div>
+                <label class="metadata-check" style="margin:8px 0"><input type="checkbox" id="metadataBankFullSync"><span>Recheck entire source catalogue instead of resuming (use if the PC metadata source was rebuilt)</span></label>
                 <div class="metadata-actions"><button class="btn" type="button" id="metadataBankPull">Pull metadata from selected peers now</button><button class="btn ghost" type="button" id="metadataBankRefresh">Refresh sources</button></div>
-                <div class="metadata-actions"><button class="btn ghost" type="button" id="metadataBankFingerprint">Prepare local audio matches</button><button class="btn ghost" type="button" id="metadataBankPreview">Review metadata changes</button></div>
+                <div class="metadata-actions"><button class="btn ghost" type="button" id="metadataBankFingerprint">Prepare local audio matches</button><button class="btn ghost" type="button" id="metadataBankRematch">Rematch staged metadata</button><button class="btn ghost" type="button" id="metadataBankPreview">Review metadata changes</button></div>
                 <progress id="metadataBankProgress" max="100" value="0" style="width:100%;margin-top:10px"></progress>
                 <p class="muted" id="metadataBankStatus" role="status" aria-live="polite">Only the selected metadata source is contacted. Previously imported plays and playlists are not changed.</p>
                 <div id="metadataBankReview" class="hidden" style="margin-top:14px">
@@ -632,6 +633,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.1.5a"></script>
+<script type="module" src="/admin.js?v=18.1.5b"></script>
 </body>
 </html>

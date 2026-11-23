@@ -1851,19 +1851,44 @@ async function loadBankSources(){const root=$('#metadataBankSources'),selectAll=
 const bankSelected=()=>[...document.querySelectorAll('[data-bank-source]:checked')].map(e=>e.value);
 $('#metadataBankSelectAll').onclick=()=>{const inputs=[...document.querySelectorAll('[data-bank-source]')];const next=!inputs.every(e=>e.checked);for(const input of inputs)input.checked=next;$('#metadataBankSelectAll').textContent=next?'Clear selection':'Select all sources';};
 $('#metadataBankRefresh').onclick=()=>void loadBankSources();void loadBankSources();
+async function runBankRematch(source,{quiet=false}={}){
+ if(!source)return {processed:0,matched:0,review:0};
+ let cursor=0,processed=0,matched=0,review=0,steps=0;
+ // Pages always advance through pending records; manually assigned and applied
+ // entries are excluded by the server. Reopening the page is safe.
+ while(true){const d=await bankApi('rematch',{source,after:cursor});
+  processed+=d.processed||0;matched+=d.matched||0;review+=d.review||0;steps++;
+  if(d.cursor<=cursor||!d.more)break;
+  cursor=d.cursor;
+  if(steps%20===0)await new Promise(resolve=>setTimeout(resolve,0));
+  if(steps>100000)throw Error('Rematch safety limit reached');
+  if(!quiet)bankMessage(`Rematching ${source}: ${processed.toLocaleString()} pending records checked · ${matched} new exact audio matches · ${review} review candidates. You can leave this page and resume later.`);
+ }
+ bankMessage(`Rematch complete: ${processed.toLocaleString()} pending records checked · ${matched} new exact audio matches · ${review} review candidates. Nothing was applied.`);
+ return {processed,matched,review};
+}
+$('#metadataBankRematch').onclick=async()=>{if(metadataBankBusy)return;const sources=bankSelected();if(!sources.length){bankMessage('Select a metadata source to rematch.',true);return;}
+ metadataBankBusy=true;$('#metadataBankRematch').disabled=true;
+ try{for(const source of sources){metadataBankCurrentSource=source;await runBankRematch(source);}metadataBankOffset=0;await reviewBank();}
+ catch(e){bankMessage('Rematch stopped: '+e.message+'. Pending entries are preserved. Click Rematch again to retry.',true);}
+ finally{metadataBankBusy=false;$('#metadataBankRematch').disabled=false;}
+};
 $('#metadataBankFingerprint').onclick=async()=>{if(metadataBankBusy)return;metadataBankBusy=true;const btn=$('#metadataBankFingerprint');btn.disabled=true;
  try{let s=await bankApi('fingerprints/status');if(!confirm(`Prepare exact audio-content fingerprints for ${s.remaining} locally hosted songs? WASP will read its existing audio internally in bounded batches. No MP3s will be uploaded or changed.`))return;
   const total=Number(s.total)||0;while(s.remaining){const d=await bankApi('fingerprints',{});if(d.remaining>=s.remaining&&!d.processed)break;s={...s,remaining:d.remaining};$('#metadataBankProgress').value=total?Math.round(100*(total-d.remaining)/total):100;bankMessage(`Audio identity index: ${total-d.remaining} / ${total} tracks prepared${d.reason?' · '+d.reason:''}. Keep this tab open to continue.`);}
-  bankMessage('Local audio identity preparation complete. You can now pull corrected Picard tags from your selected source.');
+  const sources=bankSelected();if(sources.length){for(const source of sources){metadataBankCurrentSource=source;await runBankRematch(source);}metadataBankOffset=0;await reviewBank();}
+  else bankMessage('Local audio identity preparation complete. Select a source and click Rematch staged metadata; no new PC pull is necessary.');
  }catch(e){bankMessage(e.message,true);}finally{btn.disabled=false;metadataBankBusy=false;}}
 $('#metadataBankPull').onclick=async()=>{if(metadataBankBusy)return;const sources=bankSelected();if(!sources.length){bankMessage('Select at least one configured source.',true);return;}
- if(!confirm('Manually fetch Picard metadata from the selected sources and stage differences for review? No existing tracks will be changed yet.'))return;
- metadataBankBusy=true;$('#metadataBankPull').disabled=true;$('#metadataBankProgress').value=0;let total=0;
- try{for(let i=0;i<sources.length;i++){const source=sources[i];let cursor=0,iterations=0;
-  do{const d=await bankApi('pull',{source,cursor});total+=d.staged||0;cursor=d.cursor;iterations++;bankMessage(`Pulling ${source}: ${iterations*25-(25-(d.count||0))} entries examined · ${total} differences staged…`);$('#metadataBankProgress').value=Math.min(98,Math.round((i+0.9)/sources.length*100));if(!d.more)break;if(iterations>5000)throw Error('Page safety limit reached');}while(true);
+ if(!confirm('Manually fetch new Picard metadata from the selected sources and stage differences for review? Previously staged records will be preserved. No existing tracks will be changed.'))return;
+ metadataBankBusy=true;$('#metadataBankPull').disabled=true;$('#metadataBankProgress').value=0;let total=0,checked=0;
+ try{for(let i=0;i<sources.length;i++){const source=sources[i];const fullScan=$('#metadataBankFullSync').checked;const progress=fullScan?{cursor:0}:await bankApi('pull/progress?source='+encodeURIComponent(source));let cursor=Number(progress.cursor)||0,iterations=0,batchSize=2;
+  bankMessage(`${fullScan?'Rechecking':'Resuming'} ${source} after source sequence ${cursor}. Previously staged metadata is preserved.`);
+  do{let d;try{d=await bankApi('pull',{source,cursor,batch_size:batchSize});}
+   catch(e){if(batchSize>1&&/HTTP 503|1102|CPU time limit|resource limit/i.test(e.message||'')){batchSize=1;bankMessage('Cloudflare resource limit: reducing this pull to one metadata record per request and retrying safely.');d=await bankApi('pull',{source,cursor,batch_size:1});}else throw e;}total+=d.staged||0;checked+=d.count||0;const next=Number(d.cursor);if(next<cursor||(!d.count&&d.more))throw Error('Source did not advance its cursor');cursor=next;iterations++;bankMessage(`Pulling ${source}: ${checked.toLocaleString()} new source records examined · ${total} differences staged · resume sequence ${cursor}…`);$('#metadataBankProgress').value=Math.min(98,Math.round((i+0.9)/sources.length*100));if(!d.more)break;if(iterations>100000)throw Error('Page safety limit reached');}while(true);
   metadataBankCurrentSource=source;}
- $('#metadataBankProgress').value=100;bankMessage(`Pull complete: ${total} new or changed entries staged for review. Existing tracks were not modified.`);metadataBankOffset=0;await reviewBank();
- }catch(e){bankMessage('Pull stopped: '+e.message+'. Earlier staged entries are preserved. Retry is idempotent.',true);}finally{metadataBankBusy=false;$('#metadataBankPull').disabled=false;}}
+ $('#metadataBankProgress').value=100;bankMessage(`Pull complete: ${total} new or changed entries staged. Existing staged records were kept. Click Rematch staged metadata if audio fingerprints were prepared later.`);metadataBankOffset=0;await reviewBank();
+ }catch(e){bankMessage('Pull stopped: '+e.message+'. Earlier staged entries are preserved. Retry resumes from the last staged sequence.',true);}finally{metadataBankBusy=false;$('#metadataBankPull').disabled=false;}}
 function bankDataList(){let list=$('#metadataBankTrackOptions');if(!list){list=document.createElement('datalist');list.id='metadataBankTrackOptions';$('#metadataBankReview').append(list);}list.replaceChildren();for(const t of (window.__tracks||[]).slice(0,2000)){const opt=document.createElement('option');opt.value=t.id;opt.label=`${t.title} · ${t.artist}`;list.append(opt);}}
 async function bankHistory(){if(!metadataBankCurrentSource)return;try{const r=await bankApi('history?source='+encodeURIComponent(metadataBankCurrentSource));const sel=$('#metadataBankHistory'),current=sel.value;sel.replaceChildren(new Option('Previous applied batches…',''));
   for(const b of r.batches||[]){const date=new Date(b.applied_at).toLocaleString();const option=new Option(`${date} · ${b.total} tracks · ${b.undone||0} restored`,b.batch_id);sel.add(option);}sel.value=metadataBankLastBatch||current||'';

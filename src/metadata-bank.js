@@ -13,6 +13,9 @@ const sourceList=env=>{const list=[];if(env.WASP_METADATA_SOURCE_URL&&env.WASP_M
  return list.map(x=>({url:safeUrl(x.url),name:str(x.name||'WASP metadata source',80),token:String(x.token||'')})).filter(x=>x.url&&x.token.length>=32).filter((x,i,a)=>a.findIndex(v=>v.url===x.url)===i).slice(0,10);
 };
 const ready=new WeakSet();
+// Workers Free has a small CPU allowance per request; don't perform 25 sequential D1 writes.
+// A Docker-hosted runtime has a larger per-request budget, but still stays bounded.
+const workLimit=env=>env.WASP_RUNTIME==='docker'?25:2;
 export async function ensureBank(env){if(ready.has(env.DB))return;for(const sql of [
 `CREATE TABLE IF NOT EXISTS pc_metadata_audio_hashes(track_id TEXT PRIMARY KEY,audio_hash TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT 'done',updated_at INTEGER NOT NULL)`,
 `CREATE INDEX IF NOT EXISTS pc_audio_hash_lookup ON pc_metadata_audio_hashes(audio_hash)`,
@@ -52,23 +55,51 @@ async function chooseMatch(db,e){const r=rows(await db.prepare(`SELECT t.id,t.ti
  const candidate=rows(await db.prepare('SELECT id,title,artist,album,duration FROM tracks WHERE LOWER(title)=LOWER(?) AND LOWER(artist)=LOWER(?) LIMIT 5').bind(e.tags.title,e.tags.artist).all()).filter(t=>!e.tags.duration||!t.duration||Math.abs(t.duration-e.tags.duration)<3);
  return candidate.length===1?{id:candidate[0].id,type:'review'}:{id:'',type:candidate.length?'ambiguous':'unmatched'};
 }
+async function pullProgress(env,source){
+ if(!sourceList(env).some(x=>x.url===source))return json({error:'Source is not explicitly authorized.'},403);
+ // Existing v18.1.5a staged entries are the checkpoint: do NOT delete or reimport
+ // thousands of records when a browser is reopened after a Worker timeout.
+ const row=await env.DB.prepare('SELECT COALESCE(MAX(seq),0) cursor FROM pc_metadata_pending WHERE source_url=?').bind(source).first();
+ return json({ok:true,source,cursor:Number(row?.cursor)||0});
+}
 async function pullPage(env,b,{fetcher=fetch}={}){const source=sourceList(env).find(x=>x.url===b.source);if(!source)return json({error:'Source is not explicitly authorized in server configuration.'},403);
  const cursor=Number(b.cursor||0);if(!Number.isSafeInteger(cursor)||cursor<0)return json({error:'Invalid cursor'},400);
- const u=new URL(source.url+'/api/metadata-bank/feed');u.searchParams.set('cursor',String(cursor));u.searchParams.set('limit','25');
+ const requested=Number(b.batch_size);const limit=Number.isSafeInteger(requested)&&requested>=1?Math.min(workLimit(env),requested):workLimit(env);
+ const u=new URL(source.url+'/api/metadata-bank/feed');u.searchParams.set('cursor',String(cursor));u.searchParams.set('limit',String(limit));
  const headers={'accept':'application/json','x-wasp-metadata-token':source.token};if(env.WASP_METADATA_ACCESS_CLIENT_ID&&env.WASP_METADATA_ACCESS_CLIENT_SECRET){headers['CF-Access-Client-Id']=env.WASP_METADATA_ACCESS_CLIENT_ID;headers['CF-Access-Client-Secret']=env.WASP_METADATA_ACCESS_CLIENT_SECRET;}
  let response;try{response=await fetcher(u.toString(),{method:'GET',redirect:'manual',headers,signal:AbortSignal.timeout(12000)});}catch(e){return json({error:'Metadata source unreachable: '+str(e.message,120)},502);}
  if(response.status!==200)return json({error:`Metadata source returned HTTP ${response.status}. Check connectivity and read-only token.`},502);
  if(Number(response.headers.get('content-length')||0)>220000)return json({error:'Source response too large'},502);
  let data;try{const payload=await response.text();if(payload.length>220000)return json({error:'Source response too large'},502);data=JSON.parse(payload);}catch{return json({error:'Invalid source response'},502);}
- if(!data?.ok||data.protocol!==2||!Array.isArray(data.entries)||data.entries.length>25||!Number.isSafeInteger(data.cursor)||data.cursor<cursor||typeof data.more!=='boolean'||(data.more&&data.entries.length===0))return json({error:'Unsupported source metadata protocol'},502);
+ if(!data?.ok||data.protocol!==2||!Array.isArray(data.entries)||data.entries.length>limit||!Number.isSafeInteger(data.cursor)||data.cursor<cursor||typeof data.more!=='boolean'||(data.more&&data.entries.length===0))return json({error:'Unsupported source metadata protocol'},502);
  const seen=new Set();let previous=cursor,staged=0,unchanged=0;
  for(const raw of data.entries){const e=sanitized(raw);if(!e||e.seq<=previous||e.seq>data.cursor||seen.has(e.id))return json({error:'Invalid entry in metadata feed'},502);seen.add(e.id);previous=e.seq;
  const previousEntry=await env.DB.prepare('SELECT seq,state FROM pc_metadata_pending WHERE source_url=? AND entry_id=?').bind(source.url,e.id).first();if(previousEntry&&previousEntry.seq===e.seq){unchanged++;continue;}
  const match=await chooseMatch(env.DB,e);
- // Do not replace an already applied entry with a changed source record without re-review.
+ // Existing confirmed entries cannot be silently modified by a metadata refresh.
  await env.DB.prepare(`INSERT INTO pc_metadata_pending(source_url,entry_id,seq,audio_hash,tags_json,track_id,match_type,state,updated_at) VALUES(?,?,?,?,?,?,?,'pending',?) ON CONFLICT(source_url,entry_id) DO UPDATE SET seq=excluded.seq,audio_hash=excluded.audio_hash,tags_json=excluded.tags_json,track_id=excluded.track_id,match_type=excluded.match_type,state='pending',updated_at=excluded.updated_at`).bind(source.url,e.id,e.seq,e.audio_hash,JSON.stringify(e.tags),match.id,match.type,Date.now()).run();staged++;
  }
- return json({ok:true,source:source.url,staged,unchanged,cursor:data.cursor,more:data.more,count:data.entries.length});
+ return json({ok:true,source:source.url,staged,unchanged,cursor:data.cursor,more:data.more,count:data.entries.length,limit});
+}
+// Reconcile previously staged entries against local fingerprints without
+// contacting the PC source or touching playlists/audio. Never replace an
+// administrator's explicitly chosen manual match, or any applied record.
+async function rematchPage(env,b){
+ const source=sourceList(env).find(x=>x.url===b.source);if(!source)return json({error:'Source is not explicitly authorized.'},403);
+ const after=Number(b.after||0);if(!Number.isSafeInteger(after)||after<0)return json({error:'Invalid rematch cursor'},400);
+ const limit=workLimit(env);
+ const candidates=rows(await env.DB.prepare(`SELECT entry_id,seq,audio_hash,tags_json,track_id,match_type FROM pc_metadata_pending WHERE source_url=? AND state='pending' AND seq>? AND match_type NOT IN('audio','manual') ORDER BY seq LIMIT ?`).bind(source.url,after,limit).all());
+ let matched=0,review=0,unchanged=0,cursor=after;
+ for(const row of candidates){cursor=row.seq;
+  let tags;try{tags=JSON.parse(row.tags_json);}catch{unchanged++;continue;}
+  const choice=await chooseMatch(env.DB,{audio_hash:row.audio_hash,tags});
+  if(choice.type===row.match_type&&choice.id===row.track_id){unchanged++;continue;}
+  // Guard against a concurrent approval/assignment between selection and update.
+  const write=await env.DB.prepare(`UPDATE pc_metadata_pending SET track_id=?,match_type=?,updated_at=? WHERE source_url=? AND entry_id=? AND seq=? AND state='pending' AND match_type=?`).bind(choice.id,choice.type,Date.now(),source.url,row.entry_id,row.seq,row.match_type).run();
+  if(Number(write?.meta?.changes||0)){if(choice.type==='audio')matched++;else if(choice.type==='review')review++;}
+ }
+ // No expensive COUNT query per page; the browser can get totals from Review.
+ return json({ok:true,source:source.url,processed:candidates.length,matched,review,unchanged,cursor,more:candidates.length===limit,limit});
 }
 async function pendingPage(env,url){const source=url.searchParams.get('source')||'';if(!sourceList(env).some(s=>s.url===source))return json({error:'Invalid source'},400);const after=Number(url.searchParams.get('offset')||0);if(!Number.isInteger(after)||after<0)return json({error:'Invalid offset'},400);
  const result=rows(await env.DB.prepare(`SELECT p.source_url,p.entry_id,p.seq,p.tags_json,p.track_id,p.match_type,p.state,t.title old_title,t.artist old_artist,t.album old_album FROM pc_metadata_pending p LEFT JOIN tracks t ON t.id=p.track_id WHERE p.source_url=? AND p.state='pending' ORDER BY p.seq LIMIT 40 OFFSET ?`).bind(source,after).all());const count=await env.DB.prepare(`SELECT COUNT(*) n,SUM(CASE WHEN match_type='audio' THEN 1 ELSE 0 END) audio_matches,SUM(CASE WHEN match_type='review' THEN 1 ELSE 0 END) review,SUM(CASE WHEN match_type IN('ambiguous','unmatched') THEN 1 ELSE 0 END) unresolved FROM pc_metadata_pending WHERE source_url=? AND state='pending'`).bind(source).first();
@@ -109,7 +140,9 @@ export async function metadataBankApi(req,env,url,{makeArtistIndex,fetcher=fetch
  if(action==='sources'&&req.method==='GET')return json({sources:sourceList(env).map(({url,name})=>({url,name})),runtime:env.WASP_RUNTIME||'cloudflare',feature:'manual-review'});
  if(action==='fingerprints'&&req.method==='POST')return json(await hashOne(env));
  if(action==='fingerprints/status'&&req.method==='GET'){const total=await db.prepare('SELECT COUNT(*) n FROM tracks').first(),count=await db.prepare('SELECT COUNT(*) n FROM pc_metadata_audio_hashes').first();return json({total:total.n,done:count.n,remaining:total.n-count.n});}
+ if(action==='pull/progress'&&req.method==='GET')return pullProgress(env,url.searchParams.get('source')||'');
  if(action==='pull'&&req.method==='POST')return pullPage(env,await req.json().catch(()=>({})),{fetcher});
+ if(action==='rematch'&&req.method==='POST')return rematchPage(env,await req.json().catch(()=>({})));
  if(action==='pending'&&req.method==='GET')return pendingPage(env,url);
  if(action==='history'&&req.method==='GET'){
   const source=url.searchParams.get('source')||'';
