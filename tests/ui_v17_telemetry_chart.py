@@ -28,11 +28,11 @@ with sync_playwright() as pw:
   assert page.locator('.metric').count()==4
   assert page.get_by_text('Most played music').count()==1
   assert page.get_by_text('Listening fingerprint & quick facts').count()==1
-  page.get_by_role('button',name='Month',exact=True).click()
-  assert page.locator('select#month').count()==1
-  page.locator('#month').select_option('10')
+  page.locator('.controls [data-period=month]').click()
+  assert page.locator('.controls [data-period=month].active').count()==1
   page.locator('#scope').select_option('local')
   page.get_by_role('button',name='Previous period').click()
+  page.locator('.metric').first.wait_for(timeout=12000)
   assert page.locator('.metric').count()==4
   assert not errors,errors
   page.screenshot(path='/mnt/data/WASP-v17-telemetry-dashboard-preview.png',full_page=True)

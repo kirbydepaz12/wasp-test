@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {ensureTelemetrySchema,recordTelemetryListen,telemetryFeed,telemetrySummary,syncTelemetryPeers} from '../src/telemetry.js';
+import {ensureTelemetrySchema,recordTelemetryListen,telemetryFeed,telemetrySummary,telemetryHeatmap,telemetryApi,syncTelemetryPeers} from '../src/telemetry.js';
 
 function makeEnv(){
   const sql=new DatabaseSync(':memory:');
@@ -90,4 +90,46 @@ test('v17 rotates bounded sync batches across all connected admin peers',async()
   };
   for(let tick=0;tick<3;tick++)await syncTelemetryPeers(env,{fetcher,force:true});
   assert.equal(seen.size,23,'all registered peers must be visited by the third bounded sync cycle');
+});
+
+test('v18.1.4 daily heatmap uses local-day buckets, exact deduplication and HIVE/local scopes',async()=>{
+  const {sql,env}=makeEnv();await ensureTelemetrySchema(env);
+  const localId=sql.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").get().value;
+  // 2025-12-31 20:00 UTC is 2026-01-01 04:00 in the selected +08:00 timezone.
+  await recordTelemetryListen(env,{id:'heat-local-1',title:'Local A',artist:'A',played_at:Date.UTC(2025,11,31,20)});
+  // Twice recorded with the same unique origin/event pair must not increase the count.
+  await recordTelemetryListen(env,{id:'heat-local-1',title:'Local A',artist:'A',played_at:Date.UTC(2025,11,31,20)});
+  await recordTelemetryListen(env,{id:'heat-local-2',title:'Local B',artist:'A',played_at:Date.UTC(2026,0,1,20)});
+  const peer='99999999-9999-4999-8999-999999999999';
+  sql.prepare("INSERT OR IGNORE INTO telemetry_events(origin_id,event_id,played_at,title) VALUES(?,?,?,?)").run(peer,'once',Date.UTC(2026,0,1,21),'Peer C');
+  sql.prepare("INSERT OR IGNORE INTO telemetry_events(origin_id,event_id,played_at,title) VALUES(?,?,?,?)").run(peer,'once',Date.UTC(2026,0,1,21),'Peer C');
+  const path='https://wasp.example/api/telemetry/heatmap?range=year&year=2026&offset=480';
+  const hive=await telemetryHeatmap(env,new URL(path+'&scope=hive'));
+  assert.equal(hive.startDate,'2026-01-01');assert.equal(hive.endDate,'2026-12-31');
+  assert.equal(hive.plays,3);assert.deepEqual(hive.days.map(x=>[x.day,x.plays]),[['2026-01-01',1],['2026-01-02',2]]);
+  const local=await telemetryHeatmap(env,new URL(path+'&scope=local'));
+  assert.equal(local.plays,2);assert.equal(local.days[1].plays,1);
+  assert.ok(localId);
+  const cached=await telemetryHeatmap(env,new URL(path+'&scope=hive'));
+  assert.deepEqual(cached,hive);
+  const hits=sql.prepare("SELECT COUNT(*) n FROM telemetry_summary_cache WHERE key LIKE 'v184:heatmap:%'").get().n;
+  assert.equal(hits,2,'scope-specific heatmaps must not share cache keys');
+  const res=await telemetryApi(new Request(path+'&scope=hive'),env,new URL(path+'&scope=hive'));
+  assert.equal(res.status,200);assert.equal((await res.json()).plays,3);
+});
+
+test('v18.1.4 rolling heatmap includes today, validates params and never exposes listener metadata',async()=>{
+  const {env}=makeEnv();await ensureTelemetrySchema(env);
+  await recordTelemetryListen(env,{id:'today-1',title:'Test Title',artist:'Test Artist',played_at:Date.now()});
+  const url=new URL('https://wasp.example/api/telemetry/heatmap?range=rolling&year=2026&scope=hive&offset=480');
+  const current=await telemetryHeatmap(env,url);
+  assert.equal(current.plays,1);assert.equal(current.days.length,1);
+  assert.equal((Date.parse(current.endDate+'T00:00:00Z')-Date.parse(current.startDate+'T00:00:00Z'))/86400000,364);
+  assert.ok(!JSON.stringify(current).includes('Test Title'));
+  assert.ok(!JSON.stringify(current).includes('Test Artist'));
+  for(const search of ['range=invalid','range=year&year=1000','range=year&year=2026&scope=other','offset=NaN']){
+    const bad=new URL('https://wasp.example/api/telemetry/heatmap?'+search);
+    const response=await telemetryApi(new Request(bad),env,bad);
+    assert.equal(response.status,400,search);
+  }
 });

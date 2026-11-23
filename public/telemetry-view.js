@@ -5,7 +5,7 @@ const safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 const n=v=>Number(v||0).toLocaleString();
 const clip=s=>String(s||'').slice(0,190);
 function localToday(){const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
-const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0,rankingSort:'most'};
+const state={mode:'top',sub:'telemetry',items:[],query:'',scope:'hive',period:'week',year:new Date().getFullYear(),month:new Date().getMonth()+1,start:localToday(),request:0,rankingSort:'most',heatmapRange:'rolling'};
 const names={top:'Most listened',hearts:'Most hearted',stars:'Most starred',likes:'Most liked',dislikes:'Most disliked'};
 const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const tagColors=['#c8f169','#49d8be','#7ba7ff','#a88bff','#ffba67','#ec86b6','#62bfed','#89b8a0'];
@@ -170,6 +170,83 @@ function fingerprint(data){
   return `<svg viewBox="0 0 300 228" width="100%" role="img" aria-label="Five-axis listening fingerprint">${[30,55,82].map(r=>`<polygon points="${labels.map((_,i)=>point(i,r)).join(' ')}" fill="none" stroke="#524e45"/>`).join('')}${axis}<polygon points="${poly}" fill="rgba(200,241,105,.27)" stroke="#c8f169" stroke-width="2"/></svg>`;
 }
 function metric(label,value,extra=''){return `<div class="metric"><span class="lab">${safe(label)}</span><strong>${n(value)}</strong><small>${safe(extra||'This period')}</small></div>`;}
+
+// v18.1.4 — calendar heatmap. UTC dates here are local calendar labels supplied by the server
+// after the client's requested minute offset has already been applied to play timestamps.
+const HEAT_DAY_MS=86_400_000;
+let heatmapMemo=new Map(),heatmapVersion=0;
+function heatmapQuery(){
+ const params=new URLSearchParams({scope:state.scope,range:state.heatmapRange,year:String(state.year),offset:String(-new Date().getTimezoneOffset())});
+ return params.toString();
+}
+function getHeatmap(force=false){
+ const key=heatmapQuery(),cached=heatmapMemo.get(key);
+ if(!force&&cached&&cached.until>Date.now())return cached.promise;
+ const promise=fetch('/api/telemetry/heatmap?'+key,{cache:'no-store'}).then(async response=>{
+   const body=await response.json();if(!response.ok)throw Error(body.error||'Daily plays are temporarily unavailable');
+   if(!Array.isArray(body.days)||!/^\d{4}-\d{2}-\d{2}$/.test(body.startDate||'')||!/^\d{4}-\d{2}-\d{2}$/.test(body.endDate||''))throw Error('Invalid daily telemetry response');
+   const current=heatmapMemo.get(key);if(current?.promise===promise)current.until=Date.now()+Math.max(60000,Number(body.refreshMs)||300000);
+   return body;
+ }).catch(e=>{if(heatmapMemo.get(key)?.promise===promise)heatmapMemo.delete(key);throw e;});
+ heatmapMemo.set(key,{promise,until:Date.now()+60000});if(heatmapMemo.size>8)heatmapMemo.delete(heatmapMemo.keys().next().value);
+ return promise;
+}
+function heatColor(plays){return plays<=0?0:plays<=2?1:plays<=5?2:plays<=10?3:4;}
+function heatmapMarkup(data){
+ if(!data)return `<div class="heatmap-empty" role="status">Daily play counts could not be loaded. Use Refresh telemetry to retry.</div>`;
+ const start=Date.parse(data.startDate+'T00:00:00Z'),end=Date.parse(data.endDate+'T00:00:00Z');
+ if(!Number.isFinite(start)||!Number.isFinite(end)||end<start||end-start>367*HEAT_DAY_MS)return '<p class="message">Daily calendar range is unavailable.</p>';
+ const values=new Map(data.days.map(d=>[d.day,Number(d.plays)||0]));
+ const leading=new Date(start).getUTCDay(),first=start-leading*HEAT_DAY_MS;
+ const weeks=Math.ceil((leading+(end-start)/HEAT_DAY_MS+1)/7);
+ const monthLabels=[];let previous='';
+ for(let i=0;i<weeks;i++){
+   const sunday=first+i*7*HEAT_DAY_MS;
+   for(let day=0;day<7;day++){
+     const stamp=sunday+day*HEAT_DAY_MS;
+     if(stamp<start||stamp>end)continue;
+     const iso=new Date(stamp).toISOString().slice(0,10);
+     const month=iso.slice(0,7);
+     if(month!==previous){monthLabels.push({index:i+1,label:months[Number(iso.slice(5,7))-1]});previous=month;}
+   }
+ }
+ // A partial first month may occupy only one week; omit that cramped label instead of overlapping next month.
+ if(monthLabels.length>1&&monthLabels[1].index-monthLabels[0].index<4)monthLabels.shift();
+ const cells=[];
+ for(let week=0;week<weeks;week++)for(let row=0;row<7;row++){
+   const stamp=first+(week*7+row)*HEAT_DAY_MS;
+   if(stamp<start||stamp>end){cells.push('<span class="heat-day outside" aria-hidden="true"></span>');continue;}
+   const day=new Date(stamp).toISOString().slice(0,10),plays=values.get(day)||0;
+   const label=new Date(stamp).toLocaleDateString('en-US',{timeZone:'UTC',weekday:'long',year:'numeric',month:'long',day:'numeric'});
+   cells.push(`<span class="heat-day level-${heatColor(plays)}" tabindex="0" role="img" aria-label="${safe(label)}: ${n(plays)} confirmed plays" data-tip="${safe(label)} · ${n(plays)} confirmed play${plays===1?'':'s'}"></span>`);
+ }
+ // Newest week is at the right. A small horizontal scrollbar preserves readable cells on phones.
+ return `<div class="heatmap-scroll" tabindex="0" role="region" aria-label="Daily plays calendar; scroll horizontally on smaller screens"><div class="heatmap-chart" style="--heat-weeks:${weeks}">
+   <div class="heatmap-months">${monthLabels.map(m=>`<span style="grid-column:${m.index}">${m.label}</span>`).join('')}</div>
+   <div class="heatmap-days"><div class="heatmap-weekdays"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>
+   <div class="heatmap-cells">${cells.join('')}</div></div></div></div>`;
+}
+function heatmapPanel(data){
+ const range=state.heatmapRange,summary=data?`<strong>${n(data.plays)} plays</strong> ${range==='year'?'in '+state.year:'in the last 365 days'}`:'Daily listening activity';
+ return `<div class="panel hive-heatmap-panel" data-heatmap-panel><div class="heatmap-head"><div><h2>Across the HIVE</h2><p class="heatmap-total">${summary}</p></div>
+   <label class="heatmap-range-label"><span class="sr-only">Heatmap range</span><select id="heatmapRange" aria-label="Heatmap date range"><option value="rolling" ${range==='rolling'?'selected':''}>Last year</option><option value="year" ${range==='year'?'selected':''}>Year ${state.year}</option></select></label></div>
+   ${heatmapMarkup(data)}
+   <div class="heatmap-footer"><p>Each block represents the total confirmed plays for that day.</p><div class="heatmap-legend" aria-label="Less to more daily plays"><span>Less</span>${[0,1,2,3,4].map(level=>`<i class="level-${level}" aria-hidden="true"></i>`).join('')}<span>More</span></div></div></div>`;
+}
+async function changeHeatmapRange(range){
+ if(!['rolling','year'].includes(range))return;
+ state.heatmapRange=range;
+ const panel=root.querySelector('[data-heatmap-panel]');if(!panel)return;
+ const sequence=++heatmapVersion,request=state.request;
+ panel.outerHTML=heatmapPanel(null);
+ try{
+   const data=await getHeatmap();
+   if(state.request!==request||heatmapVersion!==sequence||state.mode!=='top'||state.sub!=='telemetry')return;
+   const current=root.querySelector('[data-heatmap-panel]');if(current)current.outerHTML=heatmapPanel(data);
+ }catch{/* The panel already contains a clear error instead of stale cells. */}
+ resized();
+}
+
 const tileNames=['history','clock','artists','albums','tracks','weekdays','fingerprint','genres','decades'];
 const periods=[['week','Week'],['month','Month'],['year','Year'],['all','All time']];
 let overrides={},summaryMemo=new Map();
@@ -213,8 +290,10 @@ async function showHive({quiet=false,keep=false}={}){
   if(!quiet&&!keep)root.innerHTML=`<div class="heading"><div><span class="eyebrow">WASP · NETWORK LISTENING</span><h1>HIVE Telemetry</h1><p>ONE HIVE. EVERY BEAT.</p></div><span class="status">Loading historical data…</span></div>${controls()}<p class="loading">Reading cached telemetry…</p>`;
   resized();
   try{
-    if(quiet)summaryMemo.clear();
-    const requested=[...new Set([state.period,...Object.values(overrides)])];const reports=new Map(await Promise.all(requested.map(async p=>[p,await getSummary(p)])));
+    if(quiet){summaryMemo.clear();heatmapMemo.clear();}
+    const requested=[...new Set([state.period,...Object.values(overrides)])];
+    const [summaries,heatmap]=await Promise.all([Promise.all(requested.map(async p=>[p,await getSummary(p)])),getHeatmap().catch(()=>null)]);
+    const reports=new Map(summaries);
     if(request!==state.request)return;
     const data=reports.get(state.period),tile=id=>reports.get(overrides[id]||state.period)||data;
     artOrigins=Array.isArray(data.artworkOrigins)?data.artworkOrigins:[];
@@ -227,8 +306,7 @@ async function showHive({quiet=false,keep=false}={}){
       <div class="panel" data-tile-card="clock"><div class="chart-head"><h2>Listening clock</h2>${tileControls('clock')}<small>By hour · your timezone</small></div><div class="tile-body">${hourChart(tile('clock').hours||[])}</div></div></div>
       <div class="section"><h2>Most played music</h2><div class="three-col">${rankList(tile('artists').topArtists,'artists')}${rankList(tile('albums').topAlbums,'albums')}${rankList(tile('tracks').topTracks,'tracks')}</div></div>
       <div class="two-col section"><div class="panel" data-tile-card="weekdays"><h2>Days of the week</h2>${tileControls('weekdays')}<div class="tile-body">${bars(tile('weekdays').weekdays||[],true)}</div></div>
-      <div class="info-card"><h3>Across the HIVE</h3><p><b>${n(data.nodes)}</b> contributing origin servers in this period.</p>
-      <p><b>${n(data.connectedCaches)}</b> peer cursors synchronized to this server.</p><p>Each server keeps its own cached copy. Events carry unique origin identifiers so relayed plays can be counted once.</p></div></div>
+      ${heatmapPanel(heatmap)}</div>
       <div class="section"><h2>Listening fingerprint & quick facts</h2><div class="two-col">
         <div class="panel" data-tile-card="fingerprint"><div class="chart-head"><h2>Music fingerprint</h2>${tileControls('fingerprint')}<small>Recorded activity, not personal profiling</small></div>
           <div class="tile-body fingerprint">${fingerprint(tile('fingerprint'))}</div>
@@ -295,6 +373,7 @@ root.addEventListener('focusin',e=>{
 });
 root.addEventListener('focusout',()=>{showTooltip(null,'');updateTagFocus(null);});
 root.addEventListener('change',e=>{
+  if(e.target.id==='heatmapRange'){void changeHeatmapRange(e.target.value);return;}
   if(e.target.id==='year')state.year=int(e.target.value,2000,2100);
   else if(e.target.id==='month')state.month=int(e.target.value,1,12);
   else if(e.target.id==='scope')state.scope=e.target.value==='local'?'local':'hive';
@@ -327,7 +406,7 @@ window.addEventListener('message',event=>{
   state.sub=typeof data.sub==='string'?data.sub:'ranked';
   state.items=Array.isArray(data.items)?data.items.slice(0,100):[];
   state.query=String(data.query||'');
-  if(state.mode==='top'&&state.sub==='telemetry'){if(!wasTelemetry||!state.opened){state.period='week';state.start=localToday();state.year=new Date().getFullYear();overrides={};state.opened=true;}void showHive();}else{state.opened=false;showRanking();}
+  if(state.mode==='top'&&state.sub==='telemetry'){if(!wasTelemetry||!state.opened){state.period='week';state.start=localToday();state.year=new Date().getFullYear();state.heatmapRange='rolling';overrides={};state.opened=true;}void showHive();}else{state.opened=false;showRanking();}
 });
 const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(resized):null;
 if(observer)observer.observe(root);

@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.1.1 — Public Live Announcements & Telemetry Refresh.** See the [v18.1.1 feature guide](docs/V18-1-1-PUBLIC-ANNOUNCEMENTS-TELEMETRY-REFRESH.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.1.4 — HIVE Daily Plays Heatmap.** See the [feature guide](docs/V18-1-4-HIVE-DAILY-PLAYS-HEATMAP.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -130,6 +130,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.4 — HIVE daily plays heatmap | [WASP-native 365-day play calendar, date tooltips, HIVE/local scope, caching](docs/V18-1-4-HIVE-DAILY-PLAYS-HEATMAP.md) |
 | v18.1.3a — Release Updates channel hotfix | [Test channel selection, 404 handling and optional private-repository access](docs/V18-1-3A-RELEASE-UPDATES-CHANNEL-FIX.md) |
 | v18.1.3 — GitHub Release Updates | [Stable/Test channels, GitHub release and commit notifications, opt-in admin guidance](docs/V18-1-3-GITHUB-RELEASE-UPDATES.md) |
 | v18.1.2a — Compact ranking sort control | [Icon toggle beside Most starred/hearted headings](docs/V18-1-2A-COMPACT-RANKING-TOGGLE.md) |

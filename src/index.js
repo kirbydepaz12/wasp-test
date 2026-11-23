@@ -14,8 +14,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.3a";
-const BUILD_LABEL = "Release Updates Channel Hotfix";
+const BUILD_VERSION = "18.1.4";
+const BUILD_LABEL = "HIVE Daily Plays Heatmap";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1841,7 +1841,7 @@ async function api(req, env, url, ctx) {
     const info=await sessionInfo(req,env);if(info?.role!=='admin')return json({error:'Administrator required'},403);
     await ensureTelemetrySchemaForMetadata(env);return metadataAdmin(req,env,url);
   }
-  if(path==='/api/telemetry'||path==='/api/telemetry/feed')return telemetryApi(req,env,url);
+  if(path==='/api/telemetry'||path==='/api/telemetry/feed'||path==='/api/telemetry/heatmap')return telemetryApi(req,env,url);
   if(path==='/api/admin/telemetry/sync'){
     const info=await sessionInfo(req,env);
     return telemetryApi(req,env,url,{admin:info?.role==='admin'});

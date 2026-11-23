@@ -391,9 +391,54 @@ export async function syncTelemetryPeers(env,{fetcher=fetch,force=false,selected
   return {checked,imported,errors,totalPeers:available.length};
 }
 
+
+// v18.1.4 — one bounded, cacheable daily-activity query, separate from heavyweight telemetry charts.
+// Both Docker and Cloudflare use the existing deduplicated, origin-aware HIVE events.
+export async function telemetryHeatmap(env,url) {
+  await ensureTelemetrySchema(env);
+  const params=url.searchParams;
+  const scope=params.get('scope')||'hive';
+  const local=(await env.DB.prepare("SELECT value FROM settings WHERE key='telemetry_instance_id'").first())?.value||'';
+  const filter=scopeSql(scope,local);
+  const mode=params.get('range')||'rolling';
+  if(mode!=='rolling'&&mode!=='year')throw Error('Invalid heatmap range');
+  const rawOffset=Number(params.get('offset')||0);
+  if(!Number.isFinite(rawOffset))throw Error('Invalid timezone offset');
+  const offset=Math.max(-720,Math.min(840,Math.trunc(rawOffset))), shift=offset*MINUTE;
+  const now=new Date(),rawYear=params.get('year')||String(now.getUTCFullYear());
+  if(!/^\d{4}$/.test(rawYear))throw Error('Invalid heatmap year');
+  const year=Number(rawYear);
+  if(year<2000||year>now.getUTCFullYear()+1)throw Error('Invalid heatmap year');
+  const dayMs=86_400_000;
+  const today=Math.floor((Date.now()+shift)/dayMs)*dayMs;
+  const start=mode==='rolling'?today-(364*dayMs)-shift:Date.UTC(year,0,1)-shift;
+  const end=mode==='rolling'?today+dayMs-shift:Date.UTC(year+1,0,1)-shift;
+  const key=`v184:heatmap:${scope}:${mode}:${start}:${end}:${offset}`;
+  const cached=await env.DB.prepare('SELECT body FROM telemetry_summary_cache WHERE key=? AND expires_at>?').bind(key,Date.now()).first();
+  if(cached?.body){try{return JSON.parse(cached.body);}catch{/* recompute corrupt cache */}}
+  const rows=await env.DB.prepare(`SELECT strftime('%Y-%m-%d',(played_at+${shift})/1000,'unixepoch') AS day, COUNT(*) AS plays
+    FROM telemetry_events WHERE played_at>=? AND played_at<?${filter.where}
+    GROUP BY day ORDER BY day`).bind(start,end,...filter.extra).all().then(toRows);
+  const days=rows.filter(row=>/^\d{4}-\d{2}-\d{2}$/.test(row.day)).map(row=>({day:row.day,plays:Number(row.plays)||0}));
+  const cacheMs=env.WASP_RUNTIME==='docker'?60_000:FRESH_MS;
+  const data={range:mode,scope,year,offset,
+    startDate:new Date(start+shift).toISOString().slice(0,10),
+    endDate:new Date(end+shift-dayMs).toISOString().slice(0,10),
+    plays:days.reduce((total,row)=>total+row.plays,0),days,
+    generatedAt:Date.now(),refreshMs:cacheMs};
+  await env.DB.prepare(`INSERT INTO telemetry_summary_cache(key,body,expires_at) VALUES(?,?,?)
+    ON CONFLICT(key) DO UPDATE SET body=excluded.body,expires_at=excluded.expires_at`)
+    .bind(key,JSON.stringify(data),Date.now()+cacheMs).run();
+  return data;
+}
+
 export async function telemetryApi(req,env,url,{admin=false}={}) {
   if(req.method!=='GET'&&url.pathname!=='/api/admin/telemetry/sync')return result({error:'Method not allowed'},405);
   if(url.pathname==='/api/telemetry/feed')return telemetryFeed(env,url);
+  if(url.pathname==='/api/telemetry/heatmap'){
+    try{return result(await telemetryHeatmap(env,url));}
+    catch(e){return result({error:text(e.message)},400);}
+  }
   if(url.pathname==='/api/telemetry') {
     try{return result(await telemetrySummary(env,url));}
     catch(e){return result({error:text(e.message)},400);}

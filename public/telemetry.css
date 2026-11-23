@@ -77,3 +77,42 @@
 .ranking-sort-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .ranking-sort-toggle img{display:block;width:24px;height:24px;object-fit:contain}
 @media(max-width:500px){.ranking-title-row{gap:9px}.ranking-sort-toggle{width:34px;height:34px;padding:5px}.ranking-sort-toggle img{width:22px;height:22px}}
+
+
+/* v18.1.4 — WASP-native GitHub-style HIVE daily plays heatmap. */
+.hive-heatmap-panel{min-width:0;display:flex;flex-direction:column;gap:0}
+.heatmap-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.heatmap-head h2{margin:0 0 5px;font-size:18px}
+.heatmap-total{margin:0;color:var(--muted);font-size:13px}
+.heatmap-total strong{color:var(--accent);font-size:17px}
+.heatmap-range-label{display:flex;margin-top:0}
+.heatmap-range-label select{border:1px solid #91bd43;border-radius:11px;background:#22221d;color:var(--text);padding:8px 28px 8px 11px;min-height:38px;font-weight:600;max-width:175px}
+.heatmap-scroll{min-width:0;width:100%;overflow-x:auto;overflow-y:hidden;margin-top:20px;padding:2px 0 12px;scrollbar-color:#5a594e transparent;scrollbar-width:thin}
+.heatmap-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.heatmap-chart{--heat-cell:clamp(8px,.69vw,11px);--heat-gap:3px;--heat-label:31px;width:max-content;min-width:0;padding-right:28px}
+.heatmap-months{display:grid;grid-template-columns:repeat(var(--heat-weeks),var(--heat-cell));column-gap:var(--heat-gap);height:20px;margin-left:var(--heat-label);color:var(--muted);font-size:10px}
+.heatmap-months span{white-space:nowrap;line-height:16px}
+.heatmap-days{display:flex;gap:0}
+.heatmap-weekdays{width:var(--heat-label);flex:0 0 var(--heat-label);display:grid;grid-template-rows:repeat(7,var(--heat-cell));row-gap:var(--heat-gap);font-size:10px;color:var(--muted)}
+.heatmap-weekdays span{display:flex;align-items:center}
+.heatmap-cells{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,var(--heat-cell));grid-auto-columns:var(--heat-cell);gap:var(--heat-gap)}
+.heat-day,.heatmap-legend i{display:block;width:var(--heat-cell);height:var(--heat-cell);border-radius:2px}
+.heat-day{cursor:help;transition:filter .12s,outline-color .12s}
+.heat-day.outside{background:transparent;pointer-events:none}
+.heat-day.level-0,.heatmap-legend .level-0{background:#111210;border:1px solid #363730}
+.heat-day.level-1,.heatmap-legend .level-1{background:#295c24}
+.heat-day.level-2,.heatmap-legend .level-2{background:#4a902e}
+.heat-day.level-3,.heatmap-legend .level-3{background:#82cb43}
+.heat-day.level-4,.heatmap-legend .level-4{background:#c8f169}
+.heat-day:hover,.heat-day:focus-visible{outline:2px solid #f0ffd7;outline-offset:1px;filter:brightness(1.25)}
+.heatmap-footer{margin-top:auto;padding-top:13px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.heatmap-footer p{font-size:11px;color:var(--muted);margin:0}
+.heatmap-legend{display:flex;gap:4px;align-items:center;color:var(--muted);font-size:11px;white-space:nowrap}
+.heatmap-legend i{--heat-cell:11px;flex:none}
+.heatmap-legend span:first-child{margin-right:4px}.heatmap-legend span:last-child{margin-left:4px}
+.heatmap-empty{padding:40px 6px 32px;color:var(--muted);font-size:12px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(min-width:1440px){.heatmap-chart{--heat-cell:9px}}
+@media(max-width:900px){.heatmap-chart{--heat-cell:10px}}
+@media(max-width:500px){.heatmap-scroll{margin-top:12px}.heatmap-head{align-items:center}.heatmap-head h2{font-size:17px}.heatmap-total strong{font-size:15px}}
+@media(prefers-reduced-motion:reduce){.heat-day{transition:none}}
