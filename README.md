@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-1-1-PUBLIC-ANNOUNCEMENTS-TELEMETRY-REFRESH.md">Latest feature guide (v18.1.1)</a>
+    <a href="docs/V18-1-5-PC-PICARD-METADATA-SOURCE.md">Latest feature guide (v18.1.5)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.1.4 — HIVE Daily Plays Heatmap.** See the [feature guide](docs/V18-1-4-HIVE-DAILY-PLAYS-HEATMAP.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.1.5 — Windows Picard Metadata Source & Manual HIVE Pull.** See the [feature guide](docs/V18-1-5-PC-PICARD-METADATA-SOURCE.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -53,6 +53,8 @@ The credential above applies **only to a fresh database**; upgrading an existing
 4. Open the local URL printed by Wrangler (typically `http://localhost:8787`).
 
 To regenerate the bundled admin-readable documentation after editing files in `docs/`, run `npm run build:docs`. To execute the backend regression suite, use `npm test`.
+
+**Temporary Windows Picard metadata server:** after `npm install`, run `npm run pc` (not `npm run dev`). On `http://localhost:8787/admin#collection`, specify e.g. `D:\MUSIC` and click **Scan now**. This starts a separate, read-only PC metadata feed on loopback port **8792**. Tunnel **only 8792** securely; never expose ports 8787 or 8788. [Full setup and receiving-deployment instructions](docs/V18-1-5-PC-PICARD-METADATA-SOURCE.md).
 
 Local development does **not** automatically publish music or replace your production Cloudflare/Docker installation. Treat any local test data and admin credentials as separate from production.
 
@@ -130,6 +132,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.5 — Windows Picard metadata source and manual pull | [PC-only npm music-folder scanner, metadata feed, peer import, review, undo](docs/V18-1-5-PC-PICARD-METADATA-SOURCE.md) |
 | v18.1.4 — HIVE daily plays heatmap | [WASP-native 365-day play calendar, date tooltips, HIVE/local scope, caching](docs/V18-1-4-HIVE-DAILY-PLAYS-HEATMAP.md) |
 | v18.1.3a — Release Updates channel hotfix | [Test channel selection, 404 handling and optional private-repository access](docs/V18-1-3A-RELEASE-UPDATES-CHANNEL-FIX.md) |
 | v18.1.3 — GitHub Release Updates | [Stable/Test channels, GitHub release and commit notifications, opt-in admin guidance](docs/V18-1-3-GITHUB-RELEASE-UPDATES.md) |

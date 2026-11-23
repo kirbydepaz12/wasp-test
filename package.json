@@ -1,6 +1,6 @@
 {
   "name": "wasp-music",
-  "version": "18.1.4",
+  "version": "18.1.5",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
@@ -9,7 +9,8 @@
     "build:docs": "node scripts/build-docs.mjs && node scripts/write-build-sha.mjs",
     "test:mobile": "node --test tests/v16_mobile_bridge.test.mjs",
     "test": "node --test tests/*.test.mjs",
-    "test:v18": "node --test tests/v18_features.test.mjs"
+    "test:v18": "node --test tests/v18_features.test.mjs",
+    "pc": "node pc/local-source.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.50.0"

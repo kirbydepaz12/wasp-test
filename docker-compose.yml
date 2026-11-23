@@ -33,6 +33,12 @@ services:
       WASP_BUILD_SHA: ${WASP_BUILD_SHA:-}
       # Optional fine-grained GitHub PAT with read-only access for a private Test repository.
       GITHUB_UPDATES_TOKEN: ${GITHUB_UPDATES_TOKEN:-}
+      # Optional explicitly authorized PC metadata feed (set as deployment secrets).
+      WASP_METADATA_SOURCE_URL: ${WASP_METADATA_SOURCE_URL:-}
+      WASP_METADATA_PULL_TOKEN: ${WASP_METADATA_PULL_TOKEN:-}
+      WASP_METADATA_SOURCES_JSON: ${WASP_METADATA_SOURCES_JSON:-}
+      WASP_METADATA_ACCESS_CLIENT_ID: ${WASP_METADATA_ACCESS_CLIENT_ID:-}
+      WASP_METADATA_ACCESS_CLIENT_SECRET: ${WASP_METADATA_ACCESS_CLIENT_SECRET:-}
       LASTFM_API_KEY: ${LASTFM_API_KEY:-}
       LASTFM_SHARED_SECRET: ${LASTFM_SHARED_SECRET:-}
       # Optional canonical-origin -> configured Tailscale bridge URL mapping.

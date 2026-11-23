@@ -14,8 +14,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.4";
-const BUILD_LABEL = "HIVE Daily Plays Heatmap";
+const BUILD_VERSION = "18.1.5";
+const BUILD_LABEL = "PC Picard Source & Manual Metadata Pull";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1544,6 +1544,7 @@ async function touchCatalogue(DB) {
 function changesCatalogue(path) {
   return path === "/api/internal/folder-index" || path === "/api/admin/upload" ||
     path === "/api/admin/clean" || path.startsWith("/api/admin/tracks/") ||
+    path==="/api/admin/metadata-bank/apply" || path==="/api/admin/metadata-bank/undo" ||
     path.startsWith("/api/admin/playlists") || (path.startsWith("/api/admin/requests/") && ! ["/api/admin/requests/housekeeping","/api/admin/requests/review"].includes(path)) ||
     path.startsWith("/api/user/playlists");
 }
@@ -1835,6 +1836,17 @@ async function api(req, env, url, ctx) {
       await clearAdminLog(DB,info.username||'admin');return json({ok:true});
     }
     return json({error:'Not found'},404);
+  }
+  // v18.1.5: remote metadata sources are defined in server secrets, not by
+  // arbitrary URLs passed by the browser. All import/apply routes are admin-only.
+  if(path.startsWith('/api/admin/metadata-bank/')){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    const response=await metadataBankApi(req,env,url,{makeArtistIndex:artistIndexStatements});
+    if(response.ok&&m==='POST'&&['/api/admin/metadata-bank/apply','/api/admin/metadata-bank/undo'].includes(path)){
+      try{const result=await response.clone().json();if(result.applied||result.undone)await touchCatalogue(DB);}catch{}
+    }
+    return response;
   }
   if(path==='/api/telemetry/metadata/feed'&&m==='GET'){await ensureTelemetrySchemaForMetadata(env);return metadataFeed(env,url);}
   if(/^\/api\/admin\/telemetry\/metadata(?:\/(?:test|run|status|start|pause|stop|pull|rescan-files|offline-status|offline-download|offline-cancel))?$/.test(path)){

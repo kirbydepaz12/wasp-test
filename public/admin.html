@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.1.4">
+<link rel="stylesheet" href="/style.css?v=18.1.5">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -53,6 +53,15 @@
     <!-- Music collection -->
     <section class="pane" id="s-collection">
       <h1>Music collection</h1>
+      <div class="card hidden" id="pcMetadataSourcePanel">
+        <h2>Local Music Metadata Source <span class="muted">· Windows PC only</span></h2>
+        <p class="muted">Read Picard-corrected MP3 tags from your PC. This only builds a metadata catalogue; it does not upload, rename or delete audio, or add songs to the playable collection.</p>
+        <label for="pcMusicPath">Windows music folder</label>
+        <div class="form" style="gap:10px;align-items:center;margin-top:8px"><input id="pcMusicPath" type="text" style="flex:1;min-width:200px" placeholder="D:\MUSIC" autocomplete="off" spellcheck="false"><button class="btn" type="button" id="pcScanNow">Scan now</button></div>
+        <progress id="pcScanProgress" max="100" value="0" style="width:100%;margin-top:12px"></progress>
+        <p class="muted" id="pcScanProgressText" role="status" aria-live="polite">No scan started.</p>
+        <p class="msg" id="pcScanMessage" role="status"></p>
+      </div>
       <div class="card">
         <div class="form" style="justify-content:space-between;margin-bottom:12px"><h2 style="margin:0">Songs <span class="muted" id="count"></span></h2><span class="form"><button class="btn ghost" id="refreshArt" type="button">Refresh artwork</button><button class="btn ghost" id="updateBios" type="button">Update artist bio</button></span></div>
         <p class="msg" id="bioMsg" role="status"></p>
@@ -412,6 +421,24 @@
               <p id="metadataOfflineError" class="msg" role="status"></p>
             </section>
             <section class="metadata-section">
+              <div id="metadataBankPanel" class="metadata-bank-panel">
+                <h3>Metadata · Pull from Sources</h3>
+                <p class="muted">Select an authorized source and manually import its Picard metadata. Each record is matched against tracks hosted on this server. No audio moves between WASP installations. Nothing is applied until reviewed.</p>
+                <div id="metadataBankSources" class="metadata-source-list"><p class="muted">Loading configured metadata sources…</p></div>
+                <div class="metadata-actions"><button class="btn" type="button" id="metadataBankPull">Pull metadata from selected peers now</button><button class="btn ghost" type="button" id="metadataBankRefresh">Refresh sources</button></div>
+                <div class="metadata-actions"><button class="btn ghost" type="button" id="metadataBankFingerprint">Prepare local audio matches</button><button class="btn ghost" type="button" id="metadataBankPreview">Review metadata changes</button></div>
+                <progress id="metadataBankProgress" max="100" value="0" style="width:100%;margin-top:10px"></progress>
+                <p class="muted" id="metadataBankStatus" role="status" aria-live="polite">Only the selected metadata source is contacted. Previously imported plays and playlists are not changed.</p>
+                <div id="metadataBankReview" class="hidden" style="margin-top:14px">
+                  <h4>Review matching metadata</h4>
+                  <p class="muted" id="metadataBankReviewStats"></p>
+                  <div id="metadataBankRows"></div>
+                  <div class="metadata-actions"><button type="button" class="btn ghost" id="metadataBankNext">Next results</button><button type="button" class="btn" id="metadataBankApply">Apply selected verified metadata</button></div>
+                  <p class="muted">Only exact-audio matches or tracks explicitly assigned by the administrator may be applied. Existing metadata can change, but song IDs and audio objects remain untouched.</p>
+                  <div class="metadata-actions"><select id="metadataBankHistory" aria-label="Previous metadata batches"><option value="">Previous applied batches…</option></select><button type="button" class="btn ghost" id="metadataBankUndo">Undo selected metadata batch</button></div>
+                </div>
+              </div>
+              <hr style="margin:18px 0">
               <h3>Preferred metadata provider</h3>
               <label class="metadata-check"><input type="radio" name="metadata-preference" value="musicbrainz" checked><span>Prioritize MusicBrainz</span></label>
               <label class="metadata-check"><input type="radio" name="metadata-preference" value="lastfm"><span>Prioritize Last.fm</span></label>
@@ -604,6 +631,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.1.4"></script>
+<script type="module" src="/admin.js?v=18.1.5"></script>
 </body>
 </html>

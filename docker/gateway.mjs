@@ -169,9 +169,28 @@ function streamFile(req,res,t){
  res.writeHead(match?206:200,{'content-type':types[ext]||'application/octet-stream','accept-ranges':'bytes','content-length':end-start+1,...(match?{'content-range':`bytes ${start}-${end}/${t.size}`}:{})});
  if(req.method==='HEAD'){res.end();return;}fs.createReadStream(t.path,{start,end}).on('error',()=>res.destroy()).pipe(res);
 }
+// Exact MPEG payload fingerprint for matching a Picard-retagged Windows copy.
+// Reads a configured, read-only /music file. Never makes its bytes downloadable.
+async function payloadHash(file,size){
+ const fd=await fs.promises.open(file,'r');let start=0,end=size;
+ try{const head=Buffer.alloc(10),tail=Buffer.alloc(Math.min(128,size));await fd.read(head,0,10,0);await fd.read(tail,0,tail.length,size-tail.length);
+  if(head.toString('ascii',0,3)==='ID3'&&[2,3,4].includes(head[3])){const length=10+((head[6]&127)<<21)+((head[7]&127)<<14)+((head[8]&127)<<7)+(head[9]&127)+(head[5]&0x10?10:0);if(length<size)start=length;}
+  if(tail.length===128&&tail.toString('ascii',0,3)==='TAG')end-=128;
+ }finally{await fd.close();}
+ if(end<=start)throw Error('No MP3 audio payload');const h=crypto.createHash('sha256');
+ for await(const chunk of fs.createReadStream(file,{start,end:end-1,highWaterMark:512*1024}))h.update(chunk);
+ return h.digest('hex');
+}
 const server=http.createServer(async(req,res)=>{
  const u=new URL(req.url,'http://localhost');
  if(await offline.handle(req,res,u))return;
+ if(u.pathname==='/_internal/metadata-audio-hash'&&req.method==='GET'){
+   if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
+   const id=u.searchParams.get('id')||'',entry=catalogue.get(id);
+   if(!entry||!/\.mp3$/i.test(entry.path)||entry.size>64*1024*1024){res.writeHead(404);res.end();return;}
+   try{const hash=await payloadHash(entry.path,entry.size);res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify({hash}));}
+   catch{res.writeHead(500);res.end();}return;
+ }
  if(u.pathname==='/_internal/hash-scan'&&req.method==='POST'){
    if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
    void hashScan();res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({ok:true}));return;

@@ -1816,3 +1816,65 @@ setInterval(()=>{if(location.hash.startsWith('#duplicates'))loadDuplicates();},1
 
 // Low-frequency polling for outstanding publishing requests; no user addresses are exposed.
 setInterval(pollAdminPublishRequests,30000);
+
+// WASP v18.1.5 — temporary Windows npm metadata source. The route is
+// implemented only by the local Node proxy, never by Cloudflare or Docker.
+let pcScanActive=false,pcScanLoading=false;
+async function readPcScan(){if(pcScanLoading)return;pcScanLoading=true;
+ try{const r=await fetch('/api/admin/pc-source/status',{cache:'no-store'});if(!r.ok)return;const d=await r.json();if(!d.local_pc)return;
+  $('#pcMetadataSourcePanel').classList.remove('hidden');if(document.activeElement!==$('#pcMusicPath')&&!$('#pcMusicPath').value)$('#pcMusicPath').value=d.folder||'';
+  const s=d.scan||{},total=s.discovered||0,done=s.processed||0;$('#pcScanProgress').value=total?Math.round(100*done/total):0;
+  pcScanActive=s.state==='running';$('#pcScanNow').disabled=pcScanActive;
+  $('#pcScanProgressText').textContent=`${s.state||'idle'} · ${done.toLocaleString()} / ${total.toLocaleString()} MP3 files processed · ${s.changed||0} changed · ${s.skipped||0} unchanged · ${s.errors||0} errors · ${(d.entries||0).toLocaleString()} indexed`;
+  if(s.lastError)$('#pcScanMessage').textContent=s.lastError;
+ }catch{}finally{pcScanLoading=false;}
+}
+$('#pcScanNow').onclick=async()=>{const folder=$('#pcMusicPath').value.trim();if(!folder){$('#pcScanMessage').textContent='Enter an absolute Windows folder path, e.g. D:\\MUSIC.';return;}
+ if(!confirm('Scan this folder read-only and update the local Picard metadata catalogue? No MP3s will be uploaded or modified.'))return;
+ $('#pcScanMessage').textContent='Starting read-only metadata scan…';try{const r=await post('/api/admin/pc-source/scan',{folder});const d=await r.json();if(!r.ok)throw Error(d.error||'Scan failed');$('#pcScanMessage').textContent='Scan started. Keep the PC app running until complete.';await readPcScan();}catch(e){$('#pcScanMessage').textContent=e.message;}
+};
+void readPcScan();setInterval(()=>{if(pcScanActive||location.hash.startsWith('#collection'))void readPcScan();},1800);
+
+// Administrator-only metadata pull: secrets and peer URLs are validated on the
+// server, never stored in browser storage or accepted from arbitrary user URLs.
+let metadataBankSources=[],metadataBankOffset=0,metadataBankBusy=false,metadataBankLastBatch='',metadataBankCurrentSource='';
+const bankMessage=(message,error=false)=>{const el=$('#metadataBankStatus');el.textContent=message;el.classList.toggle('err',error);};
+async function bankApi(route,body){const r=body===undefined?await fetch('/api/admin/metadata-bank/'+route,{cache:'no-store'}):await post('/api/admin/metadata-bank/'+route,body);return metadataResponse(r);}
+async function loadBankSources(){try{const r=await bankApi('sources');metadataBankSources=r.sources||[];
+ const root=$('#metadataBankSources');root.replaceChildren();if(!metadataBankSources.length){const p=document.createElement('p');p.className='muted';p.textContent='No authorized metadata source configured on this deployment. Set WASP_METADATA_SOURCE_URL and WASP_METADATA_PULL_TOKEN (or WASP_METADATA_SOURCES_JSON) in your deployment secrets.';root.append(p);return;}
+ for(const s of metadataBankSources){const label=document.createElement('label');label.className='metadata-check';const input=document.createElement('input');input.type='checkbox';input.value=s.url;input.dataset.bankSource='1';const span=document.createElement('span');span.textContent=`${s.name} · ${s.url}`;label.append(input,span);root.append(label);}metadataBankSources.length===1&&(root.querySelector('input').checked=true);
+ }catch(e){bankMessage(e.message,true);}}
+const bankSelected=()=>[...document.querySelectorAll('[data-bank-source]:checked')].map(e=>e.value);
+$('#metadataBankRefresh').onclick=()=>void loadBankSources();void loadBankSources();
+$('#metadataBankFingerprint').onclick=async()=>{if(metadataBankBusy)return;metadataBankBusy=true;const btn=$('#metadataBankFingerprint');btn.disabled=true;
+ try{let s=await bankApi('fingerprints/status');if(!confirm(`Prepare exact audio-content fingerprints for ${s.remaining} locally hosted songs? WASP will read its existing audio internally in bounded batches. No MP3s will be uploaded or changed.`))return;
+  const total=Number(s.total)||0;while(s.remaining){const d=await bankApi('fingerprints',{});if(d.remaining>=s.remaining&&!d.processed)break;s={...s,remaining:d.remaining};$('#metadataBankProgress').value=total?Math.round(100*(total-d.remaining)/total):100;bankMessage(`Audio identity index: ${total-d.remaining} / ${total} tracks prepared${d.reason?' · '+d.reason:''}. Keep this tab open to continue.`);}
+  bankMessage('Local audio identity preparation complete. You can now pull corrected Picard tags from your selected source.');
+ }catch(e){bankMessage(e.message,true);}finally{btn.disabled=false;metadataBankBusy=false;}}
+$('#metadataBankPull').onclick=async()=>{if(metadataBankBusy)return;const sources=bankSelected();if(!sources.length){bankMessage('Select at least one configured source.',true);return;}
+ if(!confirm('Manually fetch Picard metadata from the selected sources and stage differences for review? No existing tracks will be changed yet.'))return;
+ metadataBankBusy=true;$('#metadataBankPull').disabled=true;$('#metadataBankProgress').value=0;let total=0;
+ try{for(let i=0;i<sources.length;i++){const source=sources[i];let cursor=0,iterations=0;
+  do{const d=await bankApi('pull',{source,cursor});total+=d.staged||0;cursor=d.cursor;iterations++;bankMessage(`Pulling ${source}: ${iterations*25-(25-(d.count||0))} entries examined · ${total} differences staged…`);$('#metadataBankProgress').value=Math.min(98,Math.round((i+0.9)/sources.length*100));if(!d.more)break;if(iterations>5000)throw Error('Page safety limit reached');}while(true);
+  metadataBankCurrentSource=source;}
+ $('#metadataBankProgress').value=100;bankMessage(`Pull complete: ${total} new or changed entries staged for review. Existing tracks were not modified.`);metadataBankOffset=0;await reviewBank();
+ }catch(e){bankMessage('Pull stopped: '+e.message+'. Earlier staged entries are preserved. Retry is idempotent.',true);}finally{metadataBankBusy=false;$('#metadataBankPull').disabled=false;}}
+function bankDataList(){let list=$('#metadataBankTrackOptions');if(!list){list=document.createElement('datalist');list.id='metadataBankTrackOptions';$('#metadataBankReview').append(list);}list.replaceChildren();for(const t of (window.__tracks||[]).slice(0,2000)){const opt=document.createElement('option');opt.value=t.id;opt.label=`${t.title} · ${t.artist}`;list.append(opt);}}
+async function bankHistory(){if(!metadataBankCurrentSource)return;try{const r=await bankApi('history?source='+encodeURIComponent(metadataBankCurrentSource));const sel=$('#metadataBankHistory'),current=sel.value;sel.replaceChildren(new Option('Previous applied batches…',''));
+  for(const b of r.batches||[]){const date=new Date(b.applied_at).toLocaleString();const option=new Option(`${date} · ${b.total} tracks · ${b.undone||0} restored`,b.batch_id);sel.add(option);}sel.value=metadataBankLastBatch||current||'';
+ }catch{}}
+async function reviewBank(){const source=metadataBankCurrentSource||bankSelected()[0];if(!source){bankMessage('Choose a metadata source first.');return;}metadataBankCurrentSource=source;
+ try{const d=await bankApi('pending?source='+encodeURIComponent(source)+'&offset='+metadataBankOffset);$('#metadataBankReview').classList.remove('hidden');$('#metadataBankReviewStats').textContent=`${d.count} unapplied metadata records · ${d.audio_matches} exact audio matches · ${d.review} require confirmation · ${d.unresolved} unmatched or ambiguous.`;
+ const box=$('#metadataBankRows');box.replaceChildren();bankDataList();if(!d.items.length){const p=document.createElement('p');p.className='muted';p.textContent='No pending items on this page. Return to earlier results or pull changed metadata.';box.append(p);}for(const entry of d.items){const t=entry.tags||{},div=document.createElement('div');div.className='metadata-bank-item';
+ div.innerHTML=`<label><input type="checkbox" data-bank-approve="${esc(entry.entry_id)}" ${['audio','manual'].includes(entry.match_type)?'':'disabled'}> <b>${esc(t.title||'Untitled')}</b> · ${esc(t.artist||'Unknown artist')} <span class="muted">${esc(t.album||'')} · ${esc(entry.match_type)}</span></label><p class="muted">Current: ${esc(entry.old_title||'No match')} · ${esc(entry.old_artist||'')} · ${esc(entry.old_album||'')}<br>Picard: ${esc(t.title)} · ${esc(t.artist)} · ${esc(t.album)} · ${esc((t.genre||[]).join('; '))}</p><label class="muted">Existing WASP track ID <input type="text" list="metadataBankTrackOptions" data-bank-target="${esc(entry.entry_id)}" placeholder="Choose an existing track" value="${esc(entry.track_id||'')}" spellcheck="false" style="max-width:360px"></label> <button type="button" class="btn ghost" data-bank-match="${esc(entry.entry_id)}">Confirm manual match</button>`;
+ box.append(div);}$('#metadataBankNext').disabled=metadataBankOffset+40>=d.count;void bankHistory();
+ }catch(e){bankMessage(e.message,true);}}
+$('#metadataBankPreview').onclick=()=>{metadataBankOffset=0;void reviewBank();};$('#metadataBankNext').onclick=()=>{metadataBankOffset+=40;void reviewBank();};
+$('#metadataBankRows').onclick=async e=>{const btn=e.target.closest('[data-bank-match]');if(!btn)return;const id=btn.dataset.bankMatch;const target=$('#metadataBankRows').querySelector(`[data-bank-target="${CSS.escape(id)}"]`)?.value.trim();if(!target){bankMessage('Enter an existing WASP track ID.',true);return;}
+ if(!confirm('Manually match this Picard entry to WASP track '+target+'? Verify they are the same recording before proceeding.'))return;
+ try{await bankApi('assign',{source:metadataBankCurrentSource,entry_id:id,track_id:target,confirm:'match manually'});bankMessage('Manual match saved for review. No track metadata has changed.');await reviewBank();}catch(error){bankMessage(error.message,true);}}
+$('#metadataBankApply').onclick=async()=>{if(metadataBankBusy)return;const ids=[...$('#metadataBankRows').querySelectorAll('[data-bank-approve]:checked')].map(e=>e.dataset.bankApprove).slice(0,20);if(!ids.length){bankMessage('Select exact audio matches or confirmed manual matches.',true);return;}
+ if(prompt(`Apply corrected Picard title, artist, album, track number and additional saved tags to ${ids.length} existing WASP tracks? To confirm, type: apply metadata`)!=='apply metadata')return;
+ metadataBankBusy=true;try{const d=await bankApi('apply',{source:metadataBankCurrentSource,ids,confirm:'apply metadata'});metadataBankLastBatch=d.batch_id||'';bankMessage(`Applied ${d.applied} track updates. Audio, playlists and reactions remain unchanged. Undo batch: ${metadataBankLastBatch||'none'}`);await refresh();await reviewBank();}catch(e){bankMessage(e.message,true);}finally{metadataBankBusy=false;}}
+$('#metadataBankUndo').onclick=async()=>{const batch=$('#metadataBankHistory').value||metadataBankLastBatch||prompt('Enter the metadata batch ID to restore:');if(!batch)return;if(prompt('Restore the previous metadata for this batch? To confirm, type: undo metadata')!=='undo metadata')return;
+ try{const d=await bankApi('undo',{batch_id:batch,confirm:'undo metadata'});bankMessage(`Rolled back ${d.undone} tracks; ${d.conflicts} were changed afterward and were not overwritten.`);await refresh();await reviewBank();}catch(e){bankMessage(e.message,true);}}

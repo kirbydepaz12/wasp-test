@@ -997,3 +997,12 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .admin-release-dismiss{background:none;border:0;color:var(--muted);font:inherit;cursor:pointer;padding:0}
 .admin-release-dismiss:hover{color:var(--text)}
 @media(max-width:640px){.release-check-details{grid-template-columns:1fr}.release-channel-options{flex-direction:column}}
+/* WASP v18.1.5 — manual metadata bank review */
+.metadata-bank-panel { padding-bottom:14px }
+.metadata-bank-item { border:1px solid var(--border, #35342e); border-radius:12px; margin:10px 0; padding:14px; background:rgba(255,255,255,.02) }
+.metadata-bank-item p { line-height:1.6; overflow-wrap:anywhere }
+.metadata-bank-item input[type=text] { width:100%; min-height:36px }
+.metadata-source-list { margin:10px 0; max-height:270px; overflow:auto }
+.metadata-source-list .metadata-check { overflow-wrap:anywhere }
+#pcScanProgress, #metadataBankProgress { accent-color:#bbef6d }
+@media(max-width:650px) { #pcMetadataSourcePanel .form { flex-wrap:wrap } #pcMetadataSourcePanel .form input { width:100% } }
