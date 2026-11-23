@@ -1,5 +1,6 @@
 import {ensureAdminOperations, startAdminOperation, finishAdminOperation, clearAdminLog, readAdminLog, parseAdminCursor, readAdminProcesses} from './admin-operations.js';
 import {metadataAdmin, metadataFeed, runMetadata, rememberFileFacts, rememberPicardFacts} from './hive-metadata.js';
+import {metadataBankApi} from './metadata-bank.js';
 import {RELEASE_DOCS} from "./release-docs.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {ensureHiveRequests,publishHiveRequest,reconcileLocalRequestEvents,syncHiveRequests,
@@ -14,8 +15,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.5";
-const BUILD_LABEL = "PC Picard Source & Manual Metadata Pull";
+const BUILD_VERSION = "18.1.5a";
+const BUILD_LABEL = "PC Picard Metadata Pull Hotfix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 

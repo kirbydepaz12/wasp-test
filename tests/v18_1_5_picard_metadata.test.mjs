@@ -35,3 +35,24 @@ test('v18.1.5 invalid entries and source response are rejected without track mod
 
 test('v18.1.5 worker admin endpoints are denied to guests and PC file scanner is absent on Cloudflare',async()=>{const sqlite=new DatabaseSync(':memory:');class Q{constructor(q,p=[]){this.q=q;this.p=p;}bind(...p){return new Q(this.q,p);}async first(){return sqlite.prepare(this.q).get(...this.p)||null;}async all(){return {results:sqlite.prepare(this.q).all(...this.p)};}async run(){return {meta:{changes:sqlite.prepare(this.q).run(...this.p).changes}};}}const env={DB:{prepare:q=>new Q(q),batch:async ops=>Promise.all(ops.map(x=>x.run()))},MUSIC:{get:async()=>null,put:async()=>{},delete:async()=>{},list:async()=>({objects:[]})},ASSETS:{fetch:async()=>new Response('Not found',{status:404})}};
  try{const api=async(path,method='GET')=>worker.fetch(new Request('https://wasp.test'+path,{method}),env,{waitUntil:()=>{}});await api('/api/me');assert.equal((await api('/api/admin/metadata-bank/sources')).status,403);const local=await api('/api/admin/pc-source/status');assert.equal(local.status,403);}finally{sqlite.close();}});
+
+
+test('v18.1.5a authenticated admin metadata-source route resolves implementation and never exposes token',async()=>{
+ const sqlite=new DatabaseSync(':memory:');
+ class Q { constructor(sql,values=[]){this.sql=sql;this.values=values;} bind(...values){return new Q(this.sql,values);} async first(){return sqlite.prepare(this.sql).get(...this.values)||null;} async all(){return {results:sqlite.prepare(this.sql).all(...this.values)};} async run(){return {meta:{changes:sqlite.prepare(this.sql).run(...this.values).changes}};} }
+ const DB={prepare:sql=>new Q(sql),batch:async commands=>{sqlite.exec('BEGIN');try{const result=[];for(const c of commands)result.push(await c.run());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
+ const env={DB,WASP_METADATA_SOURCE_URL:source,WASP_METADATA_PULL_TOKEN:token,MUSIC:{get:async()=>null,put:async()=>{},delete:async()=>{},list:async()=>({objects:[]})},ASSETS:{fetch:async()=>new Response('Not found',{status:404})}};
+ const request=(url,cookie='')=>worker.fetch(new Request('https://wasp.test'+url,{headers:cookie?{cookie}:undefined}),env,{waitUntil:()=>{}});
+ try{
+  await request('/api/me');
+  const sid='test-admin-session';const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(sid)))).map(v=>v.toString(16).padStart(2,'0')).join('');
+  sqlite.prepare("INSERT INTO sessions(token,expires,role,user_id) VALUES(?,?,?,?)").run(digest,Date.now()+3600000,'admin','admin');
+  const res=await request('/api/admin/metadata-bank/sources','sid='+sid);
+  assert.equal(res.status,200,'Admin metadata source endpoint must not fail with a server ReferenceError');
+  const payload=await res.json();
+  assert.equal(payload.sources.length,1);
+  assert.deepEqual(payload.sources[0],{url:source,name:'PC Picard source'});
+  assert.ok(!JSON.stringify(payload).includes(token),'Read-only metadata source credential must never be reflected');
+  const guests=await request('/api/admin/metadata-bank/sources');assert.equal(guests.status,403);
+ }finally{sqlite.close();}
+});

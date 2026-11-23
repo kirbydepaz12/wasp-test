@@ -1006,3 +1006,14 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .metadata-source-list .metadata-check { overflow-wrap:anywhere }
 #pcScanProgress, #metadataBankProgress { accent-color:#bbef6d }
 @media(max-width:650px) { #pcMetadataSourcePanel .form { flex-wrap:wrap } #pcMetadataSourcePanel .form input { width:100% } }
+
+/* v18.1.5a: explicit, selectable metadata source cards */
+.metadata-source-header {display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
+.metadata-source-list {border:1px solid var(--line2);border-radius:12px;padding:8px;min-height:54px;max-width:100%;overflow-x:hidden}
+.metadata-source-list > p {padding:8px 10px;margin:0;line-height:1.5}
+.metadata-bank-source-choice {display:flex;align-items:center;gap:14px;padding:13px 14px;border-radius:9px;cursor:pointer;overflow-wrap:anywhere}
+.metadata-bank-source-choice+.metadata-bank-source-choice {border-top:1px solid var(--line2);border-radius:0}
+.metadata-bank-source-choice input {flex-shrink:0;accent-color:var(--accent)}
+.metadata-bank-source-choice span {display:flex;flex-direction:column;gap:4px;min-width:0}
+.metadata-bank-source-choice small {color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+@media(max-width:650px) {.metadata-source-header button {font-size:12px} .metadata-bank-source-choice{padding:12px 8px}}

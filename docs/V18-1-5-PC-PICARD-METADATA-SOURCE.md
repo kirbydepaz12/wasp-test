@@ -72,3 +72,9 @@ A manual pull is never a push, periodic cron, peer catalogue import, metadata ov
 **Admin version label:** `v18.1.5 · PC Picard Source & Manual Metadata Pull`.
 
 **ONE HIVE. EVERY BEAT.**
+
+## v18.1.5a hotfix notes
+
+The original v18.1.5 Worker omitted the `metadataBankApi` import in `src/index.js`. The authenticated endpoint therefore returned a server error even with correctly configured metadata sources. v18.1.5a imports the API correctly and includes a regression test for an authenticated administrator's `/api/admin/metadata-bank/sources` request.
+
+The source list now shows named, selectable cards and a Select all sources control, and it distinguishes server errors from missing configuration. **Ordinary Connected peers are not automatically registered as metadata sources.** Add the Windows metadata-only HTTPS feed URL and matching read-only token to each receiving deployment's private environment first; configure any additional sources only if they implement the supported feed protocol.
