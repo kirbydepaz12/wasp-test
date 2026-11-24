@@ -22,7 +22,7 @@ for width in (1440,390):
    window.fetch=async(input,opt={})=>{
     const url=new URL(String(input),'https://wasp.test'),k=url.pathname,body=opt.body?JSON.parse(opt.body):{},method=opt.method||'GET';let d={};
     if(k==='/api/me')d={admin:true,authenticated:true,role:'admin'};
-    else if(k==='/api/admin/version')d={version:'18.1.5c',label:'Request matching'};
+    else if(k==='/api/admin/version')d={version:'18.1.5d',label:'Request matching'};
     else if(k==='/api/admin/requests')d=__reqfixture.requests;
     else if(k.endsWith('/candidates'))d={searched:{local:1,peer:2},index:Number(url.searchParams.get('index')||0),kind:k.includes('song1')?'song':'playlist',candidates:[
      {id:'l1',origin:'',title:'Are You Ready?',artist:'Creed',album:'Human Clay',score:100},

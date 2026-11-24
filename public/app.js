@@ -1052,7 +1052,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.1.5c';
+  frame.src='/telemetry.html?v=18.1.5d';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1811,7 +1811,8 @@ function openEditPlaylist(p){
     <div class="playlist-edit-line"><div><span class="playlist-edit-label">Name</span><strong>${esc(p.name)}</strong></div><button class="btn ghost" type="button" id="changePlaylistName">Change name</button></div>
     <label class="playlist-rename hidden" id="playlistRename">New name<input id="editPlaylistName" maxlength="80" value="${esc(p.name)}"></label>
     <div class="playlist-cover-options"><strong>Playlist image</strong><p class="muted playlist-cover-note">By default, your cover displays nine album artworks in a 3 × 3 grid.</p>
-      <button type="button" class="btn ghost" id="useAlbumGrid">Use album-art grid</button></div>
+      <div class="playlist-cover-choice-actions"><button type="button" class="btn ghost" id="useAlbumGrid">Use album-art grid</button><button type="button" class="btn ghost" id="chooseTrackCover" aria-expanded="false" aria-controls="playlistCoverTrackPicker">Choose from playlist tracks</button></div>
+      <div id="playlistCoverTrackPicker" class="playlist-cover-track-picker hidden"><label for="playlistCoverTrackSearch">Find artwork in this playlist</label><input id="playlistCoverTrackSearch" type="search" autocomplete="off" placeholder="Search song, artist or album"><div id="playlistCoverTrackChoices" class="playlist-cover-track-choices" role="group" aria-label="Playlist track artwork"></div><p id="playlistCoverTrackSelected" class="muted" aria-live="polite"></p></div></div>
     <label class="playlist-upload-label">Upload a custom image<input type="file" id="editPlaylistCover" accept="image/jpeg,image/png,image/webp"></label>
     <label class="playlist-choice playlist-public-choice"><input type="checkbox" id="editPlaylistPublic" ${p.is_public?'checked':''}>Public playlist</label>
     <p id="editPlaylistMsg" class="msg err" role="alert"></p>
@@ -1822,14 +1823,44 @@ function openEditPlaylist(p){
   const fileInput=modal.querySelector('#editPlaylistCover');
   const preview=modal.querySelector('.playlist-edit-preview');
   const msg=modal.querySelector('#editPlaylistMsg');
-  let previewUrl=null, forceGrid=p.cover_mode==='mosaic'||!p.cover_url;
+  let previewUrl=null, selectedTrack=null, forceGrid=p.cover_mode==='mosaic'||!p.cover_url;
+  const chooser=modal.querySelector('#playlistCoverTrackPicker');
+  const search=modal.querySelector('#playlistCoverTrackSearch');
+  const choices=modal.querySelector('#playlistCoverTrackChoices');
+  const selectedCaption=modal.querySelector('#playlistCoverTrackSelected');
+  // These are only tracks belonging to this playlist; never offer the entire
+  // HIVE catalogue or a custom URL as a selected cover source.
+  const coverTracks=(p.tracks||[]).map(raw=>{
+    const ref=typeof raw==='object'?(raw.ref||raw.track_id||raw.id):raw;
+    const track=byId[ref]||peerTrackLookup.get(ref);
+    return track?{ref,track,src:albumArt(track)}:null;
+  }).filter(Boolean);
+  function renderChoices(){
+    const q=search.value.trim().toLocaleLowerCase();
+    const matches=coverTracks.filter(x=>!q||[x.track.title,x.track.artist,x.track.album].some(v=>String(v||'').toLocaleLowerCase().includes(q)));
+    choices.innerHTML=matches.slice(0,72).map(x=>`<button type="button" class="playlist-cover-track-option${selectedTrack?.ref===x.ref?' selected':''}" data-cover-ref="${esc(x.ref)}" aria-pressed="${selectedTrack?.ref===x.ref}"><img src="${esc(x.src)}" loading="lazy" alt=""><span><b>${esc(x.track.title||'Untitled track')}</b><small>${esc(x.track.artist||'Unknown artist')}</small></span></button>`).join('')||'<p class="muted">No matching playlist tracks with artwork available.</p>';
+    selectedCaption.textContent=matches.length>72?`Showing 72 of ${matches.length} matches. Refine your search to find another track.`:'';
+  }
   function renderPreview(){
     if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null;}
     if(fileInput.files[0]){previewUrl=URL.createObjectURL(fileInput.files[0]);preview.innerHTML=`<img class="playlist-cover" src="${esc(previewUrl)}" alt="Cover preview">`;return;}
+    if(selectedTrack){preview.innerHTML=`<img class="playlist-cover" src="${esc(selectedTrack.src)}" alt="Selected song artwork preview">`;return;}
     preview.innerHTML=forceGrid?albumCollage9(p):ownedPlaylistCover(p);
   }
-  fileInput.onchange=()=>{if(fileInput.files[0])forceGrid=false;renderPreview();};
-  modal.querySelector('#useAlbumGrid').onclick=()=>{fileInput.value='';forceGrid=true;renderPreview();};
+  modal.querySelector('#chooseTrackCover').onclick=()=>{
+    chooser.classList.toggle('hidden');const shown=!chooser.classList.contains('hidden');
+    modal.querySelector('#chooseTrackCover').setAttribute('aria-expanded',String(shown));
+    if(shown){renderChoices();search.focus();}
+  };
+  search.oninput=renderChoices;
+  choices.onclick=e=>{
+    const button=e.target.closest('[data-cover-ref]');if(!button)return;
+    const found=coverTracks.find(t=>t.ref===button.dataset.coverRef);if(!found)return;
+    selectedTrack=found;fileInput.value='';forceGrid=false;msg.textContent='';renderChoices();renderPreview();
+    selectedCaption.textContent=`Selected artwork from: ${found.track.title||'Untitled track'}`;
+  };
+  fileInput.onchange=()=>{if(fileInput.files[0]){selectedTrack=null;forceGrid=false;}renderChoices();renderPreview();};
+  modal.querySelector('#useAlbumGrid').onclick=()=>{fileInput.value='';selectedTrack=null;forceGrid=true;renderPreview();renderChoices();};
   modal.querySelector('#changePlaylistName').onclick=()=>{modal.querySelector('#playlistRename').classList.toggle('hidden');modal.querySelector('#editPlaylistName').focus();};
   modal.addEventListener('close',()=>{if(previewUrl)URL.revokeObjectURL(previewUrl);modal.remove();},{once:true});
   modal.querySelector('#closePlaylistEdit').onclick=()=>modal.close();
@@ -1841,8 +1872,22 @@ function openEditPlaylist(p){
     if(file&&(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>5*1024*1024)){msg.textContent='Choose a JPEG, PNG or WebP under 5 MB.';return;}
     save.disabled=true;msg.textContent='';
     try{
-      if(file){const r=await fetch(`/api/user/playlists/${enc(p.id)}/cover`,{method:'PUT',headers:{'content-type':file.type},body:file});if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||'Cover upload failed.');}
-      const r=await fetch(`/api/user/playlists/${enc(p.id)}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name,is_public:modal.querySelector('#editPlaylistPublic').checked,cover_mode:file?'copied':forceGrid?'mosaic':'copied'})});
+      let coverFile=file;
+      if(selectedTrack&&!file){
+        // The browser retrieves the image already displayed for this playlist
+        // track and uploads only image bytes (not the audio) to WASP's existing
+        // authenticated cover endpoint. A failed cross-origin art read is not
+        // silently replaced by the wrong image.
+        let response;
+        try{response=await fetch(selectedTrack.src,{mode:'cors',credentials:'omit'});}catch{throw Error('Artwork cannot be read from this peer. Connect the peer relay or upload the artwork manually.');}
+        if(!response.ok)throw Error(`Track artwork is not available (HTTP ${response.status}).`);
+        const type=(response.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
+        if(!['image/jpeg','image/png','image/webp'].includes(type))throw Error('Selected track has no usable JPEG, PNG or WebP artwork.');
+        const blob=await response.blob();if(!blob.size||blob.size>5*1024*1024)throw Error('Selected track artwork must be under 5 MB.');
+        coverFile=blob;
+      }
+      if(coverFile){const r=await fetch(`/api/user/playlists/${enc(p.id)}/cover`,{method:'PUT',headers:{'content-type':coverFile.type},body:coverFile});if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||'Cover upload failed.');}
+      const r=await fetch(`/api/user/playlists/${enc(p.id)}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name,is_public:modal.querySelector('#editPlaylistPublic').checked,cover_mode:coverFile?'copied':forceGrid?'mosaic':'copied'})});
       if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||'Unable to save.');
       modal.close();await load();location.hash='#userplaylist/'+enc(p.id);render();popup('Playlist updated','Your changes were saved.');
     }catch(e){msg.textContent=e.message||'Unable to save.';}finally{save.disabled=false;}

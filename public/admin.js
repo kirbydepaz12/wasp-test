@@ -563,8 +563,8 @@ async function loadRequests() {
   const visible=new Set(list.map(r=>r.id));for(const id of selectedRequests)if(!visible.has(id))selectedRequests.delete(id);
   paintRequestSelection();
   $("#reqRows").innerHTML = list.length ? `<table><tbody>${list.map((r) => {
-    const pl = r.kind === "playlist", isSong = r.kind === "song", songReview = isSong && !r.remote;
-    const has = pl && r.total != null && Array.isArray(r.missing), canExpand = has || songReview;
+    const pl = r.kind === "playlist", isSong = r.kind === "song", songReview = isSong && !r.remote, albumReview = r.kind === "album" && !r.remote;
+    const has = pl && r.total != null && Array.isArray(r.missing), canExpand = has || songReview || albumReview;
     const miss = has ? r.missing.length : 0;
     const sourceCount=Number.isSafeInteger(r.source_total)?r.source_total:null;
     const knownIncomplete=has && sourceCount!==null && sourceCount>r.total;
@@ -574,7 +574,7 @@ async function loadRequests() {
     return `<tr data-r="${esc(r.id)}">
     <td style="width:76px"><label class="request-pick"><input type="checkbox" data-request-select="${esc(r.id)}" aria-label="Select ${esc(r.title)}" ${selectedRequests.has(r.id)?'checked':''}>${mini(r.image, r.title)}</label></td>
     <td>${esc(r.title)}${r.remote?' <span class="chip" title="Originating WASP retains ownership">HIVE peer</span>':''}<br><span class="muted">${KIND[r.kind]}${r.artist ? " · " + esc(r.artist) : ""}${r.url ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Open on Spotify</a>` : ""}</span>${r.remote&&r.origin_status==='offline'?'<br><span class="muted">Requestee is offline</span>':''}${r.remote&&r.origin_domain?`<br><span class="muted">Origin: ${esc(r.origin_domain)} · ${esc(r.origin_status||'unknown')}</span>`:''}${progress ? `<br><span class="muted">${esc(progress)}${r.availability_checked_at?` · Checked ${esc(new Date(r.availability_checked_at).toLocaleString())}`:""}</span>` : ""}</td>
-    <td style="text-align:right;white-space:nowrap">${canExpand ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}<button class="btn ghost" data-a="${pl&&!r.remote?'refresh':'review-refresh'}" ${small}>Refresh</button> ${songReview?`<button class="btn ghost" data-a="song-scan" ${small}>Find potential match</button> `:''}${pl&&!r.remote?`<button class="btn ghost" data-a="scan-matches" ${small}>Scan potential matches</button> <button class="btn ghost" data-a="done" ${small}>Mark as done</button>`:''} ${['artist','album'].includes(r.kind)?`<button class="btn ghost" data-a="review-done" ${small}>Mark as done</button> `:''}${r.remote?`<button class="btn ghost" data-a="locate" ${small}>Locate origin</button> `:''}<button class="btn ghost" data-a="${r.remote&&r.origin_status==='offline'?'hide-offline':'remove'}" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">${r.remote&&r.origin_status==='offline'?'Remove until online':'Remove'}</button></td></tr>
+    <td style="text-align:right;white-space:nowrap">${canExpand ? `<button class="btn ghost" data-a="toggle" aria-expanded="${open}" aria-label="Show missing songs" ${small}>${open ? "▴" : "▾"}</button> ` : ""}<button class="btn ghost" data-a="${pl&&!r.remote?'refresh':'review-refresh'}" ${small}>Refresh</button> ${songReview||albumReview?`<button class="btn ghost" data-a="${albumReview?'album-scan':'song-scan'}" ${small}>Find potential match</button> `:''}${pl&&!r.remote?`<button class="btn ghost" data-a="scan-matches" ${small}>Scan potential matches</button> <button class="btn ghost" data-a="done" ${small}>Mark as done</button>`:''} ${['artist','album'].includes(r.kind)?`<button class="btn ghost" data-a="review-done" ${small}>Mark as done</button> `:''}${r.remote?`<button class="btn ghost" data-a="locate" ${small}>Locate origin</button> `:''}<button class="btn ghost" data-a="${r.remote&&r.origin_status==='offline'?'hide-offline':'remove'}" ${small} title="${r.remote?'Dismiss on this WASP only':'Cancel local request'}">${r.remote&&r.origin_status==='offline'?'Remove until online':'Remove'}</button></td></tr>
     ${has ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${r.id}"><td></td><td colspan="2">
       ${miss ? `<ul class="missing req-missing">${r.missing.map((x) => `<li class="req-match-entry" data-req-index="${Number.isInteger(x.request_index)?x.request_index:-1}"><div class="req-miss-header"><span>${esc(x.t)}${x.a ? ` <span class="muted">· ${esc(x.a)}</span>` : ""}</span>${!r.remote?` <button class="btn ghost" data-a="match-scan" ${small}>Find potential match</button> <button class="btn ghost" data-a="match-request-track" ${small}>Request individual track</button> <button class="btn ghost" data-a="match-skip" ${small}>Remove from request</button>`:''}</div><div class="req-match-results"></div></li>`).join("")}</ul>` : `<p class="muted" style="margin:8px 0">Every song we can see is already in the library.</p>`}
       ${!r.remote?`<div class="request-manual-add"><label>Manually add a song to this request</label><input aria-label="Song title to add" data-req-song-title placeholder="Song title"><input aria-label="Artist to add" data-req-song-artist placeholder="Artist"><button type="button" class="btn ghost" data-a="match-add" ${small}>Add and find match</button></div>`:''}
@@ -585,8 +585,9 @@ async function loadRequests() {
       ${r.remote ? `<span class="muted">Completion is managed by the originating WASP.</span>` : miss ? `<span class="muted" style="font-size:13px">Waiting for ${miss} missing song${miss===1?'':'s'} before completion.</span>` :
         knownIncomplete ? `<span class="muted" style="font-size:13px">Cannot finish: complete Spotify song list unavailable.</span>` :
         unverifiedBoundary ? `<span class="muted">Review and finish with the Mark as done button above.</span>` :
-        `<span class="muted">Use Mark as done above to complete.</span>`}</td></tr>` : songReview ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${esc(r.id)}"><td></td><td colspan="2">
-      <p class="muted" style="margin:4px 0">Find the exact recording in local music and connected HIVE peers. Reject wrong versions; an accepted match completes only this song request.</p>
+        `<span class="muted">Use Mark as done above to complete.</span>`}</td></tr>` : (songReview||albumReview) ? `<tr class="reqdetail${open ? "" : " hidden"}" data-d="${esc(r.id)}"><td></td><td colspan="2">
+      <p class="muted" style="margin:4px 0">${albumReview?'Find an album group in local music and connected HIVE peer snapshots. A confirmed candidate remains pending until you review the album and click Mark as done; one song never proves a complete album.':'Find the exact recording in local music and connected HIVE peers. Reject wrong versions; an accepted match completes only this song request.'}</p>
+      ${albumReview&&r.confirmed_album?`<p class="muted" role="status">Confirmed album candidate: <b>${esc(r.confirmed_album.album)}</b> · ${esc(r.confirmed_album.origin||'Local')} · ${Number(r.confirmed_album.track_count)||0} catalogued track(s). Review completeness before Mark as done.</p>`:''}
       <div class="req-match-entry" data-req-index="0"><div class="req-miss-header"><span>${esc(r.title)}${r.artist?` <span class="muted">· ${esc(r.artist)}</span>`:''}</span><button type="button" class="btn ghost" data-a="match-scan" ${small}>Find potential match</button></div><div class="req-match-results"></div></div>
     </td></tr>` : ""}`;
   }).join("")}</tbody></table>` : "The queue is empty.";
@@ -613,8 +614,9 @@ async function requestFindCandidates(entry,id,query=''){
   pane.textContent='Searching local music and connected peer snapshots…';
   try{const res=await fetch(`/api/admin/requests/${encodeURIComponent(id)}/candidates?index=${index}&q=${encodeURIComponent(query)}`,{cache:'no-store'});const data=await res.json();if(!res.ok)throw Error(data.error||'Search unavailable');
     const scope=data.searched||{};
-    pane.innerHTML=`<p class="muted" style="margin:6px 0">Searching ${Number(scope.local)||0} local and ${Number(scope.peer)||0} connected HIVE peer tracks (synchronized snapshots).</p><div class="req-match-search"><input aria-label="Search song or artist in local and HIVE peer music" placeholder="Search local music and HIVE peers" value="${esc(query)}"><button type="button" class="btn ghost" data-a="match-query" ${small}>Search</button></div>`+
-      (data.candidates.length?data.candidates.map(c=>`<div class="req-candidate" data-origin="${esc(c.origin)}" data-candidate-id="${esc(c.id)}"><button type="button" data-a="match-reject" class="req-reject" title="Reject this suggestion" aria-label="Reject ${esc(c.title)}">❌</button><button type="button" data-a="match-accept" class="req-accept" title="Confirm this match" aria-label="Confirm ${esc(c.title)}">✅</button><span>${esc(c.title)} <small>· ${esc(c.artist)}${c.album?' · '+esc(c.album):''} · ${c.origin?'HIVE peer: '+esc(c.origin):'Local'} · ${c.score}% match</small></span></div>`).join(''):`<p class="muted">No possible matches. Try a different search term, or remove this entry from the request.</p>`);
+    const isAlbum=data.kind==='album';
+    pane.innerHTML=`<p class="muted" style="margin:6px 0">Searching ${Number(scope.local)||0} local and ${Number(scope.peer)||0} connected HIVE peer tracks (synchronized snapshots).</p><div class="req-match-search"><input aria-label="Search ${isAlbum?'album':'song'} or artist in local and HIVE peer music" placeholder="Search local music and HIVE peers" value="${esc(query)}"><button type="button" class="btn ghost" data-a="match-query" ${small}>Search</button></div>`+
+      (data.candidates.length?data.candidates.map(c=>`<div class="req-candidate" data-origin="${esc(c.origin)}" ${isAlbum?`data-candidate-album="${esc(c.album)}"`:`data-candidate-id="${esc(c.id)}"`}><button type="button" data-a="match-reject" class="req-reject" title="Reject this suggestion" aria-label="Reject ${esc(c.title)}">❌</button><button type="button" data-a="match-accept" class="req-accept" title="${isAlbum?'Confirm album candidate':'Confirm this match'}" aria-label="Confirm ${esc(c.title)}">✅</button><span>${esc(c.title)} <small>· ${esc(c.artist)}${!isAlbum&&c.album?' · '+esc(c.album):''}${isAlbum?' · '+Number(c.track_count)+' catalogued track(s)':''} · ${c.origin?'HIVE peer: '+esc(c.origin):'Local'} · ${c.score}% match</small></span></div>`).join(''):`<p class="muted">No possible matches. Try a different search term.</p>`);
   }catch(e){pane.textContent=e.message;}
 }
 $("#reqRows").addEventListener("click", async (e) => {
@@ -625,7 +627,7 @@ $("#reqRows").addEventListener("click", async (e) => {
   if(act==='match-request-track'){
     await requestMissingTrack(id,index);return;
   }
-  if(act==='song-scan'){
+  if(act==='song-scan'||act==='album-scan'){
     openReq.add(id);const detail=document.querySelector(`tr[data-d="${CSS.escape(id)}"]`);detail?.classList.remove('hidden');
     const song=detail?.querySelector('.req-match-entry');if(song)await requestFindCandidates(song,id);return;
   }
@@ -640,8 +642,10 @@ $("#reqRows").addEventListener("click", async (e) => {
   if(act==='match-reject'||act==='match-accept'){
     const candidate=b.closest('.req-candidate');if(!candidate)return;
     if(act==='match-accept'&&!confirm(`Match this Spotify entry to "${candidate.querySelector('span')?.textContent?.trim()}"? Review carefully before confirming.`))return;
-    const saved=await requestMatchAction(id,act==='match-accept'?'accept':'reject',index,{origin:candidate.dataset.origin,id:candidate.dataset.candidateId});
-    if(saved)flashMsg('#reqMsg',act==='match-accept'?(saved.status==='done'?'Song matched to the selected local or peer recording and moved to Previous requests.':'Match confirmed. Request counts updated.'):'Candidate rejected. Wrong versions will not automatically complete this request.');return;
+    const isAlbum=r.kind==='album';
+    const payload=isAlbum?{origin:candidate.dataset.origin,album:candidate.dataset.candidateAlbum}:{origin:candidate.dataset.origin,id:candidate.dataset.candidateId};
+    const saved=await requestMatchAction(id,act==='match-accept'?'accept':'reject',index,payload);
+    if(saved)flashMsg('#reqMsg',act==='match-accept'?(isAlbum?'Album candidate confirmed. Check that the album is complete before clicking Mark as done.':saved.status==='done'?'Song matched to the selected local or peer recording and moved to Previous requests.':'Match confirmed. Request counts updated.'):'Candidate rejected. Wrong versions will not automatically complete this request.');return;
   }
   if(act==='match-skip'||act==='match-restore'){
     if(act==='match-skip'&&!confirm('Remove this Spotify entry from the local requested playlist? It can be restored later. This will not delete any MP3.'))return;
@@ -653,7 +657,7 @@ $("#reqRows").addEventListener("click", async (e) => {
     await requestMatchAction(id,'add',0,{title,artist});return;
   }
   if(act==='review-refresh' ||act==='locate'||act==='hide-offline'||act==='review-done'){
-    if(act==='review-done'&&!confirm(`Mark ${r.title} as done?${r.remote?' This completes it on this WASP only; the origin retains ownership.':''}`))return;
+    if(act==='review-done'&&!confirm(`Mark ${r.title} as done?${r.kind==='album'?' Verify the album is complete: a matching song or album title alone does not prove every track is available.':''}${r.remote?' This completes it on this WASP only; the origin retains ownership.':''}`))return;
     if(act==='hide-offline'&&!confirm('Hide until the verified origin reconnects?'))return;
     await reviewRequests({'review-refresh':'refresh','review-done':'complete',locate:'locate','hide-offline':'hide-offline'}[act],[id],act==='review-done');return;
   }

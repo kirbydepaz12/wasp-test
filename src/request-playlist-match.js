@@ -48,3 +48,37 @@ export function safeManualMatches(meta){const out={};for(const [index,selection]
  if(typeof selection.id!=='string'||selection.id.length>110||typeof selection.origin!=='string'||selection.origin.length>300)continue;
  if(Number(index)>=0&&Number(index)<(meta?.tracks?.length||0))out[index]=selection;
  }return out;}
+
+// Album requests are not song requests: suggest album *groups* represented by
+// existing local/peer catalogue tracks. A single track never proves that an
+// entire album is present; a confirmed group remains pending admin review.
+export function suggestAlbumCandidates(wanted,catalogue,{query='',rejected=[],limit=12}={}){
+ const q=norm(query),target=norm(wanted?.t),artist=norm(wanted?.a);
+ const groups=new Map();
+ for(const row of [...(catalogue?.local||[]),...(catalogue?.remote||[])]){
+  const album=String(row?.album||'').trim(),origin=String(row?.origin||'');
+  if(!album||!row?.id)continue;
+  const key=origin+'|'+norm(album);
+  if(rejected.includes(key))continue;
+  const hay=norm(album+' '+(row.artist||'')+' '+(row.title||''));
+  if(q&&!hay.includes(q))continue;
+  const albumKey=norm(album);
+  let titleScore=albumKey===target?100:Math.round(tokenSimilarity(albumKey,target)*85);
+  if(albumKey.includes(target)&&target.length>=6)titleScore=Math.max(titleScore,75);
+  const artistMatches=artist&&(artists(row).some(v=>v===artist||v.includes(artist)||artist.includes(v))||norm(row.artist||'')===artist);
+  let score=Math.min(100,Math.round(titleScore*.85+(artistMatches?15:0)));
+  if(!q&&score<45)continue;
+  const old=groups.get(key);
+  if(old){old.track_count++;old.score=Math.max(old.score,score);if(artistMatches)old.artist=row.artist||old.artist;}
+  else groups.set(key,{origin,album,title:album,artist:String(row.artist||''),score,track_count:1});
+ }
+ const max=Math.max(1,Math.min(20,limit));
+ const sorted=[...groups.values()].sort((a,b)=>b.score-a.score||b.track_count-a.track_count||(a.origin?1:-1));
+ if(sorted.length<=max||max<2)return sorted.slice(0,max);
+ const local=sorted.filter(x=>!x.origin),peer=sorted.filter(x=>x.origin);
+ if(!local.length||!peer.length)return sorted.slice(0,max);
+ const keep=[...local.slice(0,Math.min(3,Math.floor(max/2))),...peer.slice(0,Math.min(3,Math.floor(max/2)))];
+ const seen=new Set(keep.map(x=>x.origin+'|'+norm(x.album)));
+ for(const r of sorted){if(keep.length>=max)break;const k=r.origin+'|'+norm(r.album);if(!seen.has(k)){keep.push(r);seen.add(k);}}
+ return keep.sort((a,b)=>b.score-a.score||b.track_count-a.track_count);
+}
