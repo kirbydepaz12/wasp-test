@@ -1,6 +1,6 @@
 import { radioIds } from "/radio.js";
 import { buildArtistIndex } from "/artist-index.mjs";
-import { buildArtistDiscography, artistPopularTracks, featuringArtistPlaylists } from "/artist-discography.mjs";
+import { buildArtistDiscography, expandArtistAlbumTracks, artistPopularTracks, featuringArtistPlaylists } from "/artist-discography.mjs";
 import { QUEUE_KEY, makeQueueSnapshot, parseQueueSnapshot, recoverQueueSnapshot } from "/queue-session.mjs";
 import { createRadioSelection, duplicateCandidates, artistSearchTokens, trackYear, trackGenres, normal } from "/radio-builder.js";
 import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
@@ -649,13 +649,16 @@ function artistSources(name){
 }
 const sourceTitle=(text,src)=>`${sourceIcons(src)}${esc(text)}`;
 
+function artistLinks(t){
+  return artistsOf(t).map(name=>`<span class="artist-inline-link" role="link" tabindex="0" data-artist-link="${esc(name)}" title="View ${esc(name)}">${esc(name)}</span>`).join('<span class="artist-separator" aria-hidden="true">, </span>');
+}
 function row(t, num, extra = "", cover = false) {
   // Metadata is shown only when verified/available; never infer a release year.
   const year=trackYear(t),tags=trackGenres(t);
   return `<button class="row track-detail-row" data-id="${esc(t.id)}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
-    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small class="compact-artist">${esc(artistLine(t))}</small></span>
+    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small class="compact-artist">${artistLinks(t)}</small></span>
     <span class="al muted" title="Album">${esc(extra || albumName(t) || "Single")}</span>
-    <span class="row-artists muted" title="Artists">${esc(artistLine(t))}</span>
+    <span class="row-artists muted" title="Artists">${artistLinks(t)}</span>
     <span class="row-year muted" title="Release year">${year||'—'}</span>
     <span class="row-genre muted" title="Genre">${esc(tags.join(', ') || '—')}</span>
     <span class="row-duration muted" title="Duration">${fmt(t.duration)}</span></button>`;
@@ -1439,6 +1442,17 @@ function paintArtistDiscography() {
   el.innerHTML=`<div class="artist-section-head"><h2>Discography</h2>${allLink}</div>${controls}${body}${detail}`;
   state.visible=releases;
 }
+function openArtistImage(src,alt='Artist picture'){
+  let dialog=document.getElementById('artistPictureDialog');
+  if(!dialog){
+    dialog=document.createElement('dialog');dialog.id='artistPictureDialog';dialog.className='artist-image-dialog';
+    dialog.innerHTML='<div class="artist-picture-frame"><button type="button" aria-label="Close artist picture" class="artist-picture-close">×</button><img alt=""></div>';
+    document.body.append(dialog);
+    dialog.querySelector('.artist-picture-close').onclick=()=>dialog.close();
+    dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
+  }
+  const image=dialog.querySelector('img');image.src=src;image.alt=alt;dialog.showModal();
+}
 function artistPage(el, name) {
   const full=arguments[2]===true;
   let ts=getArtistIndex().tracksByNormalized.get(normalizeRecording(name)) || [];
@@ -1447,7 +1461,7 @@ function artistPage(el, name) {
   // Aggregated HIVE plays on catalogue tracks are already deduplicated during load().
   // When there is no play telemetry, display available songs without claiming
   // unsupported Spotify popularity or fetching another API.
-  const popular=artistPopularTracks(ts,10),releases=buildArtistDiscography(ts);
+  const popular=artistPopularTracks(ts,10),releases=buildArtistDiscography(expandArtistAlbumTracks(ts,tracks));
   const allIds=popular.tracks.map(t=>t.id).concat(ts.map(t=>t.id).filter(id=>!popular.tracks.some(t=>t.id===id)));
   view={ids:allIds,label:name,pl:null};
   const preview=popular.tracks.slice(0,5);
@@ -1457,12 +1471,11 @@ function artistPage(el, name) {
   artistDiscographyView={name,releases,full,type:'all',display:discGrid==='list'?'list':'grid',sort:'date',expanded:null,visible:[]};
   const heroImage=artistArt(name);
   el.innerHTML=`<a class="back" href="#artists">← All artists</a>
-    <section class="artist-hero-banner" aria-label="${esc(name)} artist"><img src="${esc(heroImage)}" alt="" loading="lazy"/><div class="artist-hero-gradient"></div><div class="artist-banner-content"><span class="artist-badge">Across the HIVE</span><h1>${sourceTitle(name,artistSources(name))}</h1><span>${plural(ts.length,'available song')} · ${plural(releases.length,'release')}</span></div></section>
+    <section class="artist-hero-banner artist-hero-expanded" aria-label="${esc(name)} artist"><img class="artist-hero-photo" src="${esc(heroImage)}" alt="${esc(name)} artist portrait" loading="lazy"/><div class="artist-hero-gradient"></div><button type="button" class="artist-image-expand" data-artist-expand="1" aria-label="View full ${esc(name)} artist picture" title="View full artist picture">⤢</button><div class="artist-banner-content"><span class="artist-badge">Across the HIVE</span><h1>${sourceTitle(name,artistSources(name))}</h1><span class="artist-banner-counts">${plural(ts.length,'available song')} · ${plural(releases.length,'release')}</span>${full?'':`<div class="artist-hero-details"><div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div></div>`}</div></section>
     <div class="artist-hero-actions">${actions(true,{type:'artist',key:name})}</div>
     ${full?'':`<section class="artist-popular"><div class="artist-section-head"><h2>Popular</h2><small class="muted">${popular.hasPlays?'Most played across connected HIVE catalogues':'Available recordings · no confirmed play ranking yet'}</small></div>${popularRows||empty('No available songs.')}${popular.tracks.length>5?`<button type="button" class="pill artist-popular-more" data-artist-popular-more>Show more</button>`:''}</section>`}
     <section class="artist-discography" id="artistDiscography"></section>
-    ${full?'':`<section class="artist-featured"><div class="artist-section-head"><h2>Featuring ${esc(name)}</h2></div>${features.length?`<div class="grid s">${features.map(x=>ownedPlaylistIndex.has(x.playlist.id)?`<a class="tile sq artist-featured-owned" href="#userplaylist/${enc(x.playlist.id)}">${ownedPlaylistCover(x.playlist)}<b>${esc(x.playlist.name)}</b><span class="muted">${plural(x.count,'song')} from ${esc(name)}</span></a>`:playlistTile(x.playlist,`${plural(x.count,'song')} from ${name}`)).join('')}</div>`:empty('No available playlists currently feature this artist.')}</section>
-    <section class="artist-about"><h2>About ${esc(name)}</h2><div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div></section>`}`;
+    ${full?'':`<section class="artist-featured"><div class="artist-section-head"><h2>Featuring ${esc(name)}</h2></div>${features.length?`<div class="grid s">${features.map(x=>ownedPlaylistIndex.has(x.playlist.id)?`<a class="tile sq artist-featured-owned" href="#userplaylist/${enc(x.playlist.id)}">${ownedPlaylistCover(x.playlist)}<b>${esc(x.playlist.name)}</b><span class="muted">${plural(x.count,'song')} from ${esc(name)}</span></a>`:playlistTile(x.playlist,`${plural(x.count,'song')} from ${name}`)).join('')}</div>`:empty('No available playlists currently feature this artist.')}</section>`}`;
   paintArtistDiscography();
   artistView=full?null:{name,tab:'bio',bio:undefined,similar:undefined};
   if(!full){paintArtist();loadBio(name);loadSimilar(name);}
@@ -1498,14 +1511,14 @@ function paintArtist() {
   } else if (v.tab === "lineup") {
     const m = (v.bio && v.bio.members) || [];
     if (m.some((p) => !("image" in p)) && !v.lineupAsked) { v.lineupAsked = true; loadLineup(v.name); }
-    html = m.length ? `<div class="sim">${m.map(memberTile).join("")}</div><p class="muted" style="font-size:13px">Current members, from Wikipedia. Pictures from Wikipedia or Deezer when available.</p>` : `<p class="muted">No lineup information found.</p>`;
+    html = m.length ? `<div class="artist-hero-lineup" aria-label="All known lineup members">${m.map(memberTile).join("")}</div><p class="muted artist-hero-credit">${plural(m.length,'lineup member')} · Biographical details from available sources.</p>` : `<p class="muted">No lineup information found.</p>`;
   } else {
     const list = v.similar;
     if (list === undefined) html = `<p class="muted">Loading similar artists…</p>`;
     else if (!list.length) html = `<p class="muted">No similar artists found.</p>`;
     else {
-      const more = list.length > 10, shown = more ? list.slice(0, 9) : list;
-      html = `<div class="sim">${shown.map((s) => simTile(s)).join("")}${more ? `<a class="simtile" href="#similar/${enc(v.name)}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${list.length - 9} more</span></a>` : ""}</div>`;
+      const more = list.length > 9, shown = more ? list.slice(0, 9) : list;
+      html = `<div class="artist-hero-similar" aria-label="Similar artists">${shown.map((s) => simTile(s)).join("")}${more ? `<a class="simtile artist-similar-more" href="#similar/${enc(v.name)}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${list.length - 9} more</span></a>` : ""}</div>`;
     }
   }
   $("#apanel").innerHTML = html;
@@ -2682,6 +2695,13 @@ $("#list").addEventListener("click", (e) => {
     else if(p)popup('No playable songs','This playlist has no tracks available from its connected server.');
     return;
   }
+  const expand=e.target.closest('[data-artist-expand]');
+  if(expand||e.target.matches('.artist-hero-photo')){
+    const image=e.target.closest('.artist-hero-banner')?.querySelector('.artist-hero-photo');
+    if(image?.src)openArtistImage(image.src,image.alt);return;
+  }
+  const artistLink=e.target.closest('[data-artist-link]');
+  if(artistLink){e.preventDefault();e.stopPropagation();location.hash='#artist/'+enc(artistLink.dataset.artistLink);return;}
   const dType=e.target.closest('[data-artist-type]');
   if(dType&&artistDiscographyView){artistDiscographyView.type=dType.dataset.artistType;artistDiscographyView.expanded=null;paintArtistDiscography();return;}
   const display=e.target.closest('[data-artist-display]');
@@ -2710,6 +2730,7 @@ $("#list").addEventListener("click", (e) => {
   const r = e.target.closest(".row, .tile[data-id]");
   if (r) startQueue(view.ids, r.dataset.id, view.label, view.pl);
 });
+$("#list").addEventListener('keydown',e=>{if(e.target.matches('[data-artist-link]')&&(e.key==='Enter'||e.key===' ')){e.preventDefault();e.stopPropagation();location.hash='#artist/'+enc(e.target.dataset.artistLink);}});
 $("#list").addEventListener("change",e=>{if(e.target.matches('[data-artist-sort]')&&artistDiscographyView){artistDiscographyView.sort=e.target.value==='name'?'name':'date';artistDiscographyView.expanded=null;paintArtistDiscography();}});
 $("#uplist").addEventListener("click", (e) => { const r = e.target.closest(".qrow"); if (r) play(r.dataset.id); });
 window.addEventListener("hashchange", () => {

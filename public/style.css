@@ -1098,3 +1098,83 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
  .artist-releases.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
  .artist-release-list-head>.art{width:72px;height:72px}
 }
+
+/* v18.2.1: Artist biography, complete lineup and similar artists in hero. */
+.artist-hero-expanded{height:auto;min-height:340px;align-items:stretch;isolation:isolate}
+.artist-hero-expanded>.artist-hero-photo{inset:0;z-index:-2;object-position:center 35%;height:100%;cursor:zoom-in}
+.artist-hero-expanded>.artist-hero-gradient{z-index:-1}
+.artist-hero-expanded .artist-banner-content{width:100%;box-sizing:border-box;min-height:340px;display:flex;flex-direction:column;align-items:flex-start;justify-content:end;padding-top:70px}
+.artist-hero-expanded .artist-banner-counts{display:block;font-size:14px;line-height:1.6}
+.artist-image-expand{position:absolute;z-index:3;right:18px;top:17px;width:42px;height:42px;display:grid;place-items:center;border:1px solid #ffffff66;border-radius:50%;background:#05050599;color:white;cursor:zoom-in;font-size:23px}
+.artist-image-expand:hover,.artist-image-expand:focus-visible{outline:2px solid var(--accent)}
+.artist-hero-details{width:100%;max-width:100%;margin-top:15px;min-width:0}
+.artist-hero-details .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.artist-hero-details .tab{background:#131313b8;border:1px solid #ffffff3d;border-radius:30px;padding:9px 16px;min-height:35px;color:white;cursor:pointer}
+.artist-hero-details .tab[aria-pressed=true]{background:var(--accent);color:#111;border-color:var(--accent);font-weight:700}
+.artist-hero-details .apanel{margin:0;max-width:100%;min-height:45px;padding:12px 14px;border:1px solid #ffffff2a;border-radius:14px;background:rgba(13,14,13,.73);backdrop-filter:blur(7px)}
+.artist-hero-details .apanel>.bio{max-width:82ch;line-height:1.55;white-space:normal}
+.artist-hero-lineup{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px;width:100%;box-sizing:border-box}
+.artist-hero-lineup>.simtile{width:auto;min-width:0;max-width:100%;box-sizing:border-box;display:flex;flex-direction:row;align-items:center;gap:10px;padding:8px;background:#090a0975;border-radius:9px;text-align:left}
+.artist-hero-lineup>.simtile .art{flex:none;width:58px;height:58px;font-size:20px}
+.artist-hero-lineup>.simtile b{overflow-wrap:anywhere;max-width:100%}
+.artist-hero-lineup>.simtile .muted{font-size:12px}
+.artist-hero-credit{font-size:11px;margin:9px 2px 0;color:#ddd}
+.artist-hero-similar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;width:100%}
+.artist-hero-similar .simtile{width:clamp(100px,10vw,132px);max-width:100%;box-sizing:border-box;background:#08090855}
+.artist-hero-similar .simtile .art{width:66px;height:66px;font-size:20px}
+.artist-hero-similar .artist-similar-more{border:1px dashed #ffffff77}
+.artist-inline-link{display:inline;color:var(--accent);text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;cursor:pointer;font-weight:550}
+.artist-inline-link:hover,.artist-inline-link:focus-visible{text-decoration-color:currentColor;outline-color:var(--accent)}
+.artist-separator{color:var(--muted)}
+.artist-image-dialog{max-width:min(93vw,1150px);max-height:91vh;border:1px solid #ffffff55;background:#0b0b0b;padding:0;border-radius:16px;color:white;box-shadow:0 20px 100px #000b;overflow:visible}
+.artist-image-dialog::backdrop{background:rgba(0,0,0,.85)}
+.artist-picture-frame{position:relative;line-height:0}
+.artist-picture-frame>img{display:block;width:auto;max-width:93vw;max-height:89vh;height:auto;object-fit:contain;border-radius:16px}
+.artist-picture-close{position:absolute;right:12px;top:12px;width:42px;height:42px;border-radius:50%;background:#000b;color:white;border:1px solid #fff9;font-size:30px;cursor:pointer;line-height:1;z-index:2}
+@media(max-width:640px){.artist-hero-expanded{min-height:310px;height:auto}.artist-hero-expanded .artist-banner-content{min-height:310px;padding:72px 14px 16px}.artist-hero-expanded .artist-banner-content h1{font-size:clamp(32px,8vw,48px)}.artist-hero-lineup{grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:8px}.artist-hero-lineup>.simtile .art{width:42px;height:42px}.artist-hero-details .apanel{padding:9px}.artist-hero-similar{gap:5px}.artist-hero-similar .simtile{width:calc(50% - 4px)}.artist-hero-similar .simtile .art{width:55px;height:55px}}
+
+/* v18.2.1 Spotify-guided collection assembly (administrator only). */
+.spotify-collection-tools{margin:14px 0 18px;border:1px solid var(--line2);border-radius:14px;padding:17px;min-width:0}
+.spotify-collection-tools h2{font-size:17px;margin:0 0 8px}
+.spotify-collection-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:8px;margin:10px 0}
+.spotify-result{border:1px solid var(--line2);border-radius:10px;display:flex;gap:11px;text-align:left;padding:9px;background:var(--panel);color:var(--text);cursor:pointer;min-width:0}
+.spotify-result:hover,.spotify-result:focus-visible{outline:2px solid var(--accent)}
+.spotify-result-art,.spotify-result-art img{width:55px;height:55px;border-radius:7px;object-fit:cover;flex:none}
+.spotify-result span:last-child{display:flex;min-width:0;flex-direction:column;gap:4px}
+.spotify-result b,.spotify-result small{white-space:normal;overflow-wrap:anywhere}
+.spotify-collection-summary{display:flex;flex-direction:column;gap:5px;padding:10px 0}
+.spotify-collection-summary a{color:var(--accent)}
+.spotify-collection-manifest{max-height:480px;overflow:auto;border:1px solid var(--line2);border-radius:12px}
+.spotify-manifest-row{padding:12px;border-bottom:1px solid var(--line2);min-width:0}
+.spotify-manifest-row:last-child{border-bottom:0}
+.spotify-manifest-title{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.spotify-manifest-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.spotify-manifest-actions select{min-width:140px;max-width:300px;flex:1;background:var(--panel);color:var(--text);border:1px solid var(--line2);padding:8px;border-radius:7px}
+.spotify-manifest-actions button{font-size:12px;min-height:36px}
+.spotify-source-success{color:var(--accent)}
+@media(max-width:500px){.spotify-manifest-actions>*{width:100%;max-width:100%!important}}
+
+/* Keep the background artist photo visible below the expandable info panel. */
+.artist-hero-expanded>.artist-hero-photo{z-index:0}
+.artist-hero-expanded>.artist-hero-gradient{z-index:1}
+.artist-hero-expanded .artist-banner-content{z-index:2}
+.spotify-manifest-actions .spotify-existing-search{min-width:180px;flex:1;max-width:300px;color:var(--text);background:var(--panel);border:1px solid var(--line2);padding:9px;border-radius:7px}
+/* Artist Popular rows must not overlap the right-side play-count column. */
+@media(max-width:1100px){
+ .artist-popular-row .row.track-detail-row{grid-template-columns:30px minmax(0,1fr) 52px!important;gap:7px;min-width:0}
+ .artist-popular-row .row.track-detail-row .al,.artist-popular-row .row.track-detail-row .row-artists,.artist-popular-row .row.track-detail-row .row-year,.artist-popular-row .row.track-detail-row .row-genre{display:none}
+ .artist-popular-row .row.track-detail-row .compact-artist{display:block;white-space:normal;overflow:visible;max-width:100%;line-height:1.35}
+ .artist-popular-row .row.track-detail-row .t{min-width:0;white-space:normal}
+ .artist-popular-row .artist-popular-count{width:74px;max-width:74px;text-align:right}
+}
+
+/* The overlay is visual only: clicks on uncovered hero photo open the full picture. */
+.artist-hero-expanded>.artist-hero-gradient{pointer-events:none}
+
+.spotify-attach-history summary{cursor:pointer;color:var(--text);font-weight:600;margin-bottom:9px}
+.spotify-attach-entry{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line2);border-radius:9px;padding:9px 12px;margin-bottom:7px}
+.spotify-attach-entry small{display:block;margin-top:4px;overflow-wrap:anywhere}
+@media(max-width:500px){.spotify-attach-entry{flex-direction:column;align-items:stretch}}
+/* Let uncovered photographic areas be clicked without obstructing tabs or bio links. */
+.artist-hero-expanded .artist-banner-content{pointer-events:none}
+.artist-hero-expanded .artist-banner-content>*{pointer-events:auto}

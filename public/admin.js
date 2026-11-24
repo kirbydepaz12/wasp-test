@@ -292,6 +292,8 @@ function syncMode() {
   $("#plField").classList.toggle("hidden", mode() !== "playlist");
   $("#alField").classList.toggle("hidden", mode() !== "album");
   $("#hint").textContent = HINTS[mode()];
+  $("#spotifyCollectionTools").classList.toggle('hidden',mode()==='singles');
+  if(spotifyCollection&&spotifyCollection.kind!==mode()){$('#spotifyCollectionClear').click();spotifyStagedFiles=[];}
 }
 document.querySelectorAll("input[name=mode]").forEach((r) => r.addEventListener("change", syncMode));
 
@@ -690,6 +692,156 @@ $("#reqRows").addEventListener("click", async (e) => {
   if(act==='remove')await requestHousekeeping('selected',[id]);
 });
 
+// v18.2.1: the Spotify manifest is a reference for administrator-controlled
+// album/playlist assembly, never an audio source. All user choices are reviewed.
+let spotifyCollection=null,spotifyStagedFiles=[],spotifyFileTags=new Map(),spotifyChoice=new Map(),spotifyExistingChoice=new Map();
+const normalizedSong=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const songArtistOverlap=(names,other)=>{
+  const a=(Array.isArray(names)?names:String(names||'').split(/[;]+/)).map(normalizedSong).filter(Boolean);
+  const b=(Array.isArray(other)?other:String(other||'').split(/[;]+/)).map(normalizedSong).filter(Boolean);
+  return a.some(x=>b.includes(x));
+};
+function spotifyCollectionStatus(message='',isError=false){const node=$('#spotifyCollectionStatus');node.textContent=message;node.classList.toggle('err',isError);}
+function paintSpotifyManifest(){
+  const wrap=$('#spotifyCollectionManifest');if(!spotifyCollection){wrap.innerHTML='';return;}
+  const inLibrary=window.__tracks||[];
+  const used=new Set();
+  const selectFile=(index,item)=>{
+    if(spotifyChoice.has(index)){const selected=spotifyChoice.get(index);if(selected>=0)used.add(selected);return selected;}
+    for(let i=0;i<spotifyStagedFiles.length;i++){
+      if(used.has(i))continue;
+      const tags=spotifyFileTags.get(spotifyStagedFiles[i])||{};
+      if(normalizedSong(item.title)===normalizedSong(tags.title||spotifyStagedFiles[i].name.replace(/\.mp3$/i,''))&&songArtistOverlap(item.artists,tags.artists?.length?tags.artists:tags.artist)){
+        used.add(i);return i;
+      }
+    }
+    return -1;
+  };
+  wrap.innerHTML=spotifyCollection.tracks.map((item,index)=>{
+    const fileIndex=selectFile(index,item);
+    const found=inLibrary.filter(t=>normalizedSong(t.title)===normalizedSong(item.title)&&songArtistOverlap(item.artists,artistsOf(t)));
+    const chosen=spotifyExistingChoice.get(index)||'';
+    const fileSelect=`<select data-source-file="${index}" aria-label="MP3 file for ${esc(item.title)}"><option value="-1">No local file assigned</option>${spotifyStagedFiles.map((file,i)=>`<option value="${i}"${i===fileIndex?' selected':''}>${esc(file.name)}</option>`).join('')}</select>`;
+    const existingSelect=`<select data-source-track="${index}" aria-label="Existing WASP track for ${esc(item.title)}"><option value="">Choose existing track</option>${[...new Map([...found,...inLibrary.filter(t=>t.id===chosen)].map(t=>[t.id,t])).values()].slice(0,20).map(t=>`<option value="${esc(t.id)}"${chosen===t.id?' selected':''}>${esc(t.title)} — ${esc(artistLine(t))}</option>`).join('')}</select>`;
+    return `<div class="spotify-manifest-row" data-source-index="${index}"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)}</strong><small class="muted">${esc((item.artists||[]).join(', ')||'Artist unavailable')} · ${spotifyCollection.kind==='album'?'Track '+(item.track_no||index+1):'Playlist entry'}</small></div><div class="spotify-manifest-actions">${fileSelect}<input type="search" class="spotify-existing-search" data-source-find="${index}" placeholder="Search existing WASP songs" aria-label="Find track for ${esc(item.title)}" maxlength="150">${existingSelect}<button type="button" class="btn ghost" data-source-action="attach" data-source-index="${index}" ${!chosen?'disabled':''}>Use existing track</button><button type="button" class="btn ghost" data-source-action="request" data-source-index="${index}">Request missing</button></div><small class="muted" data-source-feedback="${index}">${fileIndex>=0?'Matched to an MP3 candidate; review before uploading.':found.length?'Possible existing WASP match; select it to attach.':'No matching upload or existing track selected.'}</small></div>`;
+  }).join('')||'<p class="muted">Spotify did not return a track list. Use manual playlist/album upload instead.</p>';
+  $('#spotifyUploadMatched').disabled=!spotifyStagedFiles.length;
+}
+async function spotifySearchCollection(){
+  const kind=mode(),q=$('#spotifyCollectionSearch').value.trim(),box=$('#spotifyCollectionResults');
+  if(!['album','playlist'].includes(kind)||q.length<2){spotifyCollectionStatus('Enter at least two characters to search.',true);return;}
+  box.textContent='Searching Spotify…';spotifyCollectionStatus();
+  try{const response=await fetch('/api/admin/collection-spotify/search?'+new URLSearchParams({type:kind,q}),{cache:'no-store'});
+    const data=await response.json();if(!response.ok)throw Error(data.error||'Spotify search failed');
+    const results=data.items||[];
+    box.innerHTML=results.length?results.map(r=>`<button type="button" class="spotify-result" data-spotify-id="${esc(r.id)}"><span class="spotify-result-art">${r.image?`<img src="${esc(r.image)}" alt="">`:''}</span><span><b>${esc(r.title)}</b><small class="muted">${esc(r.artist||'')} · ${r.total?'~'+r.total+' tracks':''}</small></span></button>`).join(''):'<p class="muted">No Spotify results. You can still upload using a manually entered album or playlist name.</p>';
+  }catch(e){box.textContent='';spotifyCollectionStatus(e.message,true);}
+}
+$('#spotifyCollectionSearchButton').onclick=spotifySearchCollection;
+$('#spotifyCollectionSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();spotifySearchCollection();}});
+$('#spotifyCollectionResults').onclick=async e=>{
+  const button=e.target.closest('[data-spotify-id]');if(!button)return;
+  button.disabled=true;spotifyCollectionStatus('Loading the source track list…');
+  try{const response=await fetch('/api/admin/collection-spotify/resolve?'+new URLSearchParams({type:mode(),id:button.dataset.spotifyId}),{cache:'no-store'});
+    const data=await response.json();if(!response.ok)throw Error(data.error||'Spotify source unavailable');
+    spotifyCollection=data;spotifyChoice.clear();spotifyExistingChoice.clear();
+    if(mode()==='album'){$('#alName').value=data.title;$('#alArtist').value='';}
+    if(mode()==='playlist')$('#plName').value=data.title;
+    $('#spotifyCollectionSelected').classList.remove('hidden');
+    $('#spotifyCollectionSummary').innerHTML=`<strong>${esc(data.title)}</strong><small class="muted">${esc(data.artist||'Spotify reference')} · ${data.tracks.length} retrieved tracks · <a href="${esc(data.url)}" target="_blank" rel="noopener">Open on Spotify</a></small>`;
+    spotifyCollectionStatus(data.warning||'Spotify reference loaded. Review candidates before applying.',!!data.warning);
+    paintSpotifyManifest();
+  }catch(error){spotifyCollectionStatus(error.message,true);}finally{button.disabled=false;}
+};
+async function loadSpotifyAttachHistory(){
+  const box=$('#spotifyAttachmentHistory');if(!box)return;
+  box.textContent='Loading attachment history…';
+  try{
+    const r=await fetch('/api/admin/collection-attach/history',{cache:'no-store'});
+    const data=await r.json();if(!r.ok)throw Error(data.error||'Could not load attachment history');
+    const rows=data.items||[];
+    box.innerHTML=rows.length?rows.map(entry=>{
+      const t=(window.__tracks||[]).find(track=>track.id===entry.track_id);
+      return `<div class="spotify-attach-entry" data-attach-history="${esc(entry.id)}"><div><b>${esc(t?.title||entry.track_id)}</b><small class="muted">${esc(entry.old_album||'(no album)')} → ${esc(entry.new_album)} · ${new Date(Number(entry.at)||0).toLocaleString()}</small></div><button type="button" class="btn ghost" data-attach-undo="${esc(entry.id)}">Undo</button></div>`;
+    }).join(''):'<p class="muted">No album attachments to undo.</p>';
+  }catch(e){box.textContent=e.message;}
+}
+$('#spotifyAttachmentHistoryWrap').addEventListener('toggle',event=>{if(event.target.open)loadSpotifyAttachHistory();});
+$('#spotifyAttachmentHistoryRefresh').onclick=loadSpotifyAttachHistory;
+$('#spotifyAttachmentHistory').addEventListener('click',async event=>{
+  const btn=event.target.closest('[data-attach-undo]');if(!btn)return;
+  if(!confirm('Restore this track\'s previous album and track number? The MP3 file is not changed.'))return;
+  btn.disabled=true;
+  try{const r=await post('/api/admin/collection-attach/'+encodeURIComponent(btn.dataset.attachUndo)+'/undo',{});
+    const data=await r.json();if(!r.ok)throw Error(data.error||'Undo failed');
+    await refresh();await loadSpotifyAttachHistory();
+  }catch(e){alert(e.message);btn.disabled=false;}
+});
+$('#spotifyCollectionClear').onclick=()=>{spotifyCollection=null;spotifyChoice.clear();spotifyExistingChoice.clear();
+  $('#spotifyCollectionSelected').classList.add('hidden');$('#spotifyCollectionResults').innerHTML='';spotifyCollectionStatus('Reference removed. Manual upload remains available.');};
+async function stageSpotifyFiles(files){
+  spotifyStagedFiles=[...files].filter(file=>/\.mp3$/i.test(file.name));
+  const state=$('#spotifyCollectionStatus');state.textContent=`Reading metadata from ${spotifyStagedFiles.length} selected MP3s…`;
+  for(let i=0;i<spotifyStagedFiles.length;i++){
+    const file=spotifyStagedFiles[i];if(!spotifyFileTags.has(file))spotifyFileTags.set(file,await readTags(file));
+    state.textContent=`Read ${i+1} of ${spotifyStagedFiles.length} MP3 tags locally…`;
+  }
+  spotifyChoice.clear();paintSpotifyManifest();spotifyCollectionStatus(`${spotifyStagedFiles.length} MP3s selected for reviewed matching. Audio has not been uploaded.`);
+}
+$('#spotifyCollectionManifest').addEventListener('input',e=>{
+  if(!e.target.matches('[data-source-find]'))return;
+  const index=Number(e.target.dataset.sourceFind),line=e.target.closest('[data-source-index]');
+  const select=line?.querySelector('[data-source-track]'),q=normalizedSong(e.target.value);
+  if(!select)return;
+  const matched=(window.__tracks||[]).filter(t=>!q||normalizedSong(t.title+' '+artistLine(t)+' '+albumName(t)).includes(q)).slice(0,30);
+  const selected=spotifyExistingChoice.get(index)||'';
+  select.innerHTML='<option value="">Choose existing track</option>'+matched.map(t=>`<option value="${esc(t.id)}"${t.id===selected?' selected':''}>${esc(t.title)} — ${esc(artistLine(t))}</option>`).join('');
+});
+$('#spotifyCollectionManifest').addEventListener('change',e=>{
+  if(e.target.matches('[data-source-file]')){const index=Number(e.target.dataset.sourceFile);spotifyChoice.set(index,Number(e.target.value));paintSpotifyManifest();}
+  if(e.target.matches('[data-source-track]')){const index=Number(e.target.dataset.sourceTrack);spotifyExistingChoice.set(index,e.target.value);paintSpotifyManifest();}
+});
+$('#spotifyCollectionManifest').addEventListener('click',async e=>{
+  const btn=e.target.closest('[data-source-action]');if(!btn||!spotifyCollection)return;
+  const index=Number(btn.dataset.sourceIndex),item=spotifyCollection.tracks[index];if(!item)return;
+  btn.disabled=true;
+  const feedback=$(`[data-source-feedback="${index}"]`);
+  try{
+    if(btn.dataset.sourceAction==='attach'){
+      const track_id=spotifyExistingChoice.get(index);
+      if(!track_id)throw Error('Select a verified existing track first.');
+      const modeKind=spotifyCollection.kind;
+      if(!confirm(`Attach existing WASP track to ${modeKind} “${spotifyCollection.title}”? No audio will be uploaded.`))return;
+      let playlist_id='';
+      if(modeKind==='playlist'){const r=await post('/api/admin/playlists',{name:$('#plName').value.trim()});const d=await r.json();if(!r.ok)throw Error(d.error||'Playlist unavailable');playlist_id=d.id;}
+      const r=await post('/api/admin/collection-attach',modeKind==='album'?{track_id,kind:'album',album:$('#alName').value.trim(),track_no:item.track_no||index+1}:{track_id,kind:'playlist',playlist_id});
+      const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to attach track');
+      feedback.textContent='Attached existing music without reuploading audio.';feedback.classList.add('spotify-source-success');
+    }else{
+      if(!confirm(`Request the missing recording “${item.title}” by ${item.artists?.join(', ')||'Unknown Artist'}?`))return;
+      const r=await post('/api/admin/collection-request-song',{title:item.title,artist:item.artists?.join(', ')||'Unknown Artist'});
+      const d=await r.json();if(!r.ok)throw Error(d.error||'Could not request track');
+      feedback.textContent=d.already_requested?'Already requested.':'Individual song request created.';
+      feedback.classList.add('spotify-source-success');
+    }
+  }catch(error){feedback.textContent=error.message;feedback.classList.remove('spotify-source-success');}
+  finally{btn.disabled=false;}
+});
+$('#spotifyUploadMatched').onclick=async()=>{
+  if(!spotifyCollection||!spotifyStagedFiles.length)return;
+  const selected=new Map();
+  for(let i=0;i<spotifyCollection.tracks.length;i++){
+    const line=$(`#spotifyCollectionManifest [data-source-file="${i}"]`);const n=Number(line?.value??-1);
+    if(n>=0){if(selected.has(n)){spotifyCollectionStatus('One MP3 is assigned to more than one Spotify entry. Correct the selections first.',true);return;}selected.set(n,spotifyCollection.tracks[i]);}
+  }
+  if(!selected.size){spotifyCollectionStatus('Select which Spotify entry each MP3 belongs to before uploading.',true);return;}
+  if(!confirm(`Upload ${selected.size} selected MP3(s) and attach detected duplicates to “${spotifyCollection.title}”? Existing audio will never be uploaded twice.`))return;
+  const files=[...selected.keys()].map(i=>spotifyStagedFiles[i]);
+  const assigned=new Map(files.map(file=>[file,selected.get(spotifyStagedFiles.indexOf(file))]));
+  await enqueue(files,assigned);
+  spotifyCollectionStatus(`${files.length} MP3s queued. Follow the normal upload progress below.`);
+};
+
 // ---------- add music, with an overall "10 out of 30" progress bar ----------
 const jobs = [];
 let running = false;
@@ -724,7 +876,7 @@ const sha = async (file) => {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256",await file.arrayBuffer()))].map(b=>b.toString(16).padStart(2,"0")).join("");
 };
 
-async function enqueue(fileList) {
+async function enqueue(fileList,assignedTracks=null) {
   const m = mode(), msg = $("#upMsg");
   msg.textContent = "";
   let pid = null;
@@ -735,7 +887,7 @@ async function enqueue(fileList) {
     if (!r.ok) { msg.textContent = (await r.json()).error; return; }
     pid = (await r.json()).id;
   }
-  const ctx = { m, pid, album: $("#alName").value.trim(), artist: $("#alArtist").value.trim() };
+  const ctx = { m, pid, album: $("#alName").value.trim(), artist: $("#alArtist").value.trim(), assignedTracks };
   if (!running) Object.assign(stat, { total: 0, done: 0, up: 0, dup: 0, fail: 0, cur: "", frac: 0 });
   const files = [...fileList];
   files.forEach((file, i) => jobs.push({ file, ctx, n: i + 1 }));
@@ -764,11 +916,20 @@ async function processOne({ file, ctx, n }) {
   const status = item.querySelector("span"), bar = item.querySelector("i");
   if (!/\.mp3$/i.test(file.name)) { status.textContent = "Skipped: only .mp3 files"; stat.fail++; return; }
   try {
-    const tags = await readTags(file);
+    const tags = spotifyFileTags.get(file) || await readTags(file);
+    const source=ctx.assignedTracks?.get(file);
+    if(source){
+      // Manual association to the Spotify entry is already confirmed by the admin.
+      // Preserve contributors from the MP3 unless metadata is absent.
+      if(!tags.title)tags.title=source.title;
+      if(!tags.artist&&source.artists?.length){tags.artist=source.artists.join(', ');tags.artists=source.artists;}
+      if(m==='album'){tags.album=ctx.album;if(source.track_no)tags.track=String(source.track_no);}
+    }
     const hash = await sha(file);
     const found = (await (await post("/api/admin/check", { hash })).json()).id;
     if (found) { // already stored: never upload twice, but still add to the playlist
-      if (pid) { await post(`/api/admin/playlists/${pid}/tracks`, { track_id: found }); status.textContent = "Already in the library — added to the playlist"; }
+      if (pid) {const attached=await post(`/api/admin/playlists/${pid}/tracks`,{track_id:found});if(!attached.ok)throw Error('Could not add existing track to playlist');status.textContent = "Already in the library — added to the playlist"; }
+      else if(m==='album'&&ctx.album){const attached=await post('/api/admin/collection-attach',{kind:'album',track_id:found,album:ctx.album,track_no:Number(source?.track_no)||n});const data=await attached.json();if(!attached.ok)throw Error(data.error||'Could not attach duplicate to album');status.textContent='Already in the library — attached to chosen album; audio unchanged';}
       else status.textContent = "Already in the library — skipped";
       bar.style.width = "100%"; stat.dup++; return;
     }
@@ -817,10 +978,10 @@ $("#updateBios").addEventListener("click", async (e) => {
 });
 
 const drop = $("#drop");
-$("#files").addEventListener("change", (e) => { enqueue(e.target.files); e.target.value = ""; });
+$("#files").addEventListener("change",async (e)=>{const files=[...e.target.files];e.target.value='';if(spotifyCollection)await stageSpotifyFiles(files);else enqueue(files);});
 ["dragenter", "dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", (e) => enqueue(e.dataTransfer.files));
+drop.addEventListener("drop",async e=>{if(spotifyCollection)await stageSpotifyFiles(e.dataTransfer.files);else enqueue(e.dataTransfer.files);});
 
 // WASP v16.0.5 Mobile Bridge: managed by Network → Mobile Bridge.
 let mobileBridgeLoaded=false;

@@ -3,6 +3,19 @@
 const yearOf = t => {const value=Number(t?.release_year || t?.year || 0);return Number.isInteger(value)&&value>=1850&&value<=new Date().getFullYear()+1?value:0;};
 const norm=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const releasesType=(t,n)=>String(t?.release_type||t?.album_type||t?.release_primary_type||t?.primary_type||'').toLowerCase();
+// A credited artist remains associated with a compilation even when the other
+// tracks have different performers. Expand only an established, non-generic
+// release; never add an unrelated "Greatest Hits" recording by title alone.
+export function expandArtistAlbumTracks(artistTracks,allTracks){
+  const own=new Map((artistTracks||[]).filter(t=>t?.id).map(t=>[String(t.id),t]));
+  const names=new Set((artistTracks||[]).map(t=>norm(t?.album)).filter(x=>x&&
+    !/^(greatest hits|the greatest hits|best of|the best of|live|unknown album|demo|singles|compilation|collection|the collection|essentials)$/.test(x)));
+  for(const t of allTracks||[]){
+    if(!t?.id||own.has(String(t.id)))continue;
+    if(names.has(norm(t.album)))own.set(String(t.id),t);
+  }
+  return [...own.values()];
+}
 export function buildArtistDiscography(tracks) {
   const releases=new Map();
   for(const t of tracks){

@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.2.0">
+<link rel="stylesheet" href="/style.css?v=18.2.1">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -110,6 +110,27 @@
           <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
           <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
         </div>
+        <section id="spotifyCollectionTools" class="spotify-collection-tools hidden" aria-label="Spotify collection guide">
+          <h2>Find a Spotify album or playlist</h2>
+          <p class="muted">Optional: search Spotify to guide your upload. No music is downloaded from Spotify. Existing WASP audio can be attached without reuploading.</p>
+          <div class="form" style="gap:8px"><label class="hidden" for="spotifyCollectionSearch">Spotify collection search</label><input id="spotifyCollectionSearch" type="search" maxlength="100" placeholder="Search Spotify album or playlist" style="flex:1;min-width:170px"><button type="button" class="btn ghost" id="spotifyCollectionSearchButton">Search Spotify</button></div>
+          <p class="msg" id="spotifyCollectionStatus" role="status" aria-live="polite"></p>
+          <div id="spotifyCollectionResults" class="spotify-collection-results"></div>
+          <div id="spotifyCollectionSelected" class="hidden">
+            <div id="spotifyCollectionSummary" class="spotify-collection-summary"></div>
+            <p class="muted">Choose MP3 files below. The source list will offer exact-title candidates from your files and existing WASP tracks. Manually confirm uncertain matches before attaching or requesting any song.</p>
+            <div id="spotifyCollectionManifest" class="spotify-collection-manifest"></div>
+            <div class="form" style="margin-top:12px;gap:9px;flex-wrap:wrap">
+              <button type="button" class="btn" id="spotifyUploadMatched" disabled>Upload selected MP3s</button>
+              <button type="button" class="btn ghost" id="spotifyCollectionClear">Clear Spotify reference</button>
+            </div>
+          </div>
+          <details id="spotifyAttachmentHistoryWrap" class="spotify-attach-history" style="margin-top:14px">
+            <summary>Recent album attachments · Undo</summary>
+            <div id="spotifyAttachmentHistory" aria-live="polite"><p class="muted">Open to load recent album attachments.</p></div>
+            <button type="button" class="btn ghost" id="spotifyAttachmentHistoryRefresh">Refresh history</button>
+          </details>
+        </section>
         <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
         <p class="msg err" id="upMsg" role="alert"></p>
         <div class="batch hidden" id="batch" aria-live="polite">
@@ -633,6 +654,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.2.0"></script>
+<script type="module" src="/admin.js?v=18.2.1"></script>
 </body>
 </html>
