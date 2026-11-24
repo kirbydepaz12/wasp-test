@@ -1,6 +1,6 @@
 {
   "name": "wasp-music",
-  "version": "18.1.5-d.0",
+  "version": "18.1.5-e.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",

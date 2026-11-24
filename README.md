@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-1-5D-PLAYLIST-ART-ALBUM-MATCHING.md">Latest feature guide (v18.1.5d)</a>
+    <a href="docs/V18-1-5E-ARTIST-PERFORMANCE.md">Latest feature guide (v18.1.5e)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.1.5d — Playlist Track Artwork & Album Request Matching.** See the [feature guide](docs/V18-1-5D-PLAYLIST-ART-ALBUM-MATCHING.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.1.5e — Artist Tab Performance Optimization.** See the [feature guide](docs/V18-1-5E-ARTIST-PERFORMANCE.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -133,6 +133,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.1.5e — Artist tab performance | [Catalogue-scoped artist index, progressive rendering, artwork lookup optimization](docs/V18-1-5E-ARTIST-PERFORMANCE.md) |
 | v18.1.5d — Playlist artwork & album request matching | [Choose individual track artwork for playlist covers; scan local and peer album candidates](docs/V18-1-5D-PLAYLIST-ART-ALBUM-MATCHING.md) |
 | v18.1.5c — Request matching & individual song requests | [Local and HIVE peer potential matches for song requests, rejected recordings and separate missing playlist tracks](docs/V18-1-5C-HIVE-REQUEST-TRACK-MATCHING.md) |
 | v18.1.5b — Metadata pull CPU & matching hotfix | [Worker-sized batches, resume, rematch pending Picard metadata](docs/V18-1-5B-METADATA-PULL-CPU-MATCHING-HOTFIX.md) |

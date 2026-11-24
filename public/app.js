@@ -1,4 +1,5 @@
 import { radioIds } from "/radio.js";
+import { buildArtistIndex } from "/artist-index.mjs";
 import { createRadioSelection, duplicateCandidates, artistSearchTokens, trackYear, trackGenres, normal } from "/radio-builder.js";
 import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
 import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
@@ -32,7 +33,7 @@ const albumArt = (t) => {
 };
 const artistArt = (name, origin) => {
   const u = _artistArt(name);
-  const peerOrigin = origin || (typeof tracks !== "undefined" && tracks.find(t=>t.origin && artistsOf(t).includes(name))?.origin);
+  const peerOrigin = origin || getArtistIndex().coverOrigin.get(name);
   return peerOrigin && u.startsWith("/") ? peerResourceUrl(peerOrigin,u) : u;
 };
 const $ = (s) => document.querySelector(s);
@@ -92,6 +93,15 @@ const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
 let peerTrackLookup = new Map();
+// Recreated only after loading a fresh catalogue (including peer snapshots).
+// Artist cards never scan the entire local/HIVE library one by one.
+let artistIndexCache = null;
+function invalidateArtistIndex() { artistIndexCache=null; }
+function getArtistIndex() {
+  if (!artistIndexCache) artistIndexCache=buildArtistIndex(tracks,peerTrackLookup.values(),artistsOf,normalizeRecording);
+  return artistIndexCache;
+}
+
 let primaryPeerOrigin = "";
 let peerSnapshots = new Map();
 let stalePeerSnapshots = new Set();
@@ -215,7 +225,10 @@ function artworkForMatchingTracks(kind,params,failedUrl){
  const first=kind==="track"?tracks.find(t=>String(t.remote_id||t.id)===id):null;
  const effectiveArtist=name||(first&&primaryArtist(first));
  const effectiveAlbum=album||(first&&albumName(first));
- const matching=tracks.filter(t=>{
+ // The failed artwork path can fire for hundreds of artist images at once.
+ // Use the catalogue-wide index instead of another full music scan per image.
+ const pool=effectiveArtist && typeof getArtistIndex==='function' ? (getArtistIndex().tracksByNormalized.get(normalizeRecording(effectiveArtist))||[]) : tracks;
+ const matching=pool.filter(t=>{
   if(kind==="track"&&String(t.remote_id||t.id)===id)return true;
   if(!effectiveArtist||!artistsOf(t).some(a=>a.toLowerCase()===String(effectiveArtist).toLowerCase()))return false;
   return kind==="artist"||!effectiveAlbum||albumName(t).toLowerCase()===String(effectiveAlbum).toLowerCase();
@@ -504,6 +517,7 @@ async function load() {
     const r=await fetch("/api/user/peer-tracks");
     if(r.ok)for(const t of await r.json())if(!byId[t.id])byId[t.id]={...t,remote_id:t.remote_id,origin:t.origin,artists:[t.artist],cover_url:t.cover_url};
   } catch {}
+  invalidateArtistIndex();
   paintBoot(100, "Songs, artists and playlists");
   render();
   hideBoot();
@@ -627,13 +641,7 @@ function sourceIcons(source){
   return parts.length?`<span class="source-icons" role="group" aria-label="${source.local&&source.peer?'Local and peer sources':source.local?'Local source':'Peer source'}">${parts.join('')}</span>`:'';
 }
 function artistSources(name){
-  const matchKey=normalizeRecording(name);let local=false,peer=false;
-  for(const t of [...tracks,...peerTrackLookup.values()]){
-    if(!artistsOf(t).some(a=>normalizeRecording(a)===matchKey))continue;
-    const found=sourcesForTrack(t);local ||= found.local;peer ||= found.peer;
-    if(local&&peer)break;
-  }
-  return {local,peer};
+  return getArtistIndex().sources.get(normalizeRecording(name)) || {local:false,peer:false};
 }
 const sourceTitle=(text,src)=>`${sourceIcons(src)}${esc(text)}`;
 
@@ -790,6 +798,7 @@ function render() {
   catch (e) { console.error(e); $("#list").innerHTML = errorBox("This page couldn't be shown.", String((e && e.message) || e)); noView(); }
 }
 function renderPage() {
+  releaseArtistGridObserver();
   const { a, arg } = parse();
   if (a === "user") {
     renderNav("user");renderSub("",null);
@@ -924,14 +933,7 @@ function pickMix(items, newer, hotter) {
   return shuffle([...fresh, ...hot, ...take(rest, 10)]);
 }
 function artistPool() {
-  const by = dict();
-  tracks.forEach((t) => artistsOf(t).forEach((n) => {
-    const o = by[n] ??= { id: n, name: n, created: 0, plays: 0, songs: 0 };
-    o.created = Math.max(o.created, t.created_at || 0);
-    o.plays += t.plays || 0;
-    o.songs++;
-  }));
-  return Object.values(by);
+  return getArtistIndex().alphabetical;
 }
 const moreTile = (href, label) => `<a class="simtile" href="${href}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${esc(label)}</span></a>`;
 function landing(el) {
@@ -1289,15 +1291,50 @@ window.addEventListener('resize',()=>{if(parse().a==='listened' && parse().arg!=
   recentListView($('#list'));markRows();
 }});
 // A song with several artists is listed under each of them.
+// Render a bounded first batch immediately, then append more as the viewer
+// scrolls (or clicks Load more). The player and queue are never remounted.
+const ARTIST_BATCH_SIZE = 48;
+let artistGridObserver = null;
+function releaseArtistGridObserver() {
+  if (artistGridObserver) {artistGridObserver.disconnect();artistGridObserver=null;}
+}
 function artistGrid(el, recent) {
-  const by = dict();
-  tracks.filter(t=>recent||parse().a!=='artists'?match(t):true).forEach((t) => artistsOf(t).forEach((n) => (by[n] ??= []).push(t)));
-  const searchTokens=!recent&&parse().a==='artists' ? artistSearchTokens(query).map(normal) : [];
-  const names = Object.keys(by).filter(n=>!searchTokens.length||searchTokens.some(token=>normal(n).includes(token))).sort(recent ? (x, y) => latest(by[y]) - latest(by[x]) || x.localeCompare(y) : (x, y) => x.localeCompare(y));
+  releaseArtistGridObserver();
+  const index=getArtistIndex();
+  const searchTokens=!recent ? artistSearchTokens(query).map(normal) : [];
+  let entries;
+  if (recent && query) {
+    // Recently added > Artists is song-search-based, unlike Artists tab's
+    // artist-name search. Keep this old behavior without an N×N scan.
+    const subset=buildArtistIndex(tracks.filter(match),[],artistsOf,normalizeRecording);
+    entries=subset.newest;
+  } else entries=recent?index.newest:index.alphabetical;
+  if (searchTokens.length) entries=entries.filter(e=>searchTokens.some(token=>normal(e.name).includes(token)));
   noView();
-  el.innerHTML = names.length ? `<div class="grid">${names.map((n) =>
-    `<a class="tile" href="#artist/${enc(n)}">${art(artistArt(n), n)}<b>${sourceTitle(n,artistSources(n))}</b><span class="muted">${plural(by[n].length, "song")}</span></a>`).join("")}</div>`
-    : empty("Nothing matches your search.");
+  if (!entries.length) { el.innerHTML=empty("Nothing matches your search.");return; }
+  const card=(entry)=>`<a class="tile" href="#artist/${enc(entry.name)}">${art(artistArt(entry.name),entry.name)}<b>${sourceTitle(entry.name,artistSources(entry.name))}</b><span class="muted">${plural(entry.songs,"song")}</span></a>`;
+  el.innerHTML='<div class="grid artist-progressive-grid"></div><div class="artist-more-holder"><button type="button" class="btn artist-more" aria-label="Load more artists">Load more artists</button></div>';
+  const grid=el.querySelector('.artist-progressive-grid');
+  const holder=el.querySelector('.artist-more-holder');
+  const button=holder.querySelector('button');
+  let count=0;
+  const addMore=()=>{
+    if(!grid.isConnected)return;
+    const until=Math.min(entries.length,count+ARTIST_BATCH_SIZE);
+    if(until<=count)return;
+    grid.insertAdjacentHTML('beforeend',entries.slice(count,until).map(card).join(''));
+    count=until;
+    if(count===entries.length){holder.remove();releaseArtistGridObserver();}
+    else button.textContent=`Show more artists (${entries.length-count} remaining)`;
+  };
+  button.addEventListener('click',addMore);
+  addMore();
+  if(count<entries.length && typeof IntersectionObserver!=='undefined'){
+    artistGridObserver=new IntersectionObserver(items=>{
+      if(items.some(item=>item.isIntersecting)&&holder.isConnected)addMore();
+    },{rootMargin:'240px 0px'});
+    artistGridObserver.observe(holder);
+  }
 }
 
 // The album name belongs to the release, not always to the track performer.
@@ -1371,7 +1408,7 @@ function albumPage(el, artist, album) {
 function artistPage(el, name) {
   // A peer-only artist can also arrive through a public playlist or a copied
   // track reference, even when deduplication hides its catalogue entry.
-  let ts = tracks.filter((t) => artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
+  let ts = getArtistIndex().tracksByNormalized.get(normalizeRecording(name)) || [];
   if (!ts.length) ts = [...peerTrackLookup.values()].filter((t) => artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
   if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); noView(); return; }
   const groups = dict();
