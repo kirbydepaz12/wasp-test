@@ -692,9 +692,9 @@ $("#reqRows").addEventListener("click", async (e) => {
   if(act==='remove')await requestHousekeeping('selected',[id]);
 });
 
-// v18.2.1: the Spotify manifest is a reference for administrator-controlled
-// album/playlist assembly, never an audio source. All user choices are reviewed.
-let spotifyCollection=null,spotifyStagedFiles=[],spotifyFileTags=new Map(),spotifyChoice=new Map(),spotifyExistingChoice=new Map();
+// v18.2.2: credential-free collection assembly, resumable in D1.
+let spotifyCollection=null,spotifyDraft=null,spotifyLookupResults=[],spotifyStagedFiles=[],spotifyFileTags=new Map(),spotifyChoice=new Map(),spotifyExistingChoice=new Map(),spotifyUnmatchedChoice=new Map();
+let spotifyLookupSerial=0,spotifyLookupTimer=null;
 const normalizedSong=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const songArtistOverlap=(names,other)=>{
   const a=(Array.isArray(names)?names:String(names||'').split(/[;]+/)).map(normalizedSong).filter(Boolean);
@@ -702,57 +702,107 @@ const songArtistOverlap=(names,other)=>{
   return a.some(x=>b.includes(x));
 };
 function spotifyCollectionStatus(message='',isError=false){const node=$('#spotifyCollectionStatus');node.textContent=message;node.classList.toggle('err',isError);}
+function fileMatchChoices(){
+  const used=new Set(),assignments=new Map();
+  if(!spotifyCollection)return assignments;
+  for(let i=0;i<spotifyCollection.tracks.length;i++){
+    if(spotifyDraft?.matches?.[i])continue;
+    const item=spotifyCollection.tracks[i];
+    if(spotifyChoice.has(i)){
+      const chosen=spotifyChoice.get(i);assignments.set(i,chosen);
+      if(chosen>=0)used.add(chosen);
+      continue;
+    }
+    let found=-1;
+    for(let f=0;f<spotifyStagedFiles.length;f++){
+      if(used.has(f))continue;
+      const file=spotifyStagedFiles[f],tags=spotifyFileTags.get(file)||{};
+      if(normalizedSong(item.title)===normalizedSong(tags.title||file.name.replace(/\.mp3$/i,''))&&songArtistOverlap(item.artists,tags.artists?.length?tags.artists:tags.artist)){found=f;break;}
+    }
+    if(found>=0)used.add(found);
+    assignments.set(i,found);
+  }
+  return assignments;
+}
 function paintSpotifyManifest(){
   const wrap=$('#spotifyCollectionManifest');if(!spotifyCollection){wrap.innerHTML='';return;}
-  const inLibrary=window.__tracks||[];
-  const used=new Set();
-  const selectFile=(index,item)=>{
-    if(spotifyChoice.has(index)){const selected=spotifyChoice.get(index);if(selected>=0)used.add(selected);return selected;}
-    for(let i=0;i<spotifyStagedFiles.length;i++){
-      if(used.has(i))continue;
-      const tags=spotifyFileTags.get(spotifyStagedFiles[i])||{};
-      if(normalizedSong(item.title)===normalizedSong(tags.title||spotifyStagedFiles[i].name.replace(/\.mp3$/i,''))&&songArtistOverlap(item.artists,tags.artists?.length?tags.artists:tags.artist)){
-        used.add(i);return i;
-      }
-    }
-    return -1;
-  };
+  const inLibrary=window.__tracks||[],assignments=fileMatchChoices(),used=new Set([...assignments.values()].filter(n=>n>=0));
   wrap.innerHTML=spotifyCollection.tracks.map((item,index)=>{
-    const fileIndex=selectFile(index,item);
+    const assigned=spotifyDraft?.matches?.[index];
+    const fileIndex=assignments.get(index)??-1;
+    if(assigned){const existing=inLibrary.find(t=>t.id===assigned);return `<div class="spotify-manifest-row"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)} <span class="spotify-matched-badge">✓ Approved</span></strong><small class="muted">${esc((item.artists||[]).join(', '))} · ${esc(existing?.title||assigned)}</small></div></div>`;}
     const found=inLibrary.filter(t=>normalizedSong(t.title)===normalizedSong(item.title)&&songArtistOverlap(item.artists,artistsOf(t)));
     const chosen=spotifyExistingChoice.get(index)||'';
     const fileSelect=`<select data-source-file="${index}" aria-label="MP3 file for ${esc(item.title)}"><option value="-1">No local file assigned</option>${spotifyStagedFiles.map((file,i)=>`<option value="${i}"${i===fileIndex?' selected':''}>${esc(file.name)}</option>`).join('')}</select>`;
-    const existingSelect=`<select data-source-track="${index}" aria-label="Existing WASP track for ${esc(item.title)}"><option value="">Choose existing track</option>${[...new Map([...found,...inLibrary.filter(t=>t.id===chosen)].map(t=>[t.id,t])).values()].slice(0,20).map(t=>`<option value="${esc(t.id)}"${chosen===t.id?' selected':''}>${esc(t.title)} — ${esc(artistLine(t))}</option>`).join('')}</select>`;
-    return `<div class="spotify-manifest-row" data-source-index="${index}"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)}</strong><small class="muted">${esc((item.artists||[]).join(', ')||'Artist unavailable')} · ${spotifyCollection.kind==='album'?'Track '+(item.track_no||index+1):'Playlist entry'}</small></div><div class="spotify-manifest-actions">${fileSelect}<input type="search" class="spotify-existing-search" data-source-find="${index}" placeholder="Search existing WASP songs" aria-label="Find track for ${esc(item.title)}" maxlength="150">${existingSelect}<button type="button" class="btn ghost" data-source-action="attach" data-source-index="${index}" ${!chosen?'disabled':''}>Use existing track</button><button type="button" class="btn ghost" data-source-action="request" data-source-index="${index}">Request missing</button></div><small class="muted" data-source-feedback="${index}">${fileIndex>=0?'Matched to an MP3 candidate; review before uploading.':found.length?'Possible existing WASP match; select it to attach.':'No matching upload or existing track selected.'}</small></div>`;
-  }).join('')||'<p class="muted">Spotify did not return a track list. Use manual playlist/album upload instead.</p>';
+    const existingSelect=`<select data-source-track="${index}" aria-label="Existing WASP track for ${esc(item.title)}"><option value="">Choose existing track</option>${[...new Map([...found,...inLibrary.filter(t=>t.id===chosen)].map(t=>[t.id,t])).values()].slice(0,30).map(t=>`<option value="${esc(t.id)}"${chosen===t.id?' selected':''}>${esc(t.title)} — ${esc(artistLine(t))}</option>`).join('')}</select>`;
+    return `<div class="spotify-manifest-row" data-source-index="${index}"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)}</strong><small class="muted">${esc((item.artists||[]).join(', ')||'Artist unavailable')} · ${spotifyCollection.kind==='album'?'Track '+(item.track_no||index+1):'Playlist entry'} · <b>Missing until approved</b></small></div><div class="spotify-manifest-actions">${fileSelect}<input type="search" class="spotify-existing-search" data-source-find="${index}" placeholder="Find existing WASP track" aria-label="Find existing track for ${esc(item.title)}" maxlength="150">${existingSelect}<button type="button" class="btn ghost" data-source-action="attach" data-source-index="${index}" ${!chosen?'disabled':''}>Approve existing match</button><button type="button" class="btn ghost" data-source-action="request" data-source-index="${index}">Request missing track</button></div><small class="muted" data-source-feedback="${index}">${fileIndex>=0?'Suggested MP3; verify its identity before approving upload.':found.length?'Existing candidates found; select the correct recording.':'No candidate selected; assign a file manually or request the missing recording.'}</small></div>`;
+  }).join('')||'<p class="muted">The reference did not return a verifiable track list.</p>';
+  const missing=spotifyCollection.tracks.length-Object.keys(spotifyDraft?.matches||{}).length;
+  $('#spotifyDraftState').textContent=`${spotifyDraft?.status==='complete'?'Complete':'Pending'} · ${spotifyCollection.tracks.length-missing} approved / ${spotifyCollection.tracks.length} listed tracks · ${missing} missing${spotifyCollection.complete?'':' · partial source catalogue (not verified complete)'}`;
+  $('#spotifyVerifySource').classList.toggle('hidden',spotifyDraft?.status==='complete'||missing>0||spotifyCollection.complete);
+  const remaining=spotifyStagedFiles.map((f,i)=>({f,i})).filter(x=>!used.has(x.i));
+  $('#spotifyUnmatchedFiles').innerHTML=remaining.length?`<h3>Unrecognized files · Review before upload (${remaining.length})</h3><p class="muted">To match one to a missing entry, select that filename from the corresponding track row above. Otherwise keep it outside this collection or exclude it from this batch. Excluding never deletes your PC file or existing WASP audio.</p><div class="spotify-unassigned-list">${remaining.map(({f,i})=>`<label class="spotify-unassigned-item"><span>${esc(f.name)}</span><select data-unmatched-decision="${i}" aria-label="Disposition for ${esc(f.name)}"><option value="exclude"${spotifyUnmatchedChoice.get(i)!=='separate'?' selected':''}>Exclude (do not upload)</option><option value="separate"${spotifyUnmatchedChoice.get(i)==='separate'?' selected':''}>Keep as separate song</option></select></label>`).join('')}</div>`:'';
   $('#spotifyUploadMatched').disabled=!spotifyStagedFiles.length;
 }
+async function loadCollectionDraft(data){
+  const radio=document.querySelector(`input[name=mode][value="${data.source.kind}"]`);
+  if(radio&&!radio.checked){radio.checked=true;radio.dispatchEvent(new Event('change',{bubbles:true}));}
+  spotifyDraft=data;spotifyCollection=data.source;spotifyChoice.clear();spotifyExistingChoice.clear();spotifyUnmatchedChoice.clear();
+  if(spotifyCollection.kind==='album'){$('#alName').value=spotifyCollection.title;$('#alArtist').value='';}
+  if(spotifyCollection.kind==='playlist')$('#plName').value=spotifyCollection.title;
+  $('#spotifyCollectionSelected').classList.remove('hidden');
+  $('#spotifyCollectionSummary').innerHTML=`<strong>${esc(spotifyCollection.title)}</strong><small class="muted">${esc(spotifyCollection.artist||spotifyCollection.provider||'Catalogue')} · ${spotifyCollection.tracks.length} listed entries${spotifyCollection.complete?'':' (partial)'} · <a href="${esc(spotifyCollection.url)}" target="_blank" rel="noopener noreferrer">View source</a></small>`;
+  spotifyCollectionStatus(spotifyCollection.warning||'Draft saved. Matched files and existing tracks require explicit review.',!!spotifyCollection.warning);
+  paintSpotifyManifest();
+}
 async function spotifySearchCollection(){
-  const kind=mode(),q=$('#spotifyCollectionSearch').value.trim(),box=$('#spotifyCollectionResults');
-  if(!['album','playlist'].includes(kind)||q.length<2){spotifyCollectionStatus('Enter at least two characters to search.',true);return;}
-  box.textContent='Searching Spotify…';spotifyCollectionStatus();
-  try{const response=await fetch('/api/admin/collection-spotify/search?'+new URLSearchParams({type:kind,q}),{cache:'no-store'});
-    const data=await response.json();if(!response.ok)throw Error(data.error||'Spotify search failed');
-    const results=data.items||[];
-    box.innerHTML=results.length?results.map(r=>`<button type="button" class="spotify-result" data-spotify-id="${esc(r.id)}"><span class="spotify-result-art">${r.image?`<img src="${esc(r.image)}" alt="">`:''}</span><span><b>${esc(r.title)}</b><small class="muted">${esc(r.artist||'')} · ${r.total?'~'+r.total+' tracks':''}</small></span></button>`).join(''):'<p class="muted">No Spotify results. You can still upload using a manually entered album or playlist name.</p>';
-  }catch(e){box.textContent='';spotifyCollectionStatus(e.message,true);}
+  const kind=mode(),q=$('#spotifyCollectionSearch').value.trim(),box=$('#spotifyCollectionResults'),seq=++spotifyLookupSerial;
+  if(!['album','playlist'].includes(kind)||q.length<2){box.innerHTML='';return;}
+  if(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:album|playlist)\/[A-Za-z0-9]{10,40}/.test(q)&&q.includes('/'+kind+'/')){
+    spotifyLookupResults=[{kind,provider:'spotify-public-embed',url:q,title:'Use this public Spotify '+kind,artist:'From the same public link reader used by WASP users'}];
+    box.innerHTML=`<button type="button" class="spotify-result" data-spotify-index="0"><span><b>Use this Spotify ${esc(kind)}</b><small class="muted">Read its public track list without credentials (may be partial)</small></span></button>`;
+    $('#spotifyCollectionSearch').setAttribute('aria-expanded','true');return;
+  }
+  if(q.length>100){spotifyCollectionStatus('Search using a name up to 100 characters, or a public Spotify playlist link.',true);return;}
+  box.textContent='Searching public music catalogue…';spotifyCollectionStatus();
+  try{
+    const response=await fetch('/api/admin/collection-guide/search?'+new URLSearchParams({type:kind,q}),{cache:'no-store'});
+    const data=await response.json();if(seq!==spotifyLookupSerial)return;
+    if(!response.ok)throw Error(data.error||'Catalogue search failed');
+    spotifyLookupResults=data.items||[];
+    box.innerHTML=spotifyLookupResults.length?spotifyLookupResults.map((r,i)=>`<button type="button" class="spotify-result" role="option" data-spotify-index="${i}"><span class="spotify-result-art">${r.image?`<img src="${esc(r.image)}" alt="">`:''}</span><span><b>${esc(r.title)}</b><small class="muted">${esc(r.artist||'')} · ${r.total?'~'+r.total+' tracks · ':''}Public album/playlist catalogue</small></span></button>`).join(''):'<p class="muted">No matches. Try a different name or paste a Spotify playlist link.</p>';
+    $('#spotifyCollectionSearch').setAttribute('aria-expanded',String(!!spotifyLookupResults.length));
+  }catch(error){if(seq!==spotifyLookupSerial)return;box.textContent='';spotifyCollectionStatus(error.message,true);}
 }
 $('#spotifyCollectionSearchButton').onclick=spotifySearchCollection;
-$('#spotifyCollectionSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();spotifySearchCollection();}});
+$('#spotifyCollectionSearch').addEventListener('input',()=>{clearTimeout(spotifyLookupTimer);spotifyLookupTimer=setTimeout(spotifySearchCollection,280);});
+$('#spotifyCollectionSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(spotifyLookupTimer);spotifySearchCollection();}if(e.key==='Escape'){$('#spotifyCollectionResults').innerHTML='';e.target.setAttribute('aria-expanded','false');}});
 $('#spotifyCollectionResults').onclick=async e=>{
-  const button=e.target.closest('[data-spotify-id]');if(!button)return;
-  button.disabled=true;spotifyCollectionStatus('Loading the source track list…');
-  try{const response=await fetch('/api/admin/collection-spotify/resolve?'+new URLSearchParams({type:mode(),id:button.dataset.spotifyId}),{cache:'no-store'});
-    const data=await response.json();if(!response.ok)throw Error(data.error||'Spotify source unavailable');
-    spotifyCollection=data;spotifyChoice.clear();spotifyExistingChoice.clear();
-    if(mode()==='album'){$('#alName').value=data.title;$('#alArtist').value='';}
-    if(mode()==='playlist')$('#plName').value=data.title;
-    $('#spotifyCollectionSelected').classList.remove('hidden');
-    $('#spotifyCollectionSummary').innerHTML=`<strong>${esc(data.title)}</strong><small class="muted">${esc(data.artist||'Spotify reference')} · ${data.tracks.length} retrieved tracks · <a href="${esc(data.url)}" target="_blank" rel="noopener">Open on Spotify</a></small>`;
-    spotifyCollectionStatus(data.warning||'Spotify reference loaded. Review candidates before applying.',!!data.warning);
-    paintSpotifyManifest();
+  const button=e.target.closest('[data-spotify-index]');if(!button)return;
+  const selected=spotifyLookupResults[Number(button.dataset.spotifyIndex)];if(!selected)return;
+  button.disabled=true;spotifyCollectionStatus('Creating a reviewable collection draft…');
+  try{
+    let b={kind:mode(),id:selected.id||'',url:selected.provider==='spotify-public-embed'?selected.url:''};
+    let response=await post('/api/admin/collection-drafts',b),data=await response.json();
+    if(response.status===409&&data.code==='playlist_exists'&&confirm('A playlist with this name already exists. Reuse that playlist for this draft?')){
+      response=await post('/api/admin/collection-drafts',{...b,reuse_existing:true});data=await response.json();
+    }
+    if(!response.ok)throw Error(data.error||'Cannot create collection draft');
+    await loadCollectionDraft(data);$('#spotifyCollectionResults').innerHTML='';$('#spotifyCollectionSearch').setAttribute('aria-expanded','false');
   }catch(error){spotifyCollectionStatus(error.message,true);}finally{button.disabled=false;}
 };
+async function loadCollectionDraftHistory(){
+  const el=$('#spotifyDraftHistory');el.textContent='Loading saved collections…';
+  try{
+    const r=await fetch('/api/admin/collection-drafts',{cache:'no-store'}),data=await r.json();if(!r.ok)throw Error(data.error||'Cannot load drafts');
+    el.innerHTML=data.items?.length?data.items.map(d=>`<div class="spotify-draft-history-row"><span><b>${esc(d.title)}</b><small class="muted"> ${esc(d.kind)} · ${d.matched}/${d.source.tracks.length} matched · ${esc(d.status)}</small></span><button type="button" class="btn ghost" data-reopen-draft="${esc(d.id)}">Resume</button></div>`).join(''):'<p class="muted">No saved collection drafts yet.</p>';
+  }catch(e){el.textContent=e.message;}
+}
+$('#spotifyDraftHistoryWrap').addEventListener('toggle',e=>{if(e.target.open)loadCollectionDraftHistory();});
+$('#spotifyDraftHistoryRefresh').onclick=loadCollectionDraftHistory;
+$('#spotifyDraftHistory').addEventListener('click',async e=>{const b=e.target.closest('[data-reopen-draft]');if(!b)return;
+  b.disabled=true;try{const r=await fetch('/api/admin/collection-drafts/'+encodeURIComponent(b.dataset.reopenDraft)),d=await r.json();if(!r.ok)throw Error(d.error||'Cannot reopen');await loadCollectionDraft(d);}catch(err){spotifyCollectionStatus(err.message,true);}finally{b.disabled=false;}
+});
 async function loadSpotifyAttachHistory(){
   const box=$('#spotifyAttachmentHistory');if(!box)return;
   box.textContent='Loading attachment history…';
@@ -777,8 +827,8 @@ $('#spotifyAttachmentHistory').addEventListener('click',async event=>{
     await refresh();await loadSpotifyAttachHistory();
   }catch(e){alert(e.message);btn.disabled=false;}
 });
-$('#spotifyCollectionClear').onclick=()=>{spotifyCollection=null;spotifyChoice.clear();spotifyExistingChoice.clear();
-  $('#spotifyCollectionSelected').classList.add('hidden');$('#spotifyCollectionResults').innerHTML='';spotifyCollectionStatus('Reference removed. Manual upload remains available.');};
+$('#spotifyCollectionClear').onclick=()=>{spotifyCollection=null;spotifyDraft=null;spotifyChoice.clear();spotifyExistingChoice.clear();
+  $('#spotifyCollectionSelected').classList.add('hidden');$('#spotifyCollectionResults').innerHTML='';spotifyCollectionStatus('Draft closed; it remains saved and can be resumed from Pending assemblies.');};
 async function stageSpotifyFiles(files){
   spotifyStagedFiles=[...files].filter(file=>/\.mp3$/i.test(file.name));
   const state=$('#spotifyCollectionStatus');state.textContent=`Reading metadata from ${spotifyStagedFiles.length} selected MP3s…`;
@@ -786,7 +836,7 @@ async function stageSpotifyFiles(files){
     const file=spotifyStagedFiles[i];if(!spotifyFileTags.has(file))spotifyFileTags.set(file,await readTags(file));
     state.textContent=`Read ${i+1} of ${spotifyStagedFiles.length} MP3 tags locally…`;
   }
-  spotifyChoice.clear();paintSpotifyManifest();spotifyCollectionStatus(`${spotifyStagedFiles.length} MP3s selected for reviewed matching. Audio has not been uploaded.`);
+  spotifyChoice.clear();spotifyUnmatchedChoice.clear();paintSpotifyManifest();spotifyCollectionStatus(`${spotifyStagedFiles.length} MP3s selected for reviewed matching. Audio has not been uploaded.`);
 }
 $('#spotifyCollectionManifest').addEventListener('input',e=>{
   if(!e.target.matches('[data-source-find]'))return;
@@ -801,45 +851,54 @@ $('#spotifyCollectionManifest').addEventListener('change',e=>{
   if(e.target.matches('[data-source-file]')){const index=Number(e.target.dataset.sourceFile);spotifyChoice.set(index,Number(e.target.value));paintSpotifyManifest();}
   if(e.target.matches('[data-source-track]')){const index=Number(e.target.dataset.sourceTrack);spotifyExistingChoice.set(index,e.target.value);paintSpotifyManifest();}
 });
+$('#spotifyUnmatchedFiles').addEventListener('change',e=>{if(e.target.matches('[data-unmatched-decision]'))spotifyUnmatchedChoice.set(Number(e.target.dataset.unmatchedDecision),e.target.value);});
 $('#spotifyCollectionManifest').addEventListener('click',async e=>{
-  const btn=e.target.closest('[data-source-action]');if(!btn||!spotifyCollection)return;
+  const btn=e.target.closest('[data-source-action]');if(!btn||!spotifyCollection||!spotifyDraft)return;
   const index=Number(btn.dataset.sourceIndex),item=spotifyCollection.tracks[index];if(!item)return;
-  btn.disabled=true;
-  const feedback=$(`[data-source-feedback="${index}"]`);
+  btn.disabled=true;const feedback=$(`[data-source-feedback="${index}"]`);
   try{
     if(btn.dataset.sourceAction==='attach'){
-      const track_id=spotifyExistingChoice.get(index);
-      if(!track_id)throw Error('Select a verified existing track first.');
-      const modeKind=spotifyCollection.kind;
-      if(!confirm(`Attach existing WASP track to ${modeKind} “${spotifyCollection.title}”? No audio will be uploaded.`))return;
-      let playlist_id='';
-      if(modeKind==='playlist'){const r=await post('/api/admin/playlists',{name:$('#plName').value.trim()});const d=await r.json();if(!r.ok)throw Error(d.error||'Playlist unavailable');playlist_id=d.id;}
-      const r=await post('/api/admin/collection-attach',modeKind==='album'?{track_id,kind:'album',album:$('#alName').value.trim(),track_no:item.track_no||index+1}:{track_id,kind:'playlist',playlist_id});
-      const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to attach track');
-      feedback.textContent='Attached existing music without reuploading audio.';feedback.classList.add('spotify-source-success');
+      const track_id=spotifyExistingChoice.get(index);if(!track_id)throw Error('Select a verified existing track first.');
+      if(!confirm(`Approve “${item.title}” as existing track and attach it to “${spotifyCollection.title}”?`))return;
+      const r=await post('/api/admin/collection-drafts/'+spotifyDraft.id+'/assign',{slot:index,track_id});
+      const d=await r.json();if(!r.ok)throw Error(d.error||'Could not approve match');
+      spotifyDraft=d;paintSpotifyManifest();
+      await refresh();
+      spotifyCollectionStatus('Existing song matched. The audio was not reuploaded.');
     }else{
       if(!confirm(`Request the missing recording “${item.title}” by ${item.artists?.join(', ')||'Unknown Artist'}?`))return;
       const r=await post('/api/admin/collection-request-song',{title:item.title,artist:item.artists?.join(', ')||'Unknown Artist'});
       const d=await r.json();if(!r.ok)throw Error(d.error||'Could not request track');
-      feedback.textContent=d.already_requested?'Already requested.':'Individual song request created.';
+      feedback.textContent=d.already_requested?'Already requested.':'Individual track request created; collection stays pending.';
       feedback.classList.add('spotify-source-success');
     }
-  }catch(error){feedback.textContent=error.message;feedback.classList.remove('spotify-source-success');}
+  }catch(error){if(feedback){feedback.textContent=error.message;feedback.classList.remove('spotify-source-success');}spotifyCollectionStatus(error.message,true);}
   finally{btn.disabled=false;}
 });
+$('#spotifyVerifySource').onclick=async()=>{
+  if(!spotifyDraft||spotifyDraft.remaining)return;
+  const confirmed=prompt('The source was marked PARTIAL. Confirm you personally verified all entries of this album or playlist. Type complete to finish it.');
+  if(confirmed!=='complete')return;
+  try{const r=await post('/api/admin/collection-drafts/'+spotifyDraft.id+'/verify',{confirm:'complete'}),d=await r.json();if(!r.ok)throw Error(d.error||'Cannot verify collection');spotifyDraft=d;paintSpotifyManifest();spotifyCollectionStatus('Collection manually verified complete. Audio and matched entries remain unchanged.');}
+  catch(e){spotifyCollectionStatus(e.message,true);}
+};
 $('#spotifyUploadMatched').onclick=async()=>{
-  if(!spotifyCollection||!spotifyStagedFiles.length)return;
-  const selected=new Map();
+  if(!spotifyCollection||!spotifyDraft||!spotifyStagedFiles.length)return;
+  const selected=new Map(),assignments=fileMatchChoices();
   for(let i=0;i<spotifyCollection.tracks.length;i++){
-    const line=$(`#spotifyCollectionManifest [data-source-file="${i}"]`);const n=Number(line?.value??-1);
-    if(n>=0){if(selected.has(n)){spotifyCollectionStatus('One MP3 is assigned to more than one Spotify entry. Correct the selections first.',true);return;}selected.set(n,spotifyCollection.tracks[i]);}
+    if(spotifyDraft.matches?.[i])continue;
+    const n=assignments.get(i)??-1;
+    if(n>=0){if(selected.has(n)){spotifyCollectionStatus('One MP3 is assigned to multiple entries. Correct the assignments before uploading.',true);return;}
+      selected.set(n,{...spotifyCollection.tracks[i],slot:i});}
   }
-  if(!selected.size){spotifyCollectionStatus('Select which Spotify entry each MP3 belongs to before uploading.',true);return;}
-  if(!confirm(`Upload ${selected.size} selected MP3(s) and attach detected duplicates to “${spotifyCollection.title}”? Existing audio will never be uploaded twice.`))return;
-  const files=[...selected.keys()].map(i=>spotifyStagedFiles[i]);
-  const assigned=new Map(files.map(file=>[file,selected.get(spotifyStagedFiles.indexOf(file))]));
-  await enqueue(files,assigned);
-  spotifyCollectionStatus(`${files.length} MP3s queued. Follow the normal upload progress below.`);
+  const separate=new Set();
+  spotifyStagedFiles.forEach((f,i)=>{if(!selected.has(i)&&spotifyUnmatchedChoice.get(i)==='separate')separate.add(f);});
+  if(!selected.size&&!separate.size){spotifyCollectionStatus('Assign MP3s to source entries or choose Keep as separate song for unmatched files.',true);return;}
+  const files=[...selected.keys()].map(i=>spotifyStagedFiles[i]).concat([...separate]);
+  if(!confirm(`Upload ${files.length} approved MP3(s): ${selected.size} assigned to “${spotifyCollection.title}” and ${separate.size} kept separate? Excluded files will not be uploaded. The collection remains pending while entries are missing.`))return;
+  const assigned=new Map([...selected].map(([index,entry])=>[spotifyStagedFiles[index],entry]));
+  await enqueue(files,assigned,separate);
+  spotifyCollectionStatus(`${files.length} MP3s queued for approved upload. Follow progress below. Missing entries remain in the saved draft.`);
 };
 
 // ---------- add music, with an overall "10 out of 30" progress bar ----------
@@ -876,18 +935,21 @@ const sha = async (file) => {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256",await file.arrayBuffer()))].map(b=>b.toString(16).padStart(2,"0")).join("");
 };
 
-async function enqueue(fileList,assignedTracks=null) {
+async function enqueue(fileList,assignedTracks=null,separateFiles=null) {
   const m = mode(), msg = $("#upMsg");
   msg.textContent = "";
   let pid = null;
-  if (m === "playlist") {
+  if (m === "playlist" && assignedTracks && spotifyDraft?.playlist_id) {
+    pid=spotifyDraft.playlist_id;
+  } else if (m === "playlist") {
     const name = $("#plName").value.trim();
     if (!name) { msg.textContent = "Enter a playlist name first."; return; }
     const r = await post("/api/admin/playlists", { name });
     if (!r.ok) { msg.textContent = (await r.json()).error; return; }
     pid = (await r.json()).id;
   }
-  const ctx = { m, pid, album: $("#alName").value.trim(), artist: $("#alArtist").value.trim(), assignedTracks };
+  const ctx = { m, pid, album: $("#alName").value.trim(), artist: $("#alArtist").value.trim(), assignedTracks,
+    separateFiles, draftId:assignedTracks?spotifyDraft?.id:null };
   if (!running) Object.assign(stat, { total: 0, done: 0, up: 0, dup: 0, fail: 0, cur: "", frac: 0 });
   const files = [...fileList];
   files.forEach((file, i) => jobs.push({ file, ctx, n: i + 1 }));
@@ -905,9 +967,14 @@ async function runJobs() {
   running = false; stat.cur = "";
   paintBatch(true);
   page = 1; refresh(); loadPlaylists(); loadRequests();
+  if(spotifyDraft?.id){
+    try{const r=await fetch('/api/admin/collection-drafts/'+spotifyDraft.id);if(r.ok){spotifyDraft=await r.json();paintSpotifyManifest();}}
+    catch{}
+  }
 }
 async function processOne({ file, ctx, n }) {
-  const { m, pid } = ctx;
+  let { m, pid } = ctx;
+  if(ctx.separateFiles?.has(file)){m='singles';pid=null;}
   stat.cur = file.name; stat.frac = 0; paintBatch();
   const item = document.createElement("div");
   item.style.margin = "10px 0";
@@ -918,6 +985,12 @@ async function processOne({ file, ctx, n }) {
   try {
     const tags = spotifyFileTags.get(file) || await readTags(file);
     const source=ctx.assignedTracks?.get(file);
+    const confirmSourceTrack=async trackId=>{
+      if(!ctx.draftId||!source||!Number.isInteger(source.slot))return;
+      const result=await post('/api/admin/collection-drafts/'+ctx.draftId+'/assign',{slot:source.slot,track_id:trackId});
+      const data=await result.json();if(!result.ok)throw Error(data.error||'Audio uploaded but collection assignment failed. Resume the draft to finish matching.');
+      if(spotifyDraft?.id===ctx.draftId){spotifyDraft=data;paintSpotifyManifest();}
+    };
     if(source){
       // Manual association to the Spotify entry is already confirmed by the admin.
       // Preserve contributors from the MP3 unless metadata is absent.
@@ -931,6 +1004,7 @@ async function processOne({ file, ctx, n }) {
       if (pid) {const attached=await post(`/api/admin/playlists/${pid}/tracks`,{track_id:found});if(!attached.ok)throw Error('Could not add existing track to playlist');status.textContent = "Already in the library — added to the playlist"; }
       else if(m==='album'&&ctx.album){const attached=await post('/api/admin/collection-attach',{kind:'album',track_id:found,album:ctx.album,track_no:Number(source?.track_no)||n});const data=await attached.json();if(!attached.ok)throw Error(data.error||'Could not attach duplicate to album');status.textContent='Already in the library — attached to chosen album; audio unchanged';}
       else status.textContent = "Already in the library — skipped";
+      await confirmSourceTrack(found);
       bar.style.width = "100%"; stat.dup++; return;
     }
     if (m === "album") { if (ctx.album) tags.album = ctx.album; if (ctx.artist) tags.artist = ctx.artist; if (!tags.track) tags.track = String(n); }
@@ -938,8 +1012,9 @@ async function processOne({ file, ctx, n }) {
     const t = await send(file, tags, hash, pid, (p) => { bar.style.width = p * 100 + "%"; stat.frac = p; paintBatch(); });
     bar.style.width = "100%";
     if (tags.cover) await fetch(`/api/admin/tracks/${t.id}/cover`, { method: "PUT", headers: { "content-type": tags.cover.type }, body: tags.cover });
+    await confirmSourceTrack(t.id);
     await warm([t], undefined, true); // fetch artwork and biographies now so listeners see them right away
-    status.textContent += pid ? " — uploaded and added to the playlist" : " — uploaded";
+    status.textContent += pid ? " — uploaded and added to the playlist" : source ? " — uploaded and assigned to source entry" : " — uploaded";
     stat.up++;
   } catch (err) { status.textContent = "Failed: " + err.message; status.style.color = "var(--danger)"; stat.fail++; }
 }

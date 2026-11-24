@@ -1178,3 +1178,30 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 /* Let uncovered photographic areas be clicked without obstructing tabs or bio links. */
 .artist-hero-expanded .artist-banner-content{pointer-events:none}
 .artist-hero-expanded .artist-banner-content>*{pointer-events:auto}
+
+/* v18.2.2 artist header refinement: no redundant expand/close glyphs. */
+.artist-hero-expanded .artist-banner-counts{display:inline-flex;align-items:center;gap:11px;flex-wrap:wrap;color:var(--text);font-weight:600}
+.artist-hero-expanded .artist-banner-counts .source-icons{display:inline-flex;flex:none;align-items:center;gap:5px;vertical-align:middle}
+.artist-hero-expanded .artist-banner-counts .source-icons svg{width:15px;height:15px}
+.artist-hero-expanded .artist-banner-content h1{display:block}
+.artist-hero-expanded .artist-hero-photo:focus-visible{outline:3px solid var(--accent);outline-offset:-4px}
+.artist-hero-details .apanel{background:rgba(19,22,20,.91);border:1px solid rgba(205,230,200,.30);box-shadow:0 4px 30px rgba(0,0,0,.22)}
+.artist-hero-lineup>.simtile,.artist-hero-similar>.simtile{background:rgba(38,43,40,.88);border:1px solid rgba(210,235,207,.22);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 3px 13px rgba(0,0,0,.20)}
+.artist-hero-lineup>.simtile:hover,.artist-hero-similar>.simtile:hover{background:rgba(50,58,48,.94);border-color:var(--accent)}
+.artist-picture-frame>img{border-radius:16px}
+.artist-hero-expanded .artist-hero-photo{cursor:zoom-in}
+
+/* v18.2.2: album-request-style dropdown and explicit assembly review */
+.spotify-collection-results{display:flex;flex-direction:column;max-height:365px;overflow-y:auto;gap:0;margin:5px 0;max-width:760px;border-radius:12px}
+.spotify-collection-results:empty{display:none}
+.spotify-collection-results .spotify-result{width:100%;border-radius:0;border-bottom:1px solid var(--line2);background:var(--panel);min-height:62px}
+.spotify-collection-results .spotify-result:hover,.spotify-collection-results .spotify-result:focus-visible{background:var(--panel2,var(--panel));outline:2px solid var(--accent);outline-offset:-2px}
+.spotify-draft-state{padding:10px 12px;border:1px solid var(--line2);border-radius:10px;color:var(--accent);font-size:13px;background:rgba(167,218,92,.06)}
+.spotify-unassigned-list{display:grid;gap:8px;padding:12px 0}
+.spotify-unassigned-item{display:flex;align-items:center;flex-wrap:wrap;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--line2);border-radius:10px;background:var(--panel)}
+.spotify-unassigned-item>span{overflow-wrap:anywhere;flex:1;min-width:175px}
+.spotify-unassigned-item select{max-width:290px;background:var(--panel);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:8px}
+.spotify-matched-badge{color:var(--accent);font-weight:650;font-size:12px}
+.spotify-draft-history-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line2);border-radius:8px;padding:10px;margin:6px 0;flex-wrap:wrap}
+.spotify-draft-history-row>span{min-width:160px;flex:1;overflow-wrap:anywhere}
+@media(max-width:560px){.spotify-unassigned-item{align-items:stretch}.spotify-unassigned-item select{width:100%;max-width:none}}

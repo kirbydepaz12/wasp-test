@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-2-1-ARTIST-HERO-COLLECTION.md">Latest feature guide (v18.2.1)</a>
+    <a href="docs/V18-2-2-ARTIST-COLLECTION-REVIEW.md">Latest feature guide (v18.2.2)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.2.1 — Artist Hero & Spotify Collection Assembly.** See the [feature guide](docs/V18-2-1-ARTIST-HERO-COLLECTION.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.2.2 — Artist Refinements & Collection Review.** See the [feature guide](docs/V18-2-2-ARTIST-COLLECTION-REVIEW.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -133,6 +133,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.2.2 — Artist refinements & collection review | [Credential-free album and playlist search, pending collection drafts, safe MP3 review, and artist photo refinements](docs/V18-2-2-ARTIST-COLLECTION-REVIEW.md) |
 | v18.2.1 — Artist hero and Spotify collection assembly | [Responsive in-banner lineup/similar artists, hero picture lightbox, credited-artist links, Spotify-guided album and playlist uploads](docs/V18-2-1-ARTIST-HERO-COLLECTION.md) |
 | v18.2.0 — Artist profiles and queue recovery | [HIVE popular songs, release-sorted discography, featuring playlists and resume after refresh](docs/V18-2-0-ARTIST-DISCOGRAPHY-QUEUE.md) |
 | v18.1.5e — Artist tab performance | [Catalogue-scoped artist index, progressive rendering, artwork lookup optimization](docs/V18-1-5E-ARTIST-PERFORMANCE.md) |

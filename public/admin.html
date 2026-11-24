@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.2.1">
+<link rel="stylesheet" href="/style.css?v=18.2.2">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -111,20 +111,22 @@
           <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
         </div>
         <section id="spotifyCollectionTools" class="spotify-collection-tools hidden" aria-label="Spotify collection guide">
-          <h2>Find a Spotify album or playlist</h2>
-          <p class="muted">Optional: search Spotify to guide your upload. No music is downloaded from Spotify. Existing WASP audio can be attached without reuploading.</p>
-          <div class="form" style="gap:8px"><label class="hidden" for="spotifyCollectionSearch">Spotify collection search</label><input id="spotifyCollectionSearch" type="search" maxlength="100" placeholder="Search Spotify album or playlist" style="flex:1;min-width:170px"><button type="button" class="btn ghost" id="spotifyCollectionSearchButton">Search Spotify</button></div>
+          <h2>Find an album or recreate a playlist</h2>
+          <p class="muted">Search as you type, just like user album requests (public Deezer catalogue; no Spotify credentials). For a specific public Spotify playlist, paste its link to use the same playlist recreation reader as users. Only metadata is retrieved; audio always comes from your own uploads.</p>
+          <div class="form" style="gap:8px"><label class="hidden" for="spotifyCollectionSearch">Album or playlist reference search</label><input id="spotifyCollectionSearch" type="search" maxlength="220" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="spotifyCollectionResults" aria-expanded="false" placeholder="Search album / playlist name or paste Spotify playlist URL" style="flex:1;min-width:170px"><button type="button" class="btn ghost" id="spotifyCollectionSearchButton">Search</button></div>
           <p class="msg" id="spotifyCollectionStatus" role="status" aria-live="polite"></p>
-          <div id="spotifyCollectionResults" class="spotify-collection-results"></div>
+          <div id="spotifyCollectionResults" class="spotify-collection-results" role="listbox" aria-label="Matching album or playlist references"></div>
           <div id="spotifyCollectionSelected" class="hidden">
             <div id="spotifyCollectionSummary" class="spotify-collection-summary"></div>
-            <p class="muted">Choose MP3 files below. The source list will offer exact-title candidates from your files and existing WASP tracks. Manually confirm uncertain matches before attaching or requesting any song.</p>
-            <div id="spotifyCollectionManifest" class="spotify-collection-manifest"></div>
+            <p class="muted">Choose MP3s below, then review every track-to-entry assignment. Unrecognized files can be matched manually, kept as separate songs, or excluded from this upload. No existing library audio will be deleted.</p>
+            <p class="spotify-draft-state" id="spotifyDraftState" role="status"></p><button type="button" id="spotifyVerifySource" class="btn ghost hidden" style="margin-bottom:12px">I verified all source entries · Finish collection</button><div id="spotifyCollectionManifest" class="spotify-collection-manifest"></div>
+            <section id="spotifyUnmatchedFiles" aria-label="Unmatched upload review"></section>
             <div class="form" style="margin-top:12px;gap:9px;flex-wrap:wrap">
-              <button type="button" class="btn" id="spotifyUploadMatched" disabled>Upload selected MP3s</button>
-              <button type="button" class="btn ghost" id="spotifyCollectionClear">Clear Spotify reference</button>
+              <button type="button" class="btn" id="spotifyUploadMatched" disabled>Review and upload approved MP3s</button>
+              <button type="button" class="btn ghost" id="spotifyCollectionClear">Close this draft</button>
             </div>
           </div>
+          <details id="spotifyDraftHistoryWrap" class="spotify-attach-history" style="margin-top:14px"><summary>Pending album / playlist assemblies</summary><div id="spotifyDraftHistory">Open to load saved drafts.</div><button type="button" class="btn ghost" id="spotifyDraftHistoryRefresh">Refresh drafts</button></details>
           <details id="spotifyAttachmentHistoryWrap" class="spotify-attach-history" style="margin-top:14px">
             <summary>Recent album attachments · Undo</summary>
             <div id="spotifyAttachmentHistory" aria-live="polite"><p class="muted">Open to load recent album attachments.</p></div>
@@ -654,6 +656,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.2.1"></script>
+<script type="module" src="/admin.js?v=18.2.2"></script>
 </body>
 </html>

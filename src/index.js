@@ -15,8 +15,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.2.1";
-const BUILD_LABEL = "Artist Hero & Spotify Collection Assembly";
+const BUILD_VERSION = "18.2.2";
+const BUILD_LABEL = "Artist Refinements & Collection Review";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1176,6 +1176,97 @@ async function spotifyCollectionResolve(env,kind,id){
     url:`https://open.spotify.com/album/${id}`,image:safeImage(album.images?.[0]?.url),release_date:album.release_date||'',
     release_type:album.album_type||'album',tracks,source_total:total,complete:tracks.length===total,
     warning:tracks.length<total?'Spotify did not return the complete album. Do not automatically request undisclosed tracks.':''};
+}
+// v18.2.2: Reuse the credential-free catalogue search behind user album requests.
+// Spotify playlist *links* reuse the existing public embed metadata reader.
+// Neither path downloads audio, and incomplete source catalogues stay incomplete.
+async function publicCollectionLookup(kind,q){
+  if(!['album','playlist'].includes(kind)||q.length<2)return [];
+  const endpoint=kind==='album'?'album':'playlist';
+  const r=await fetch(`${DZ}/search/${endpoint}?limit=12&q=${encodeURIComponent(q)}`,{headers:UA,signal:AbortSignal.timeout(9000),cf:{cacheTtl:300,cacheEverything:true}});
+  if(!r.ok)throw new Error('Catalogue search unavailable (HTTP '+r.status+').');
+  const j=await r.json();if(j.error)throw new Error('Catalogue search unavailable.');
+  return (j.data||[]).filter(x=>x&&/^\d{1,15}$/.test(String(x.id||''))).map(x=>({
+    id:String(x.id),provider:'deezer',kind,title:clean(x.title,180),
+    artist:clean(x.artist?.name||x.user?.name||'',160),image:safeImage(x.cover_medium||x.picture_medium),
+    total:Math.max(0,Number(x.nb_tracks)||0),url:`https://www.deezer.com/${kind}/${x.id}`
+  }));
+}
+async function spotifyPublicAlbum(url){
+  const match=String(url||'').trim().match(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?album\/([A-Za-z0-9]{10,40})(?:[/?#].*)?$/);
+  if(!match)throw new Error('Provide a public Spotify album link.');
+  const albumUrl=`https://open.spotify.com/album/${match[1]}`;
+  const [embed,meta]=await Promise.allSettled([
+    fetch(`${SPOTIFY}/embed/album/${match[1]}`,{headers:BROWSER_UA,signal:AbortSignal.timeout(10000)}),
+    fetch(`${SPOTIFY}/oembed?url=${encodeURIComponent(albumUrl)}`,{headers:UA,signal:AbortSignal.timeout(9000)}),
+  ]);
+  if(embed.status!=='fulfilled'||!embed.value.ok)throw new Error('Spotify public album metadata is unavailable. Search by album name instead.');
+  const page=await embed.value.text(),script=page.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if(!script)throw new Error('Spotify did not expose its album track list. Search by album name instead.');
+  let data;try{data=JSON.parse(script[1]);}catch{throw new Error('Spotify album metadata could not be parsed.');}
+  const list=findKey(data,'trackList');
+  if(!Array.isArray(list)||!list.length)throw new Error('Spotify did not expose album tracks; cannot create a complete reference.');
+  const entity=findKey(data,'entity')||{};
+  let embedInfo={};if(meta.status==='fulfilled'&&meta.value.ok)embedInfo=await meta.value.json().catch(()=>({}));
+  const totalCandidates=[entity.trackCount,entity.track_count,entity.tracks?.totalCount,entity.tracks?.total];
+  const source_total=totalCandidates.map(Number).find(n=>Number.isSafeInteger(n)&&n>=list.length&&n<=5000)??null;
+  const tracks=list.slice(0,500).map((t,i)=>({title:clean(t.title,200),artists:splitArtists(clean(String(t.subtitle||''),200)),track_no:i+1,duration:0})).filter(t=>t.title);
+  // Public embed lists are a convenience, NOT proof of catalogue completeness.
+  return {kind:'album',provider:'spotify-public-embed',title:clean(embedInfo.title||entity.name||entity.title,180)||'Spotify album',
+    artist:clean(entity.subtitle||'',160),image:safeImage(embedInfo.thumbnail_url),url:albumUrl,
+    tracks,source_total,complete:false,warning:'Spotify public embeds may omit tracks or credits. Verify each entry; this draft remains pending.'};
+}
+async function publicCollectionResolve(kind,{id='',url=''}={}){
+  if(kind==='album'&&url)return spotifyPublicAlbum(url);
+  if(kind==='playlist'&&url){
+    const pl=await spotifyPlaylist(url);
+    if(pl.error)throw new Error(pl.error);
+    if(!pl.meta?.tracks?.length)throw new Error('Spotify did not expose a track list for this public playlist. Cannot create a verified draft.');
+    return {kind,provider:'spotify-public-embed',title:pl.title,artist:'',url:pl.url,image:pl.image||'',
+      tracks:pl.meta.tracks.map((t,i)=>({title:clean(t.t,200),artists:splitArtists(t.a),track_no:i+1,duration:0})),
+      source_total:pl.meta.source_total??null,complete:pl.meta.source_status==='verified'&&!pl.meta.partial,
+      warning:pl.meta.partial||pl.meta.source_status!=='verified'?'Only the publicly exposed Spotify playlist entries could be retrieved. This draft stays pending until manually reviewed.':''};
+  }
+  if(!['album','playlist'].includes(kind)||!/^\d{1,15}$/.test(String(id)))throw new Error('Select an album or playlist from search.');
+  const r=await fetch(`${DZ}/${kind}/${id}`,{headers:UA,signal:AbortSignal.timeout(11000)});
+  if(!r.ok)throw new Error('Catalogue lookup unavailable (HTTP '+r.status+').');
+  const d=await r.json();if(d.error||!d.title)throw new Error('The selected collection is unavailable.');
+  let raw=Array.isArray(d.tracks?.data)?d.tracks.data:[];
+  const advertised=Math.max(raw.length,Math.max(0,Number(d.nb_tracks)||0));
+  // Bounded pagination. If the provider truncates or fails mid-page, be honest.
+  let next=typeof d.tracks?.next==='string'?d.tracks.next:null;
+  let pages=0;
+  while(next&&raw.length<500&&pages++<10){
+    const u=new URL(next);if(u.origin!==new URL(DZ).origin||!u.pathname.startsWith('/'+kind+'/'+id+'/tracks'))break;
+    const nr=await fetch(u.href,{headers:UA,signal:AbortSignal.timeout(9500)});
+    if(!nr.ok)break;
+    const n=await nr.json();if(!Array.isArray(n.data)||!n.data.length)break;
+    raw.push(...n.data);next=typeof n.next==='string'?n.next:null;
+  }
+  const tracks=raw.slice(0,500).map((t,i)=>({title:clean(t.title,200),artists:[clean(t.artist?.name||'',160)].filter(Boolean),
+    track_no:Number(t.track_position)||i+1,disc_no:Number(t.disk_number)||1,duration:Number(t.duration)||0})).filter(t=>t.title);
+  const complete=!next&&tracks.length===advertised;
+  return {kind,provider:'deezer',title:clean(d.title,180),artist:clean(d.artist?.name||d.user?.name||'',160),
+    url:`https://www.deezer.com/${kind}/${id}`,image:safeImage(d.cover_medium||d.picture_medium),
+    tracks,source_total:advertised,complete,warning:complete?'':'The catalogue is partial; unknown entries are not treated as missing.'};
+}
+const collectionDraftReady=new WeakSet();
+async function ensureCollectionDraftSchema(DB){
+  if(collectionDraftReady.has(DB))return;
+  await DB.prepare(`CREATE TABLE IF NOT EXISTS admin_collection_drafts (
+    id TEXT PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,source_url TEXT NOT NULL,
+    source_json TEXT NOT NULL,matches_json TEXT NOT NULL DEFAULT '{}',
+    playlist_id TEXT NOT NULL DEFAULT '',verified_complete INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`).run();
+  try{await DB.prepare('ALTER TABLE admin_collection_drafts ADD COLUMN verified_complete INTEGER NOT NULL DEFAULT 0').run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}
+  await DB.prepare('CREATE INDEX IF NOT EXISTS idx_admin_collection_drafts_updated ON admin_collection_drafts(updated_at)').run();
+  collectionDraftReady.add(DB);
+}
+function collectionDraftView(row){
+  const source=JSON.parse(row.source_json),matches=JSON.parse(row.matches_json||'{}');
+  const total=source.tracks?.length||0,matched=Object.keys(matches).filter(i=>matches[i]).length;
+  return {id:row.id,kind:row.kind,title:row.title,source,matched,remaining:total-matched,matches,
+    status:(source.complete||row.verified_complete)&&matched===total&&total>0?'complete':'pending',playlist_id:row.playlist_id||'',
+    created_at:row.created_at,updated_at:row.updated_at};
 }
 const spotifyCollectionRequestReady=new WeakSet();
 async function ensureAlbumAttachHistory(DB){
@@ -3109,6 +3200,91 @@ async function api(req, env, url, ctx) {
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
   // v18.2.1: All catalogue lookups and retagging actions are administrator-only.
+  // v18.2.2: reviewable admin collection assembly; no Spotify API credentials.
+  if(path==='/api/admin/collection-guide/search'&&m==='GET'){
+    const kind=url.searchParams.get('type'),q=clean(url.searchParams.get('q'),100);
+    if(!['album','playlist'].includes(kind)||q.length<2)return json({items:[]});
+    try{return json({items:await publicCollectionLookup(kind,q)});}catch(e){return json({error:e.message},502);}
+  }
+  if(path==='/api/admin/collection-guide/resolve'&&m==='GET'){
+    const kind=url.searchParams.get('type');
+    try{return json(await publicCollectionResolve(kind,{id:url.searchParams.get('id'),url:url.searchParams.get('url')}));}
+    catch(e){return json({error:e.message},502);}
+  }
+  if(path==='/api/admin/collection-drafts'){
+    await ensureCollectionDraftSchema(DB);
+    if(m==='GET'){
+      const rows=(await DB.prepare('SELECT * FROM admin_collection_drafts ORDER BY updated_at DESC LIMIT 35').all()).results;
+      return json({items:rows.map(collectionDraftView)});
+    }
+    if(m==='POST'){
+      const b=await req.json().catch(()=>null);
+      if(!b||!['album','playlist'].includes(b.kind))return json({error:'Select an album or playlist.'},400);
+      let source;try{source=await publicCollectionResolve(b.kind,{id:String(b.id||''),url:String(b.url||'')});}
+      catch(e){return json({error:e.message},502);}
+      if(!source.tracks?.length)return json({error:'No verified song entries were returned.'},409);
+      // Reopening the same source uses its existing durable draft and playlist.
+      const prior=await DB.prepare('SELECT * FROM admin_collection_drafts WHERE source_url=? AND kind=? ORDER BY updated_at DESC LIMIT 1').bind(source.url,b.kind).first();
+      if(prior)return json(collectionDraftView(prior));
+      let pid='';
+      if(b.kind==='playlist'){
+        const existing=await DB.prepare('SELECT id FROM playlists WHERE name=?').bind(source.title).first();
+        if(existing&&!b.reuse_existing)return json({error:'A playlist with this name already exists. Confirm reuse before modifying it.',code:'playlist_exists'},409);
+        pid=existing?.id||crypto.randomUUID();
+        if(!existing)await DB.prepare('INSERT INTO playlists(id,name,created_at) VALUES(?,?,?)').bind(pid,source.title,Date.now()).run();
+      }
+      const now=Date.now(),row={id:crypto.randomUUID(),kind:b.kind,title:source.title,source_url:source.url,source_json:JSON.stringify(source),matches_json:'{}',playlist_id:pid,created_at:now,updated_at:now};
+      await DB.prepare('INSERT INTO admin_collection_drafts(id,kind,title,source_url,source_json,matches_json,playlist_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+        .bind(row.id,row.kind,row.title,row.source_url,row.source_json,row.matches_json,row.playlist_id,now,now).run();
+      return json(collectionDraftView(row),201);
+    }
+    return json({error:'Method not allowed'},405);
+  }
+  if((x=path.match(/^\/api\/admin\/collection-drafts\/([a-f0-9-]{36})(?:\/(assign|verify))?$/))){
+    await ensureCollectionDraftSchema(DB);
+    const row=await DB.prepare('SELECT * FROM admin_collection_drafts WHERE id=?').bind(x[1]).first();
+    if(!row)return json({error:'Draft not found.'},404);
+    if(m==='GET'&&!x[2])return json(collectionDraftView(row));
+    if(m==='POST'&&x[2]==='verify'){
+      const b=await req.json().catch(()=>null),draft=collectionDraftView(row);
+      if(b?.confirm!=='complete'||draft.remaining!==0)return json({error:'All listed entries must be matched; type complete to verify the source manually.'},400);
+      await DB.prepare('UPDATE admin_collection_drafts SET verified_complete=1,updated_at=? WHERE id=?').bind(Date.now(),row.id).run();
+      return json(collectionDraftView({...row,verified_complete:1,updated_at:Date.now()}));
+    }
+    if(m==='POST'&&x[2]==='assign'){
+      const b=await req.json().catch(()=>null),slot=Number(b?.slot),id=String(b?.track_id||'');
+      const source=JSON.parse(row.source_json),items=source.tracks||[];
+      if(!Number.isSafeInteger(slot)||slot<0||slot>=items.length||!(/^[a-zA-Z0-9_-]{1,100}$/.test(id)))return json({error:'Choose a valid source entry and existing track.'},400);
+      const track=await DB.prepare('SELECT id,title,artist,album,track_no FROM tracks WHERE id=?').bind(id).first();
+      if(!track)return json({error:'Track not found on this server.'},404);
+      const matches=JSON.parse(row.matches_json||'{}');
+      if(matches[slot]&&matches[slot]!==id)return json({error:'This source entry has already been approved. Review the assignment before changing it.'},409);
+      if(Object.entries(matches).some(([k,v])=>Number(k)!==slot&&v===id))return json({error:'This audio track is already assigned to another source entry.'},409);
+      const entry=items[slot];
+      if(row.kind==='album'){
+        const album=clean(row.title,200),no=Number(entry.track_no)||slot+1;
+        if(track.album!==album||Number(track.track_no)!==no){
+          await ensureAlbumAttachHistory(DB);
+          await DB.batch([
+            DB.prepare('INSERT INTO album_attach_history(id,track_id,old_album,old_track_no,new_album,at) VALUES(?,?,?,?,?,?)')
+              .bind(crypto.randomUUID(),id,track.album||'',Number(track.track_no)||0,album,Date.now()),
+            DB.prepare('UPDATE tracks SET album=?,track_no=? WHERE id=?').bind(album,no,id)
+          ]);
+          await touchCatalogue(DB);
+        }
+      }else{
+        const exists=await DB.prepare('SELECT id FROM playlists WHERE id=?').bind(row.playlist_id).first();
+        if(!exists)return json({error:'Draft playlist was removed. Do not assign tracks until restored.'},409);
+        await DB.prepare('INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)')
+          .bind(row.playlist_id,id,Date.now()+slot).run();
+        await touchCatalogue(DB);
+      }
+      matches[slot]=id;
+      await DB.prepare('UPDATE admin_collection_drafts SET matches_json=?,updated_at=? WHERE id=?').bind(JSON.stringify(matches),Date.now(),row.id).run();
+      return json({ok:true,track_id:id,slot,unchanged_audio:true,...collectionDraftView({...row,matches_json:JSON.stringify(matches)})});
+    }
+    return json({error:'Method not allowed'},405);
+  }
   if(path==='/api/admin/collection-spotify/search'&&m==='GET'){
     const kind=url.searchParams.get('type'),q=clean(url.searchParams.get('q'),100);
     if(!['album','playlist'].includes(kind)||q.length<2)return json({error:'Search for an album or playlist.'},400);
@@ -3171,6 +3347,14 @@ async function api(req, env, url, ctx) {
     if(!t||t.album!==h.new_album)return json({error:'Track was modified since this attachment; undo manually.'},409);
     await DB.batch([DB.prepare('UPDATE tracks SET album=?,track_no=? WHERE id=?').bind(h.old_album,h.old_track_no,h.track_id),
       DB.prepare('DELETE FROM album_attach_history WHERE id=?').bind(h.id)]);
+    // Keep saved assembly drafts consistent with the metadata rollback.
+    await ensureCollectionDraftSchema(DB);
+    const drafts=(await DB.prepare('SELECT id,matches_json FROM admin_collection_drafts WHERE kind=? AND title=? LIMIT 100').bind('album',h.new_album).all()).results;
+    for(const d of drafts){
+      let matches={};try{matches=JSON.parse(d.matches_json||'{}');}catch{}
+      let changed=false;for(const [slot,assigned] of Object.entries(matches))if(assigned===h.track_id){delete matches[slot];changed=true;}
+      if(changed)await DB.prepare('UPDATE admin_collection_drafts SET matches_json=?,verified_complete=0,updated_at=? WHERE id=?').bind(JSON.stringify(matches),Date.now(),d.id).run();
+    }
     await touchCatalogue(DB);return json({ok:true});
   }
   if(path==="/api/admin/mobile-bridge" || path==="/api/admin/mobile-bridge/secret") return manageMobileBridge(req,env,"admin",null);

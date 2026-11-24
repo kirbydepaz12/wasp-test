@@ -1446,13 +1446,13 @@ function openArtistImage(src,alt='Artist picture'){
   let dialog=document.getElementById('artistPictureDialog');
   if(!dialog){
     dialog=document.createElement('dialog');dialog.id='artistPictureDialog';dialog.className='artist-image-dialog';
-    dialog.innerHTML='<div class="artist-picture-frame"><button type="button" aria-label="Close artist picture" class="artist-picture-close">×</button><img alt=""></div>';
+    dialog.innerHTML='<div class="artist-picture-frame"><img alt=""></div>';
     document.body.append(dialog);
-    dialog.querySelector('.artist-picture-close').onclick=()=>dialog.close();
-    dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
+    dialog.addEventListener('click',event=>{const rect=dialog.getBoundingClientRect();if(event.target===dialog||(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom))dialog.close();});
   }
   const image=dialog.querySelector('img');image.src=src;image.alt=alt;dialog.showModal();
 }
+if(typeof document!=='undefined')document.addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('.artist-hero-photo')){event.preventDefault();openArtistImage(event.target.src,event.target.alt);}});
 function artistPage(el, name) {
   const full=arguments[2]===true;
   let ts=getArtistIndex().tracksByNormalized.get(normalizeRecording(name)) || [];
@@ -1471,7 +1471,7 @@ function artistPage(el, name) {
   artistDiscographyView={name,releases,full,type:'all',display:discGrid==='list'?'list':'grid',sort:'date',expanded:null,visible:[]};
   const heroImage=artistArt(name);
   el.innerHTML=`<a class="back" href="#artists">← All artists</a>
-    <section class="artist-hero-banner artist-hero-expanded" aria-label="${esc(name)} artist"><img class="artist-hero-photo" src="${esc(heroImage)}" alt="${esc(name)} artist portrait" loading="lazy"/><div class="artist-hero-gradient"></div><button type="button" class="artist-image-expand" data-artist-expand="1" aria-label="View full ${esc(name)} artist picture" title="View full artist picture">⤢</button><div class="artist-banner-content"><span class="artist-badge">Across the HIVE</span><h1>${sourceTitle(name,artistSources(name))}</h1><span class="artist-banner-counts">${plural(ts.length,'available song')} · ${plural(releases.length,'release')}</span>${full?'':`<div class="artist-hero-details"><div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div></div>`}</div></section>
+    <section class="artist-hero-banner artist-hero-expanded" aria-label="${esc(name)} artist"><img class="artist-hero-photo" src="${esc(heroImage)}" alt="Expand ${esc(name)} artist portrait" loading="lazy" tabindex="0" role="button" aria-label="Expand ${esc(name)} artist portrait"/><div class="artist-hero-gradient"></div><div class="artist-banner-content"><span class="artist-badge">Across the HIVE</span><h1>${esc(name)}</h1><span class="artist-banner-counts"><span>${plural(ts.length,'available song')} · ${plural(releases.length,'release')}</span>${sourceIcons(artistSources(name))}</span>${full?'':`<div class="artist-hero-details"><div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div></div>`}</div></section>
     <div class="artist-hero-actions">${actions(true,{type:'artist',key:name})}</div>
     ${full?'':`<section class="artist-popular"><div class="artist-section-head"><h2>Popular</h2><small class="muted">${popular.hasPlays?'Most played across connected HIVE catalogues':'Available recordings · no confirmed play ranking yet'}</small></div>${popularRows||empty('No available songs.')}${popular.tracks.length>5?`<button type="button" class="pill artist-popular-more" data-artist-popular-more>Show more</button>`:''}</section>`}
     <section class="artist-discography" id="artistDiscography"></section>
@@ -2695,8 +2695,7 @@ $("#list").addEventListener("click", (e) => {
     else if(p)popup('No playable songs','This playlist has no tracks available from its connected server.');
     return;
   }
-  const expand=e.target.closest('[data-artist-expand]');
-  if(expand||e.target.matches('.artist-hero-photo')){
+  if(e.target.matches('.artist-hero-photo')){
     const image=e.target.closest('.artist-hero-banner')?.querySelector('.artist-hero-photo');
     if(image?.src)openArtistImage(image.src,image.alt);return;
   }
