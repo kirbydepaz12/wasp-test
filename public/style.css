@@ -1017,3 +1017,8 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .metadata-bank-source-choice span {display:flex;flex-direction:column;gap:4px;min-width:0}
 .metadata-bank-source-choice small {color:var(--muted);font-size:11px;overflow-wrap:anywhere}
 @media(max-width:650px) {.metadata-source-header button {font-size:12px} .metadata-bank-source-choice{padding:12px 8px}}
+
+/* v18.1.5c — shared candidate search for local song requests and playlist entries */
+.reqdetail .req-match-entry{padding:8px 4px;border-top:1px solid var(--line,#35332f)}
+.req-match-results .muted{font-size:12px;line-height:1.5}
+@media(max-width:640px){.req-miss-header>span{flex-basis:100%}.req-match-search input{min-width:160px}}

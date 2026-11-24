@@ -15,8 +15,8 @@ import {BUILD_COMMIT} from "./build-commit.js";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.1.5b";
-const BUILD_LABEL = "Metadata Pull CPU & Matching Hotfix";
+const BUILD_VERSION = "18.1.5c";
+const BUILD_LABEL = "HIVE Request Match & Individual Tracks";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -1139,15 +1139,18 @@ function stableRequestSelections(before,next){
   const old=before?.tracks||[];if(old.length!==next.length)return false;
   return old.every((x,i)=>requestSongKey(x)===requestSongKey(next[i]));
 }
-async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null,manual_matches={}}={}){
+async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null,manual_matches={},rejected_candidates={}}={}){
   const {local,remote}=catalogue||await spotifyImportCatalogue(env.DB);
   const localIndex=titleIndex(local),remoteIndex=titleIndex(remote);
   const matched=[],missing=[],refs=[];let localCount=0,peerCount=0;
   for(const [i,song] of requested.entries()){
-    const choice=manual_matches[String(song.request_index??i)];
-    const explicit=choice&&[...local,...remote].find(r=>String(r.origin||'')===choice.origin&&String(r.remote_id||r.id)===choice.id);
-    const key=core(song.t);let hit=explicit||(localIndex.get(key)||[]).find(r=>sourceMatch(r,song)),isRemote=!!explicit?.origin;
-    if(!hit){hit=(remoteIndex.get(key)||[]).find(r=>sourceMatch(r,song));isRemote=true;}
+    const requestIndex=String(song.request_index??i);
+    const choice=manual_matches[requestIndex];
+    const rejected=new Set(Array.isArray(rejected_candidates[requestIndex])?rejected_candidates[requestIndex]:[]);
+    const eligible=r=>!rejected.has(String(r.origin||'')+'|'+String(r.remote_id||r.id));
+    const explicit=choice&&[...local,...remote].find(r=>String(r.origin||'')===choice.origin&&String(r.remote_id||r.id)===choice.id&&eligible(r));
+    const key=core(song.t);let hit=explicit||(localIndex.get(key)||[]).find(r=>eligible(r)&&sourceMatch(r,song)),isRemote=!!explicit?.origin;
+    if(!hit){hit=(remoteIndex.get(key)||[]).find(r=>eligible(r)&&sourceMatch(r,song));isRemote=true;}
     if(!hit){missing.push({...song,request_index:song.request_index??i});continue;}
     if(isRemote){
       peerCount++;
@@ -1158,6 +1161,28 @@ async function matchPlaylistHIVE(env,requested,{register=false,catalogue=null,ma
   }
   if(register)await insertRowsInChunks(env.DB,'peer_track_refs',['ref','origin','remote_id','title','artist','album','duration','cover_url'],refs);
   return {matched,missing,local_count:localCount,peer_count:peerCount};
+}
+// Individual track requests use the same reviewed local + connected-HIVE
+// catalogue as playlist recovery. Once an administrator rejects an incorrect
+// recording, fuzzy or title-only availability must not silently close it.
+function requestSongMeta(row){
+  try {const value=typeof row.meta==='string'?JSON.parse(row.meta||'{}'):row.meta;return value&&typeof value==='object'&&!Array.isArray(value)?value:{};}catch{return {};}
+}
+function requestSongAvailability(row,catalogue){
+  const meta=requestSongMeta(row),wanted={t:row.title,a:row.artist};
+  const selection=meta.manual_match;
+  const current=[...catalogue.local,...catalogue.remote];
+  if(selection&&typeof selection.id==='string'&&typeof selection.origin==='string'){
+    const chosen=current.find(t=>String(t.origin||'')===selection.origin&&String(t.remote_id||t.id)===selection.id);
+    return {hit:chosen||null,matched_local:chosen&&!chosen.origin?1:0,matched_peer:chosen?.origin?1:0};
+  }
+  // Rejecting a plausible but incorrect recording must keep a request open;
+  // explicit admin selection is required afterwards to avoid same-title swaps.
+  if(meta.require_manual_match===true||(Array.isArray(meta.rejected_candidates)&&meta.rejected_candidates.length))
+    return {hit:null,matched_local:0,matched_peer:0};
+  const local=catalogue.local.find(t=>sourceMatch(t,wanted));
+  const peer=local?null:catalogue.remote.find(t=>sourceMatch(t,wanted));
+  return {hit:local||peer||null,matched_local:local?1:0,matched_peer:peer?1:0};
 }
 async function reconcileHIVERequests(env){
   const db=env.DB;
@@ -1170,14 +1195,13 @@ async function reconcileHIVERequests(env){
   let completed=0;
   for(const req of candidates){
     if(req.kind==='song'){
-      const q={t:req.title,a:req.artist};
-      if(![...local,...remote].some(t=>sourceMatch(t,q)))continue;
+      if(!requestSongAvailability(req,{local,remote}).hit)continue;
       await markDone(env.DB,req.id);
       await publishHiveRequest(env,req,'done').catch(()=>{});completed++;
     }else if(req.meta){
       let meta;try{meta=JSON.parse(req.meta);}catch{continue;}
       if(!Array.isArray(meta.tracks)||!meta.tracks.length)continue;
-      const result=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue:{local,remote},manual_matches:safeManualMatches(meta)});
+      const result=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue:{local,remote},manual_matches:safeManualMatches(meta),rejected_candidates:meta.rejected_candidates||{}});
       const next={...meta,matched:result.matched.length,matched_local:result.local_count,matched_peer:result.peer_count,matched_missing:result.missing,availability_checked_at:Date.now()};
       await env.DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(next),req.id).run();
       // Do not auto-close a request just because one peer reports a partial
@@ -1232,7 +1256,9 @@ async function inLibrary(DB, it) {
 async function fulfil(env, t) {
   const { results } = await env.DB.prepare("SELECT * FROM requests WHERE kind = 'song' AND status = 'active'").all();
   const by = (name) => t.artists.some((a) => sameName(a, name));
-  const done = results.filter((r) => r.kind === 'song' && sourceMatch({title:t.title,artist:t.artist,artists:t.artists},{t:r.title,a:r.artist}));
+  const done = results.filter((r) => r.kind === 'song' && !requestSongMeta(r).manual_match &&
+    requestSongMeta(r).require_manual_match!==true && !(requestSongMeta(r).rejected_candidates||[]).length &&
+    sourceMatch({title:t.title,artist:t.artist,artists:t.artists},{t:r.title,a:r.artist}));
   for (const r of done){ await markDone(env.DB, r.id);await publishHiveRequest(env,r,'done').catch(()=>{}); }
   await rematchPlaylists(env); // a requested playlist may now be complete
   await refreshActiveSpotifyImports(env,{max:1}).catch(()=>{});
@@ -3313,21 +3339,82 @@ async function api(req, env, url, ctx) {
     }
     return json({ error: "Method not allowed." }, 405);
   }
-  // Playlist request recovery: read-only candidate search and explicit reviewed overrides.
+  // Candidate search covers both existing local songs and approved, currently
+  // connected peer catalogue snapshots. It never uploads or edits audio.
   if ((x=path.match(/^\/api\/admin\/requests\/([\w-]+)\/candidates$/)) && m==='GET'){
-    const row=await DB.prepare("SELECT id,kind,meta FROM requests WHERE id=? AND kind='playlist' AND status='active'").bind(x[1]).first();
-    if(!row)return json({error:'Local playlist request not found.'},404);
-    const mt=JSON.parse(row.meta||'{}'),index=Number(url.searchParams.get('index'));
-    if(!Number.isSafeInteger(index)||index<0||index>=mt.tracks?.length)return json({error:'Invalid source song index.'},400);
+    const row=await DB.prepare("SELECT id,kind,title,artist,meta FROM requests WHERE id=? AND kind IN ('song','playlist') AND status='active'").bind(x[1]).first();
+    if(!row)return json({error:'Local song or playlist request not found.'},404);
+    const mt=requestSongMeta(row),song=row.kind==='song'?{t:row.title,a:row.artist}:null;
+    const index=row.kind==='song'?0:Number(url.searchParams.get('index'));
+    if(row.kind==='playlist'&&(!Number.isSafeInteger(index)||index<0||index>=mt.tracks?.length))return json({error:'Invalid source song index.'},400);
     const cat=await spotifyImportCatalogue(DB),query=clean(url.searchParams.get('q'),120);
-    return json({index,source:mt.tracks[index],candidates:suggestRequestCandidates(mt.tracks[index],cat,{query,rejected:mt.rejected_candidates?.[index]||[],limit:12})});
+    return json({index,kind:row.kind,source:song||mt.tracks[index],
+      searched:{local:cat.local.length,peer:cat.remote.length},
+      candidates:suggestRequestCandidates(song||mt.tracks[index],cat,{query,
+        rejected:row.kind==='song'?(mt.rejected_candidates||[]):(mt.rejected_candidates?.[index]||[]),limit:12})});
+  }
+  // Create an independent track request for a missing/unusable playlist entry.
+  // It remains in the parent playlist, and a second click is idempotent.
+  if ((x=path.match(/^\/api\/admin\/requests\/([\w-]+)\/request-track$/)) && m==='POST'){
+    const parent=await DB.prepare("SELECT * FROM requests WHERE id=? AND kind='playlist' AND status='active'").bind(x[1]).first();
+    if(!parent)return json({error:'Active local playlist request not found.'},404);
+    const body=await req.json().catch(()=>null),meta=requestSongMeta(parent),index=body?.index;
+    if(!Number.isSafeInteger(index)||index<0||index>=meta.tracks?.length)return json({error:'Invalid playlist song index.'},400);
+    const song=meta.tracks[index],title=clean(song?.t,200),artist=clean(song?.a,160);
+    if(!title||!artist)return json({error:'A song title and artist are needed for a separate request.'},400);
+    const key='song|'+core(title)+'|'+norm(artist);
+    const existing=(await DB.prepare("SELECT id,title,artist FROM requests WHERE kind='song' AND status='active' LIMIT 500").all()).results
+      .find(t=>core(t.title)===core(title)&&norm(t.artist)===norm(artist));
+    if(existing)return json({ok:true,id:existing.id,already_requested:true,title,artist});
+    const count=await DB.prepare("SELECT COUNT(*) AS n FROM requests WHERE status='active'").first();
+    if(Number(count?.n||0)>=500)return json({error:'Request queue is full.'},429);
+    const id=crypto.randomUUID(),now=Date.now(),voter=await sha256('admin-playlist:'+parent.id);
+    const record={id,kind:'song',title,artist,album:'',image:'',url:'',created_at:now,
+      meta:JSON.stringify({created_from:'playlist_missing_song',source_playlist_request_id:parent.id,source_index:index,
+        source_playlist_title:parent.title,require_manual_match:true,
+        rejected_candidates:Array.isArray(meta.rejected_candidates?.[index])?meta.rejected_candidates[index].slice(-40):[]})};
+    try{
+      await DB.prepare("INSERT INTO requests(id,kind,title,artist,album,image,url,dedupe,voter,ip,created_at,meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(id,'song',title,artist,'','','',key,voter,'admin-playlist-request',now,record.meta).run();
+    }catch(e){
+      // Other request types may use the same key; never create duplicates.
+      const prior=await DB.prepare('SELECT id FROM requests WHERE dedupe=?').bind(key).first();
+      if(prior)return json({ok:true,id:prior.id,already_requested:true,title,artist});
+      throw e;
+    }
+    await publishHiveRequest(env,record).catch(e=>console.warn('Request sharing delayed:',e.message));
+    return json({ok:true,id,title,artist,created:true},201);
   }
   if ((x=path.match(/^\/api\/admin\/requests\/([\w-]+)\/match$/)) && m==='POST'){
-    const row=await DB.prepare("SELECT * FROM requests WHERE id=? AND kind='playlist' AND status='active'").bind(x[1]).first();
-    if(!row)return json({error:'Local playlist request not found.'},404);
-    const body=await req.json().catch(()=>null),mt=JSON.parse(row.meta||'{}');
-    if(!body||!['accept','reject','clear','skip','restore','add'].includes(body.action))return json({error:'Invalid action'},400);
+    const row=await DB.prepare("SELECT * FROM requests WHERE id=? AND kind IN ('song','playlist') AND status='active'").bind(x[1]).first();
+    if(!row)return json({error:'Local song or playlist request not found.'},404);
+    const body=await req.json().catch(()=>null),mt=requestSongMeta(row),isSong=row.kind==='song';
+    const allowed=isSong?['accept','reject','clear']:['accept','reject','clear','skip','restore','add'];
+    if(!body||!allowed.includes(body.action))return json({error:'Invalid action'},400);
     let idx=Number(body.index);
+    if(isSong){
+      const id=clean(body.id,110),origin=clean(body.origin,300),key=origin+'|'+id;
+      if(['accept','reject'].includes(body.action)){
+        if(!id)return json({error:'Select an existing song'},400);
+        const cat=await spotifyImportCatalogue(DB);
+        const exists=[...cat.local,...cat.remote].find(t=>String(t.origin||'')===origin&&String(t.remote_id||t.id)===id);
+        if(!exists)return json({error:'Song is not available in the local or connected HIVE catalogue. Refresh peers and try again.'},409);
+        if(body.action==='accept'){
+          mt.manual_match={id,origin};mt.rejected_candidates=(mt.rejected_candidates||[]).filter(v=>v!==key);
+        }else{
+          delete mt.manual_match;
+          mt.rejected_candidates=[...new Set([...(mt.rejected_candidates||[]),key])].slice(-40);
+        }
+      }else if(body.action==='clear')delete mt.manual_match;
+      const cat=await spotifyImportCatalogue(DB),availability=requestSongAvailability({...row,meta:mt},cat);
+      mt.review={matched_local:availability.matched_local,matched_peer:availability.matched_peer,availability_checked_at:Date.now()};
+      await DB.prepare("UPDATE requests SET meta=? WHERE id=? AND status='active'").bind(JSON.stringify(mt),row.id).run();
+      if(body.action==='accept'){
+        await markDone(DB,row.id);
+        await publishHiveRequest(env,{...row,meta:JSON.stringify(mt)},'done').catch(()=>{});
+      }
+      return json({ok:true,kind:'song',status:body.action==='accept'?'done':'active',matched_local:mt.review.matched_local,matched_peer:mt.review.matched_peer});
+    }
     if(body.action==='add'){
       if(!Array.isArray(mt.tracks)||mt.tracks.length>=1500)return json({error:'Request has too many entries'},400);
       const t=clean(body.title,200),a=clean(body.artist,200);
@@ -3353,9 +3440,8 @@ async function api(req, env, url, ctx) {
         const skipped=new Set(mt.skipped_indices||[]);body.action==='skip'?skipped.add(idx):skipped.delete(idx);mt.skipped_indices=[...skipped].sort((a,b)=>a-b);
       }
     }
-    // State and review are retained even if the admin closes the browser.
     const cat=await spotifyImportCatalogue(DB);
-    const found=await matchPlaylistHIVE(env,requestActiveTracks(mt),{catalogue:cat,manual_matches:safeManualMatches(mt)});
+    const found=await matchPlaylistHIVE(env,requestActiveTracks(mt),{catalogue:cat,manual_matches:safeManualMatches(mt),rejected_candidates:mt.rejected_candidates||{}});
     Object.assign(mt,{matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,matched_missing:found.missing,availability_checked_at:Date.now()});
     await DB.prepare('UPDATE requests SET meta=? WHERE id=? AND status=\'active\'').bind(JSON.stringify(mt),row.id).run();
     return json({ok:true,index:idx,matched:mt.matched,missing:found.missing,skipped_count:(mt.skipped_indices||[]).length});
@@ -3401,8 +3487,8 @@ async function api(req, env, url, ctx) {
       }
       let stats={},done=false,meta={};try{meta=JSON.parse(row.meta||'{}')||{};}catch{}
       if(row.kind==='song'){
-        const wanted={t:row.title,a:row.artist};const own=catalogue.local.some(t=>sourceMatch(t,wanted)),peer=catalogue.remote.some(t=>sourceMatch(t,wanted));
-        stats={matched_local:own?1:0,matched_peer:peer?1:0,availability_checked_at:Date.now()};done=own||peer;
+        const found=requestSongAvailability(row,catalogue);
+        stats={matched_local:found.matched_local,matched_peer:found.matched_peer,availability_checked_at:Date.now()};done=!!found.hit;
       }else if(['artist','album'].includes(row.kind)){
         const match=t=>artistsOfRow(t).some(a=>normArtist(a)===normArtist(row.kind==='artist'?row.title:row.artist))&&(row.kind==='artist'||same(t.album,row.title));
         const key=t=>core(t.title)+'|'+norm(t.artist)+'|'+norm(t.album);
@@ -3413,7 +3499,7 @@ async function api(req, env, url, ctx) {
         if(sid)try{const embed=await spotifyEmbed(sid);if(embed.tracks.length>=(meta.tracks||[]).length){const replacement=playlistMeta(embed.tracks,embed.sourceTotal);
           if(stableRequestSelections(meta,replacement.tracks))Object.assign(replacement,{manual_matches:meta.manual_matches,rejected_candidates:meta.rejected_candidates,skipped_indices:meta.skipped_indices});meta=replacement;}}catch{}
         if(!meta.tracks?.length){result.push({id,error:'Spotify song list unavailable.'});continue;}
-        const found=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue,manual_matches:safeManualMatches(meta)});stats={total:meta.total,partial:!!meta.partial,source_total:meta.source_total??null,source_status:meta.source_status,matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,missing:found.missing,availability_checked_at:Date.now()};
+        const found=await matchPlaylistHIVE(env,requestActiveTracks(meta),{catalogue,manual_matches:safeManualMatches(meta),rejected_candidates:meta.rejected_candidates||{}});stats={total:meta.total,partial:!!meta.partial,source_total:meta.source_total??null,source_status:meta.source_status,matched:found.matched.length,matched_local:found.local_count,matched_peer:found.peer_count,missing:found.missing,availability_checked_at:Date.now()};
         Object.assign(meta,{matched:stats.matched,matched_local:stats.matched_local,matched_peer:stats.matched_peer,matched_missing:stats.missing,availability_checked_at:stats.availability_checked_at});
       }
       if(remote)await reviewRemoteRequest(env,id,{stats,done});else{
@@ -3439,7 +3525,7 @@ async function api(req, env, url, ctx) {
     }
     if (!meta || !meta.tracks || !meta.tracks.length) return json({ error: "The song list of this playlist isn't available." }, 400);
     const isCompletion=x[2]==='complete';
-    let {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:false,manual_matches:safeManualMatches(meta)});
+    let {matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:false,manual_matches:safeManualMatches(meta),rejected_candidates:meta.rejected_candidates||{}});
     meta.matched=matched.length;meta.matched_local=local_count;meta.matched_peer=peer_count;meta.matched_missing=missing;meta.availability_checked_at=Date.now();
     const reportedTotal=Number.isSafeInteger(meta.source_total)?meta.source_total:null;
     const confirmedIncomplete=reportedTotal!==null && reportedTotal>meta.tracks.length;
@@ -3461,7 +3547,7 @@ async function api(req, env, url, ctx) {
       code:'spotify_list_unverified',requires_confirmation:true,retrieved:meta.tracks.length
     },409);
     if(isCompletion){
-      ({matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:true,manual_matches:safeManualMatches(meta)}));
+      ({matched,missing,local_count,peer_count}=await matchPlaylistHIVE(env,requestActiveTracks(meta),{register:true,manual_matches:safeManualMatches(meta),rejected_candidates:meta.rejected_candidates||{}}));
       meta.completed_missing=missing;meta.completed_with_missing=!!missing.length;meta.completed_incomplete=confirmedIncomplete;await DB.prepare('UPDATE requests SET meta=? WHERE id=?').bind(JSON.stringify(meta),r.id).run();
       const pid=await completePlaylistRequest(env,r,matched);
       return json({status:'done',playlist_id:pid,total:meta.total,matched:matched.length,

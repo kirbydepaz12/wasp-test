@@ -27,7 +27,21 @@ export function suggestRequestCandidates(song,catalogue,{query='',rejected=[],li
    if(q ? !hay.includes(q) : score<45)continue;
    scored.push({origin,id,title:row.title,artist:row.artist,album:row.album||'',score});
  }
- return scored.sort((a,b)=>b.score-a.score||(a.origin?1:-1)).slice(0,Math.max(1,Math.min(20,limit)));
+ const max=Math.max(1,Math.min(20,limit));
+ const sorted=scored.sort((a,b)=>b.score-a.score||(a.origin?1:-1));
+ if(sorted.length<=max || max<2)return sorted.slice(0,max);
+ // A very large local library must not push every peer candidate out of the
+ // review window (nor should many peers hide the local candidates). Reserve
+ // some positions for each source when both have plausible results.
+ const local=sorted.filter(x=>!x.origin),peers=sorted.filter(x=>x.origin);
+ if(!local.length||!peers.length)return sorted.slice(0,max);
+ const minEach=Math.min(3,Math.floor(max/2));
+ const keep=[...local.slice(0,minEach),...peers.slice(0,minEach)];
+ const ids=new Set(keep.map(x=>x.origin+'|'+x.id));
+ for(const candidate of sorted){if(keep.length>=max)break;
+   if(!ids.has(candidate.origin+'|'+candidate.id)){keep.push(candidate);ids.add(candidate.origin+'|'+candidate.id);}
+ }
+ return keep.sort((a,b)=>b.score-a.score||(a.origin?1:-1));
 }
 export function safeManualMatches(meta){const out={};for(const [index,selection] of Object.entries(meta?.manual_matches||{})){
  if(!/^\d{1,4}$/.test(index)||!selection||typeof selection!=='object')continue;
