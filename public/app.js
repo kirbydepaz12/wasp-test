@@ -1,5 +1,7 @@
 import { radioIds } from "/radio.js";
 import { buildArtistIndex } from "/artist-index.mjs";
+import { buildArtistDiscography, artistPopularTracks, featuringArtistPlaylists } from "/artist-discography.mjs";
+import { QUEUE_KEY, makeQueueSnapshot, parseQueueSnapshot, recoverQueueSnapshot } from "/queue-session.mjs";
 import { createRadioSelection, duplicateCandidates, artistSearchTokens, trackYear, trackGenres, normal } from "/radio-builder.js";
 import { renderSidebarBBCode, legacySidebarToBBCode } from "/sidebar-bbcode.js";
 import { artistArt as _artistArt, albumArt as _albumArt, albumName, artistsOf, artistLine, primaryArtist, adDoc, AD_SANDBOX } from "/art.js";
@@ -115,6 +117,7 @@ let recentBusy=false;
 let view = { ids: [], label: "", pl: null }; // what the main area is showing (what a click on a row plays)
 let queue = [], qi = -1, qLabel = "", ctxPl = null; // what is playing, and the playlist it came from
 let repeat = store.get("rep", 0), left = 0, counted = false, shufKind = "";
+let resumePosition=0, queueRestored=false, lastQueueSave=0;
 let mine = store.get("mine", {});
 // crypto.randomUUID() is only available in secure contexts (HTTPS / localhost).
 // Over plain HTTP on a public IP it throws and the boot screen never finishes.
@@ -518,6 +521,7 @@ async function load() {
     if(r.ok)for(const t of await r.json())if(!byId[t.id])byId[t.id]={...t,remote_id:t.remote_id,origin:t.origin,artists:[t.artist],cover_url:t.cover_url};
   } catch {}
   invalidateArtistIndex();
+  restorePlaybackQueue();
   paintBoot(100, "Songs, artists and playlists");
   render();
   hideBoot();
@@ -886,7 +890,7 @@ function renderPage() {
   if (!tracks.length && !hasChartData) {
     el.innerHTML = loadError ? errorBox("The music library couldn't be loaded.", loadError) : empty("No music yet. Check back soon."); noView(); return;
   }
-  if (a === "artist") artistPage(el, dec(arg));
+  if (a === "artist") { const parts=arg.split("/"); artistPage(el,dec(parts[0]),parts[1]==="discography"); }
   else if (a === "similar") similarPage(el, dec(arg));
   else if (a === "playlist") playlistPage(el, dec(arg));
   else if (a === "album") albumPage(el, ...arg.split("/").map(dec));
@@ -1405,29 +1409,63 @@ function albumPage(el, artist, album) {
     ${l.map((t,i)=>row(t,numLabel(t,i,l))).join('')}`;
 }
 
+// v18.2.0: the artist landing page keeps the biography/lineup tabs, but
+// makes listening, chronological releases and HIVE playlists the primary view.
+let artistDiscographyView = null;
+function artistReleaseMarkup(release, index, display, expanded) {
+  const cover=art(albumArt(release.coverTrack),release.name);
+  const type=release.kind==='single'?'Single / EP':release.kind==='compilation'?'Compilation':'Album';
+  const detail=`${release.year||'Date unavailable'} · ${type}`;
+  if(display==='list')return `<section class="artist-release-list-row" data-release-item="${index}">
+    <div class="artist-release-list-head">${cover}<div class="artist-release-list-info"><strong>${esc(release.name)}</strong><small class="muted">${esc(detail)} · ${plural(release.tracks.length,'available song')}</small><div class="artist-release-buttons"><button type="button" class="pill" data-artist-release-play="${index}">▶ Play release</button></div></div></div>
+    <div class="artist-release-songs">${release.tracks.map((t,i)=>row(t,numLabel(t,i,release.tracks))).join('')}</div></section>`;
+  return `<button type="button" class="tile sq artist-release-tile${expanded?' selected':''}" data-artist-release="${index}" aria-expanded="${expanded}" aria-label="${esc(release.name)} · Show available songs">${cover}<b>${esc(release.name)}</b><span class="muted">${esc(detail)}</span></button>`;
+}
+function paintArtistDiscography() {
+  const state=artistDiscographyView,el=$('#artistDiscography');
+  if(!state||!el)return;
+  let releases=state.releases.filter(r=>state.type==='all'||(state.type==='singles'?r.kind==='single':r.kind!=='single'));
+  if(state.sort==='name')releases=releases.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  if(!state.full)releases=releases.slice(0,8);
+  const controls=`<div class="artist-discography-controls" role="group" aria-label="Discography filters">
+    <div class="artist-discography-tabs">${[['all','All'],['albums','Albums'],['singles','Singles & EPs']].map(([k,label])=>`<button type="button" class="pill${state.type===k?' on':''}" data-artist-type="${k}" aria-pressed="${state.type===k}">${label}</button>`).join('')}</div>
+    <div class="artist-discography-options"><label>Sort by<select aria-label="Sort discography" data-artist-sort><option value="date"${state.sort==='date'?' selected':''}>Release date</option><option value="name"${state.sort==='name'?' selected':''}>Name</option></select></label>
+    <div role="group" class="artist-view-toggle" aria-label="Discography view"><button type="button" class="pill${state.display==='grid'?' on':''}" data-artist-display="grid" aria-label="Grid view" aria-pressed="${state.display==='grid'}">▦ Grid</button><button type="button" class="pill${state.display==='list'?' on':''}" data-artist-display="list" aria-label="List view" aria-pressed="${state.display==='list'}">☷ List</button></div></div></div>`;
+  const expanded=releases.findIndex(r=>r.key===state.expanded);
+  const body=releases.length?`<div class="artist-releases ${state.display==='grid'?'grid s':'artist-release-list'}">${releases.map((r,i)=>artistReleaseMarkup(r,i,state.display,r.key===state.expanded)).join('')}</div>`:empty('No releases in this category.');
+  const detail=state.display==='grid'&&expanded>=0?`<div class="artist-release-expanded" aria-live="polite"><h3>${esc(releases[expanded].name)} <span class="muted">${plural(releases[expanded].tracks.length,'available song')}</span></h3><button class="pill" type="button" data-artist-release-play="${expanded}">▶ Play release</button>${releases[expanded].tracks.map((t,i)=>row(t,numLabel(t,i,releases[expanded].tracks))).join('')}</div>`:'';
+  const allLink=state.full?`<a class="artist-discography-all" href="#artist/${enc(state.name)}">← Artist overview</a>`:
+    `<a class="artist-discography-all" href="#artist/${enc(state.name)}/discography">Show all releases</a>`;
+  el.innerHTML=`<div class="artist-section-head"><h2>Discography</h2>${allLink}</div>${controls}${body}${detail}`;
+  state.visible=releases;
+}
 function artistPage(el, name) {
-  // A peer-only artist can also arrive through a public playlist or a copied
-  // track reference, even when deduplication hides its catalogue entry.
-  let ts = getArtistIndex().tracksByNormalized.get(normalizeRecording(name)) || [];
-  if (!ts.length) ts = [...peerTrackLookup.values()].filter((t) => artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
-  if (!ts.length) { el.innerHTML = `<a class="back" href="#artists">← All artists</a>` + empty("Artist not found."); noView(); return; }
-  const groups = dict();
-  ts.forEach((t) => (groups[albumName(t)] ??= []).push(t));
-  const names = Object.keys(groups).sort((a, b) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
-  const ids = [];
-  const body = names.map((g) => {
-    const l = groups[g].sort(byTrack);
-    l.forEach((t) => ids.push(t.id));
-    return `<section><h2 class="sec">${art(albumArt(l[0]), g || "S")}${esc(g || "Singles")} <span class="muted" style="font-size:14px;font-weight:400">${plural(l.length, "song")}</span><button class="album-add" data-album-ids="${esc(l.map(t=>t.id).join(","))}" title="Add entire album to playlist">＋</button></h2>${rowHeading()}${l.map((t, i) => row(t, g ? numLabel(t, i, l) : i + 1)).join("")}</section>`;
-  }).join("");
-  view = { ids, label: name, pl: null };
-  const albums = names.filter((g) => g).length;
-  el.innerHTML = `<a class="back" href="#artists">← All artists</a>
-    <div class="hero">${art(artistArt(name), name, "round")}<div><h1>${sourceTitle(name,artistSources(name))}</h1><span class="muted">${plural(ts.length, "song")}${albums ? " · " + plural(albums, "album") : ""}<span id="genre"></span></span>${actions(true, { type: "artist", key: name })}</div></div>
-    <div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div>${body}`;
-  artistView = { name, tab: "bio", bio: undefined, similar: undefined };
-  paintArtist();
-  loadBio(name); loadSimilar(name);
+  const full=arguments[2]===true;
+  let ts=getArtistIndex().tracksByNormalized.get(normalizeRecording(name)) || [];
+  if(!ts.length)ts=[...peerTrackLookup.values()].filter(t=>artistsOf(t).some(a=>normalizeRecording(a)===normalizeRecording(name)));
+  if(!ts.length){el.innerHTML=`<a class="back" href="#artists">← All artists</a>`+empty('Artist not found.');noView();return;}
+  // Aggregated HIVE plays on catalogue tracks are already deduplicated during load().
+  // When there is no play telemetry, display available songs without claiming
+  // unsupported Spotify popularity or fetching another API.
+  const popular=artistPopularTracks(ts,10),releases=buildArtistDiscography(ts);
+  const allIds=popular.tracks.map(t=>t.id).concat(ts.map(t=>t.id).filter(id=>!popular.tracks.some(t=>t.id===id)));
+  view={ids:allIds,label:name,pl:null};
+  const preview=popular.tracks.slice(0,5);
+  const popularRows=preview.map((t,i)=>`<div class="artist-popular-row">${row(t,i+1)}<span class="artist-popular-count">${popular.hasPlays?plural(Math.max(0,Number(t.plays)||0),'HIVE play'):'Available in HIVE'}</span></div>`).join('');
+  const features=featuringArtistPlaylists(name,[...playlists,...userPublicPlaylists,...peerPlaylists,...ownedPlaylistIndex.values()],byId,artistsOf).slice(0,12);
+  const discGrid=store.get('artistDiscographyDisplay','grid');
+  artistDiscographyView={name,releases,full,type:'all',display:discGrid==='list'?'list':'grid',sort:'date',expanded:null,visible:[]};
+  const heroImage=artistArt(name);
+  el.innerHTML=`<a class="back" href="#artists">← All artists</a>
+    <section class="artist-hero-banner" aria-label="${esc(name)} artist"><img src="${esc(heroImage)}" alt="" loading="lazy"/><div class="artist-hero-gradient"></div><div class="artist-banner-content"><span class="artist-badge">Across the HIVE</span><h1>${sourceTitle(name,artistSources(name))}</h1><span>${plural(ts.length,'available song')} · ${plural(releases.length,'release')}</span></div></section>
+    <div class="artist-hero-actions">${actions(true,{type:'artist',key:name})}</div>
+    ${full?'':`<section class="artist-popular"><div class="artist-section-head"><h2>Popular</h2><small class="muted">${popular.hasPlays?'Most played across connected HIVE catalogues':'Available recordings · no confirmed play ranking yet'}</small></div>${popularRows||empty('No available songs.')}${popular.tracks.length>5?`<button type="button" class="pill artist-popular-more" data-artist-popular-more>Show more</button>`:''}</section>`}
+    <section class="artist-discography" id="artistDiscography"></section>
+    ${full?'':`<section class="artist-featured"><div class="artist-section-head"><h2>Featuring ${esc(name)}</h2></div>${features.length?`<div class="grid s">${features.map(x=>ownedPlaylistIndex.has(x.playlist.id)?`<a class="tile sq artist-featured-owned" href="#userplaylist/${enc(x.playlist.id)}">${ownedPlaylistCover(x.playlist)}<b>${esc(x.playlist.name)}</b><span class="muted">${plural(x.count,'song')} from ${esc(name)}</span></a>`:playlistTile(x.playlist,`${plural(x.count,'song')} from ${name}`)).join('')}</div>`:empty('No available playlists currently feature this artist.')}</section>
+    <section class="artist-about"><h2>About ${esc(name)}</h2><div class="tabs" id="atabs" role="group" aria-label="About ${esc(name)}"></div><div class="apanel" id="apanel" aria-live="polite"></div></section>`}`;
+  paintArtistDiscography();
+  artistView=full?null:{name,tab:'bio',bio:undefined,similar:undefined};
+  if(!full){paintArtist();loadBio(name);loadSimilar(name);}
 }
 let artistView = null;
 const genreLine = (g) => g.slice(0, 3).map((x) => x.replace(/\b\p{L}/gu, (c) => c.toUpperCase())).join(", ");
@@ -2230,6 +2268,36 @@ const cur = () => byId[audio.dataset.id];
 // Preserve its playable track references when playback begins: remote IDs are already
 // namespaced by origin, and another server may reuse the same numeric track ID.
 let playlistScope = null;
+function rememberPlaybackQueue(force=false) {
+  if(!queue.length||qi<0)return;
+  const now=Date.now();if(!force&&now-lastQueueSave<1800)return;
+  lastQueueSave=now;
+  const position=queueRestored&&!audio.src?resumePosition:(Number(audio.currentTime)||0);
+  const snapshot=makeQueueSnapshot({queue,qi,qLabel,playlistScope,ctxPl,shufKind,repeat,left,counted,position},now);
+  if(snapshot)try{sessionStorage.setItem(QUEUE_KEY,JSON.stringify(snapshot));}catch{/* storage may be disabled */}
+}
+function restorePlaybackQueue() {
+  // Only on initial catalogue boot: never replace an actively playing queue when
+  // a peer sync or catalogue poll reloads the library in the same tab.
+  if(queue.length)return;
+  let snapshot;try{snapshot=parseQueueSnapshot(sessionStorage.getItem(QUEUE_KEY));}catch{return;}
+  const restored=recoverQueueSnapshot(snapshot,byId);if(!restored)return;
+  queue=restored.ids;qLabel=snapshot.label||'Restored queue';ctxPl=snapshot.contextId||null;
+  playlistScope=restored.scope;shufKind=snapshot.shuffle||'';repeat=snapshot.repeat||0;
+  left=snapshot.left||0;counted=restored.counted;resumePosition=restored.position;
+  qi=queue.indexOf(restored.current);queueRestored=true;
+  // Set the player display and Up next, but never set audio.src or call play().
+  play(restored.current,{restored:true,position:restored.position,counted:restored.counted,left,queueIndex:restored.index});
+  try{upOpen=sessionStorage.getItem('wasp:upnext-open:v1820')==='1';paintPanels();}catch{}
+  paintRepeat();
+}
+function resumeRestoredPlayback() {
+  if(!queueRestored||!cur()||audio.src)return false;
+  queueRestored=false;
+  beginRoute(cur(),resumePosition);
+  rememberPlaybackQueue(true);
+  return true;
+}
 function findPlaylist(pl) {
   if (!pl) return null;
   if (typeof pl === "object") return pl;
@@ -2242,7 +2310,7 @@ function startQueue(ids, id, label, pl, kind = "") {
     name: source.name,
     ids: ids.filter(trackId => !!byId[trackId]),
   } : null;
-  queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; play(id);
+  queue = [...ids]; qLabel = label; ctxPl = pl; shufKind = kind; queueRestored=false; resumePosition=0; play(id);
 }
 const mediaUrl = (t, path) => (t && t.origin ? peerResourceUrl(t.origin,path) : path);
 // HIVE Smart Routing: browser-observed health only; no music bytes are probed or cached.
@@ -2339,14 +2407,17 @@ audio.addEventListener('timeupdate',()=>{const route=playbackRoute;if(route&&!ro
   if(!audio.seeking&&audio.currentTime>route.lastTime+.1)clearRouteTimer();route.lastTime=audio.currentTime;}});
 audio.addEventListener('play',()=>{if(playbackRoute){routingIntent=true;if(!playbackRoute.exhausted&&!routeTimer&&audio.readyState<3)armRouteTimer(playbackRoute);}});
 audio.addEventListener('pause',()=>{if(playbackRoute&&!playbackRoute.switching&&!audio.error&&!audio.ended){routingIntent=false;clearRouteTimer();}});
-function play(id) {
+function play(id,opts={}) {
   const t = byId[id];
   if (!t) return;
-  qi = queue.indexOf(id);
+  qi = opts.restored&&queue[opts.queueIndex]===id?opts.queueIndex:queue.indexOf(id);
   if (qi < 0) { queue = [id]; qi = 0; }
-  audio.dataset.id = id; counted = false; left = repeat ? repeat - 1 : 0;
+  audio.dataset.id=id;
+  if(opts.restored){counted=!!opts.counted;left=Number(opts.left)||0;resumePosition=Math.max(0,Number(opts.position)||0);}
+  else {counted=false;left=repeat?repeat-1:0;resumePosition=0;queueRestored=false;
+    // Only a user playback action may start streaming; restore never autoplays.
+    beginRoute(t);}
   // Peer listens count on this WASP instance without altering the peer's files.
-  beginRoute(t);
   // Keep the earlier stream active only until the new audio begins playing.
   $("#pc").innerHTML = art(albumArt(t), albumName(t) || t.title, "lg");
   $("#pt").textContent = t.title;
@@ -2364,7 +2435,7 @@ function play(id) {
       });
     } catch (e) { console.warn("Unable to set media-session artwork", e); }
   }
-  paintReact(); paintShuffle(); markRows(); renderQueue();
+  paintReact(); paintShuffle(); markRows(); renderQueue();rememberPlaybackQueue(true);
   if (!$("#lyrics").classList.contains("hidden")) loadLyrics();
 }
 const step = (d) => { if (queue.length) play(queue[(Math.max(qi, 0) + d + queue.length) % queue.length]); };
@@ -2611,6 +2682,16 @@ $("#list").addEventListener("click", (e) => {
     else if(p)popup('No playable songs','This playlist has no tracks available from its connected server.');
     return;
   }
+  const dType=e.target.closest('[data-artist-type]');
+  if(dType&&artistDiscographyView){artistDiscographyView.type=dType.dataset.artistType;artistDiscographyView.expanded=null;paintArtistDiscography();return;}
+  const display=e.target.closest('[data-artist-display]');
+  if(display&&artistDiscographyView){artistDiscographyView.display=display.dataset.artistDisplay;store.set('artistDiscographyDisplay',artistDiscographyView.display);artistDiscographyView.expanded=null;paintArtistDiscography();return;}
+  const releasePlay=e.target.closest('[data-artist-release-play]');
+  if(releasePlay&&artistDiscographyView){const release=artistDiscographyView.visible[Number(releasePlay.dataset.artistReleasePlay)];if(release?.tracks.length){const ids=release.tracks.map(t=>t.id);startQueue(ids,ids[0],`Release “${release.name}”`,null);}return;}
+  const release=e.target.closest('[data-artist-release]');
+  if(release&&artistDiscographyView){const r=artistDiscographyView.visible[Number(release.dataset.artistRelease)];if(r){artistDiscographyView.expanded=artistDiscographyView.expanded===r.key?null:r.key;paintArtistDiscography();}return;}
+  const more=e.target.closest('[data-artist-popular-more]');
+  if(more&&artistDiscographyView){const ts=getArtistIndex().tracksByNormalized.get(normalizeRecording(artistDiscographyView.name))||[];const ranked=artistPopularTracks(ts,10);const rows=ranked.tracks.slice(5).map((t,i)=>`<div class="artist-popular-row">${row(t,i+6)}<span class="artist-popular-count">${ranked.hasPlays?plural(Math.max(0,Number(t.plays)||0),'HIVE play'):'Available in HIVE'}</span></div>`).join('');more.insertAdjacentHTML('beforebegin',rows);more.remove();return;}
   const at = e.target.closest("[data-atab]");
   if (at && artistView) { artistView.tab = at.dataset.atab; paintArtist(); return; }
   const rq = e.target.closest("[data-req]");
@@ -2629,6 +2710,7 @@ $("#list").addEventListener("click", (e) => {
   const r = e.target.closest(".row, .tile[data-id]");
   if (r) startQueue(view.ids, r.dataset.id, view.label, view.pl);
 });
+$("#list").addEventListener("change",e=>{if(e.target.matches('[data-artist-sort]')&&artistDiscographyView){artistDiscographyView.sort=e.target.value==='name'?'name':'date';artistDiscographyView.expanded=null;paintArtistDiscography();}});
 $("#uplist").addEventListener("click", (e) => { const r = e.target.closest(".qrow"); if (r) play(r.dataset.id); });
 window.addEventListener("hashchange", () => {
   if(parse().a === "settings"){render();return;}
@@ -2644,6 +2726,7 @@ $("#pa").addEventListener('click',e=>{
 });
 $("#q").addEventListener("input", (e) => { query = e.target.value.trim().toLowerCase(); if (parse().a !== "request") render(); });
 $("#pp").addEventListener("click", () => {
+  if(resumeRestoredPlayback())return;
   if (audio.src) {
     if(playbackRoute?.exhausted&&cur())return beginRoute(cur(),playbackRoute.lastTime);
     if(routingIntent&&!audio.ended){routingIntent=false;if(playbackRoute)playbackRoute.switching=false;clearRouteTimer();return audio.pause();}
@@ -2694,6 +2777,7 @@ function paintPanels() {
 }
 $("#qbtn").addEventListener("click", () => {
   upOpen = !upOpen;
+  try{sessionStorage.setItem('wasp:upnext-open:v1820',upOpen?'1':'0');}catch{}
   if (upOpen && lyMode === "side") lyMode = "closed"; // a side panel and Up next would not fit together
   paintPanels();
 });
@@ -2812,7 +2896,11 @@ function submitConfirmedPlay(url,body){pendingPlays.push({id:makeId(),url,body,c
 setInterval(()=>{if(pendingPlays.length)void flushPendingPlays();},5000);
 window.addEventListener('online',()=>void flushPendingPlays());
 if(pendingPlays.length)void flushPendingPlays();
+audio.addEventListener('seeked',()=>rememberPlaybackQueue(true));
+audio.addEventListener('pause',()=>rememberPlaybackQueue(true));
+window.addEventListener('pagehide',()=>rememberPlaybackQueue(true));
 audio.addEventListener("timeupdate", () => {
+  rememberPlaybackQueue();
   $("#cur").textContent = fmt(audio.currentTime); $("#dur").textContent = fmt(audio.duration);
   syncLyrics();
   if (audio.duration) $("#seek").value = (audio.currentTime / audio.duration) * 100;
@@ -2833,7 +2921,7 @@ audio.addEventListener("ended", () => {
   if (left > 0) { left--; counted=false; audio.currentTime = 0; audio.play(); } else step(1);
 });
 if ("mediaSession" in navigator) {
-  try{navigator.mediaSession.setActionHandler('pause',()=>{routingIntent=false;clearRouteTimer();if(playbackRoute)playbackRoute.switching=false;audio.pause();});navigator.mediaSession.setActionHandler('play',()=>{if(playbackRoute?.exhausted&&cur())beginRoute(cur(),playbackRoute.lastTime);else {routingIntent=true;audio.play().catch(()=>{});}});}catch{}
+  try{navigator.mediaSession.setActionHandler('pause',()=>{routingIntent=false;clearRouteTimer();if(playbackRoute)playbackRoute.switching=false;audio.pause();});navigator.mediaSession.setActionHandler('play',()=>{if(resumeRestoredPlayback())return;if(playbackRoute?.exhausted&&cur())beginRoute(cur(),playbackRoute.lastTime);else {routingIntent=true;audio.play().catch(()=>{});}});}catch{}
   navigator.mediaSession.setActionHandler("previoustrack", () => step(-1));
   navigator.mediaSession.setActionHandler("nexttrack", () => step(1));
 }
@@ -3305,7 +3393,7 @@ $("#accountMenu").addEventListener("mouseenter",()=>{if(currentAccount?.authenti
 $("#accountMenu").addEventListener("mouseleave",()=>$("#accountDrop").classList.add("hidden"));
 $("#gear").addEventListener("click",e=>{if(currentAccount?.authenticated){e.stopPropagation();$("#accountDrop").classList.toggle("hidden");}});
 document.addEventListener("click",e=>{if(!e.target.closest("#accountMenu"))$("#accountDrop").classList.add("hidden");});
-$("#userLogout").onclick=async()=>{await fetch("/api/logout",{method:"POST"});location.href="/#home";location.reload();};
+$("#userLogout").onclick=async()=>{try{sessionStorage.removeItem(QUEUE_KEY);}catch{}await fetch("/api/logout",{method:"POST"});location.href="/#home";location.reload();};
 window.addEventListener("hashchange",()=>{refreshAccount();});
 refreshAccount();
 

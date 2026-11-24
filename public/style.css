@@ -1042,3 +1042,59 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 /* v18.1.5e: progressive artist listing; accessible fallback for browsers without IntersectionObserver. */
 .artist-more-holder{display:flex;justify-content:center;padding:26px 12px 38px}
 .artist-more{min-width:180px}
+
+/* v18.2.0 — HIVE artist profile & discography */
+.artist-hero-banner{height:clamp(220px,31vw,380px);position:relative;overflow:hidden;border-radius:18px;background:linear-gradient(135deg,var(--panel),#151615 65%,#090a08);display:flex;align-items:end;margin:12px 0 0}
+.artist-hero-banner>img{position:absolute;width:100%;height:100%;object-fit:cover;object-position:center 40%;opacity:.45;filter:saturate(.88)}
+.artist-hero-gradient{position:absolute;inset:0;background:linear-gradient(0deg,rgba(7,8,7,.93),rgba(7,8,7,.1) 85%),linear-gradient(90deg,rgba(5,6,5,.56),transparent 72%)}
+.artist-banner-content{position:relative;z-index:1;padding:clamp(22px,3vw,44px);min-width:0}
+.artist-banner-content h1{font-size:clamp(38px,7vw,86px);line-height:1.08;letter-spacing:-.045em;margin:10px 0 12px;overflow-wrap:anywhere}
+.artist-banner-content h1 .source-icons svg{width:22px;height:22px}
+.artist-banner-content>span:last-child{font-size:14px;color:var(--text)}
+.artist-badge{border:1px solid var(--line2);border-radius:18px;padding:5px 12px;background:rgba(0,0,0,.6);font-size:12px;font-weight:750;color:var(--accent)}
+.artist-hero-actions{display:flex;align-items:center;gap:14px;padding:18px 4px}
+.artist-popular,.artist-discography,.artist-featured,.artist-about{margin:22px 0 34px}
+.artist-section-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin:0 0 14px}
+.artist-section-head h2,.artist-about>h2{margin:0;font-size:23px;letter-spacing:-.015em}
+.artist-section-head .muted{font-size:12px}
+.artist-popular-row{display:flex;align-items:center;gap:12px;min-width:0;border-radius:8px}
+.artist-popular-row:hover{background:var(--panel)}
+.artist-popular-row .row{flex:1;min-width:0;background:transparent}
+.artist-popular-count{width:115px;text-align:right;color:var(--muted);font-size:12px;flex:none}
+.artist-popular-more{margin-top:12px}
+.artist-discography-all{color:var(--muted);text-decoration:none;font-size:13px;font-weight:650}
+.artist-discography-all:hover{color:var(--accent)}
+.artist-discography-controls{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;margin-bottom:14px}
+.artist-discography-tabs,.artist-discography-options,.artist-view-toggle{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.artist-discography-options>label{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.artist-discography-options select{color:var(--text);background:var(--panel);border:1px solid var(--line2);padding:8px;border-radius:10px;max-width:150px}
+.artist-releases.grid{grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:16px 10px}
+.artist-release-tile{background:transparent;border:1px solid transparent;cursor:pointer;font:inherit;text-align:left}
+.artist-release-tile.selected,.artist-release-tile:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.artist-release-tile .art{border-radius:10px}
+.artist-release-tile .muted{display:block;font-size:12px;margin-top:6px}
+.artist-release-list{display:flex;flex-direction:column;gap:16px}
+.artist-release-list-row{border:1px solid var(--line2);border-radius:14px;padding:16px;background:var(--panel)}
+.artist-release-list-head{display:flex;align-items:center;gap:16px;margin-bottom:14px}
+.artist-release-list-head>.art{width:100px;height:100px;flex:none}
+.artist-release-list-info{min-width:0;display:grid;gap:6px}
+.artist-release-list-info>strong{font-size:19px;overflow-wrap:anywhere}
+.artist-release-list-info small{display:block}
+.artist-release-songs .row{margin:0}
+.artist-release-expanded{border:1px solid var(--line2);border-radius:14px;margin-top:18px;padding:14px;background:var(--panel)}
+.artist-release-expanded>h3{margin:0 0 12px}
+.artist-release-expanded>h3>.muted{font-size:13px;font-weight:normal}
+.artist-release-expanded>.pill{margin-bottom:12px}
+.artist-featured .grid{grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:15px 9px}
+.artist-about{border-top:1px solid var(--line2);padding-top:22px}
+@media (max-width:640px){
+ .artist-hero-banner{height:230px;border-radius:12px}
+ .artist-banner-content{padding:22px}
+ .artist-banner-content h1{font-size:40px}
+ .artist-popular-count{width:78px;font-size:10px}
+ .artist-popular-row .row{grid-template-columns:30px minmax(0,1fr) 42px}
+ .artist-discography-controls{display:block}
+ .artist-discography-options{margin-top:12px}
+ .artist-releases.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .artist-release-list-head>.art{width:72px;height:72px}
+}
