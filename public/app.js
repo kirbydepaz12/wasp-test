@@ -1,4 +1,5 @@
 import { radioIds } from "/radio.js";
+import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";
 import { buildArtistDiscography, expandArtistAlbumTracks, artistPopularTracks, featuringArtistPlaylists } from "/artist-discography.mjs";
 import { QUEUE_KEY, makeQueueSnapshot, parseQueueSnapshot, recoverQueueSnapshot } from "/queue-session.mjs";
@@ -422,7 +423,7 @@ async function load() {
     return r;
   }));
   const [t, p, s, en] = results;
-  entity = { artist: (en.data && en.data.artist) || {}, playlist: (en.data && en.data.playlist) || {} };
+  entity = { artist: (en.data && en.data.artist) || {}, album: (en.data && en.data.album) || {}, playlist: (en.data && en.data.playlist) || {} };
   ratedPlaylistCache = arr(en.data?.playlist_meta);
   tracks = arr(t.data); playlists = arr(p.data);
   try {const r=await fetch(catalogueURL("/api/user-playlists"));if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
@@ -520,7 +521,7 @@ async function load() {
     const r=await fetch("/api/user/peer-tracks");
     if(r.ok)for(const t of await r.json())if(!byId[t.id])byId[t.id]={...t,remote_id:t.remote_id,origin:t.origin,artists:[t.artist],cover_url:t.cover_url};
   } catch {}
-  invalidateArtistIndex();
+  invalidateArtistIndex();reactableAlbumCache=null;
   restorePlaybackQueue();
   paintBoot(100, "Songs, artists and playlists");
   render();
@@ -570,8 +571,8 @@ const SUBS = { songs: "Songs", artists: "Artists", albums: "Albums", playlists: 
 const SUBMAPS = {
   top: { items: { ranked: "Most listened", telemetry: "Telemetry" }, def: "ranked" },
   recent: { items: SUBS, def: "songs" },
-  hearts: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
-  stars: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  hearts: { items: { songs: "Songs", albums: "Albums", artists: "Artists", playlists: "Playlists" }, def: "songs" },
+  stars: { items: { songs: "Songs", albums: "Albums", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   likes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   dislikes: { items: { songs: "Songs", artists: "Artists", playlists: "Playlists" }, def: "songs" },
   playlists: { items: { server: "Server playlists", peer: "Peer playlists", users: "Users playlists" }, def: "server" },
@@ -667,7 +668,7 @@ function rowHeading(){return `<div class="track-column-head" aria-hidden="true">
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
   `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${sourceTitle(t.title,sourcesForTrack(t))}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
-let entity = { artist: {}, playlist: {} };
+let entity = { artist: {}, album: {}, playlist: {} };
 let ratedPlaylistCache = []; // Locally voted peer playlists remain listed when a peer is offline.
 const ownedPlaylistIndex = new Map(); // Private playlist data is only available to the owner.
 const ecount = (type, key) => (entity[type] && has(entity[type], key) ? entity[type][key] : { hearts: 0, likes: 0, dislikes: 0 });
@@ -700,6 +701,7 @@ async function setStarVote(button){const host=button.closest('.rating-stars'),ty
    const t=tracks.find(t=>String(t.id)===key)||peerTrackLookup.get(key)||byId[key];if(t?.origin){item.origin=registeredPeerOrigin(t.origin);item.remote_id=t.remote_id||String(t.id).split('|').at(-1);item.key=item.origin+'|'+item.remote_id;}
  }else if(type==='artist'){const t=tracks.find(t=>t.origin&&artistsOf(t).includes(key));if(t)item.origin=registeredPeerOrigin(t.origin);
  }else if(type==='playlist'){const p=lookupReactedPlaylist(key);if(p?.origin)item.origin=registeredPeerOrigin(p.origin);}
+ else if(type==='album'){const group=findReactableAlbum(key);if(group&&!group.tracks.some(t=>!t.origin)){const peer=group.tracks.find(t=>t.origin);if(peer)item.origin=registeredPeerOrigin(peer.origin);}}
  button.disabled=true;
  try{const res=await fetch('/api/stars',{method:'POST',headers:{'content-type':'application/json','X-Visitor':vid},body:JSON.stringify(item)});const saved=await res.json();if(!res.ok)throw Error(saved.error||'Rating was not saved');starCache.set(starKey(type,key),saved);starRankingCache.delete(type+':most');starRankingCache.delete(type+':least');scheduleStarRefresh();if(parse().a==='stars')void refreshStarRankings(document.querySelector('#list'),parse().arg.split('/')[0]||'songs');
  }catch(e){popup('Rating not saved',e.message||'Please retry.');}finally{button.disabled=false;}
@@ -726,9 +728,11 @@ async function reactEntity(type, key, kind) {
   try {
     const playlist=type==='playlist' ? lookupReactedPlaylist(key) : null;
     const remoteArtist=type==='artist' ? tracks.find(t=>t.origin&&artistsOf(t).some(n=>n.toLowerCase()===key.toLowerCase())) : null;
+    const remoteAlbum=type==='album' ? findReactableAlbum(key)?.tracks.find(t=>t.origin) : null;
+    const localAlbum=type==='album' ? findReactableAlbum(key)?.tracks.some(t=>!t.origin) : false;
     const extra=playlist ? {origin:registeredPeerOrigin(playlist.origin||''),name:playlist.name,
       cover_url:playlist.cover_url||'',playlist_kind:playlist.kind||'server',username:playlist.username||'',
-      track_count:arr(playlist.tracks).length} : remoteArtist ? {origin:registeredPeerOrigin(remoteArtist.origin)} : {};
+      track_count:arr(playlist.tracks).length} : remoteArtist ? {origin:registeredPeerOrigin(remoteArtist.origin)} : remoteAlbum&&!localAlbum?{origin:registeredPeerOrigin(remoteAlbum.origin)}:{};
     const r = await fetch("/api/react-entity", { method: "POST", headers: { "content-type": "application/json", "X-Visitor": vid }, body: JSON.stringify({ type, key, kind, on, ...extra }) });
     if (!r.ok) { const j=await r.json().catch(()=>({}));throw Error(j.error||'Could not save reaction.'); }
     Object.assign(c, await r.json()); repaint();
@@ -989,6 +993,10 @@ function telemetryRankRows(tab,sub,sort='most'){
       cover:albumArt(t),score:score(t),scoreLabel:tab==='top'?'plays':field}));
   }
   noView();
+  if(sub==='albums')return reactableAlbums().map(g=>({group:g,key:albumGroupKey(g),score:Number(ecount('album',albumGroupKey(g))[field])||0}))
+    .filter(r=>r.key&&r.score>0&&(!query||`${r.group.name} ${r.group.artist}`.toLowerCase().includes(query)))
+    .sort((a,b)=>(sort==='least'?a.score-b.score:b.score-a.score)||a.group.name.localeCompare(b.group.name)).slice(0,LIMIT[tab])
+    .map(r=>({kind:'album',id:albumHref(r.group),title:r.group.name,subtitle:r.group.artist,cover:albumArt(r.group.tracks[0]),score:r.score,scoreLabel:field}));
   if(sub==='artists')return Object.keys(entity.artist).map(name=>({name,score:Number(entity.artist[name]?.[field])||0}))
     .filter(r=>r.score>0&&(!query||r.name.toLowerCase().includes(query)))
     .sort((a,b)=>(sort==='least'?a.score-b.score:b.score-a.score)||String(a.name||'').localeCompare(String(b.name||''))).slice(0,LIMIT[tab])
@@ -1001,12 +1009,12 @@ function telemetryRankRows(tab,sub,sort='most'){
 }
 // Most starred is driven by real five-star votes, not the old thumbs-up counts.
 // Keep a short client-side snapshot to avoid repeated Cloudflare D1 reads while
-// switching Songs / Artists / Playlists. No voter identities are requested.
+// switching Songs / Albums / Artists / Playlists. No voter identities are requested.
 const starRankingCache=new Map();
 async function refreshStarRankings(el,sub,sort='most'){
   sort=sort==='least'?'least':'most';
-  if(!el||!['songs','artists','playlists'].includes(sub))return;
-  const type={songs:'track',artists:'artist',playlists:'playlist'}[sub];
+  if(!el||!['songs','albums','artists','playlists'].includes(sub))return;
+  const type={songs:'track',albums:'album',artists:'artist',playlists:'playlist'}[sub];
   const cacheKey=type+':'+sort;
   let cached=starRankingCache.get(cacheKey);
   if(!cached||Date.now()-cached.at>15000){
@@ -1034,6 +1042,9 @@ async function refreshStarRankings(el,sub,sort='most'){
     }else if(type==='artist'){
       if(query&&!key.toLowerCase().includes(query))continue;
       item={kind:'artist',id:key,title:key,subtitle:'Artist',cover:artistArt(key)};
+    }else if(type==='album'){
+      const group=findReactableAlbum(key);if(!group||query&&!`${group.name} ${group.artist}`.toLowerCase().includes(query))continue;
+      item={kind:'album',id:albumHref(group),title:group.name,subtitle:group.artist,cover:albumArt(group.tracks[0])};
     }else{
       const p=lookupReactedPlaylist(key);
       if(!p||query&&!p.name.toLowerCase().includes(query))continue;
@@ -1061,7 +1072,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.1.5d';
+  frame.src='/telemetry.html?v=18.2.2a';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
@@ -1076,7 +1087,7 @@ window.addEventListener('message',event=>{
     if(a==='top'||RX.includes(a)){const sub=arg.split('/')[0]||(a==='top'?'ranked':'songs');if(a==='stars')void refreshStarRankings(document.querySelector('#list'),sub);else sendTelemetryRows(frame,a,sub);}
   } else if(data.type==='wasp:telemetry-rank-sort'){
     const {a,arg}=parse(),sub=arg.split('/')[0]||'songs';
-    if(['stars','hearts'].includes(a)&&['songs','artists','playlists'].includes(sub)){
+    if(['stars','hearts'].includes(a)&&['songs','albums','artists','playlists'].includes(sub)){
       const sort=data.sort==='least'?'least':'most';
       if(a==='stars')void refreshStarRankings(document.querySelector('#list'),sub,sort);
       else sendTelemetryRows(frame,a,sub,sort);
@@ -1390,6 +1401,14 @@ function buildAlbums(ts) {
   return out;
 }
 
+// Ratings use the exact album grouping seen in the browser, including multi-artist compilations.
+let reactableAlbumCache=null;
+function reactableAlbums(){return reactableAlbumCache||(reactableAlbumCache=buildAlbums(tracks));}
+function albumGroupKey(group){return albumReactionKey(group?.name,group?.artist);}
+function findReactableAlbum(key){return reactableAlbums().find(group=>albumGroupKey(group)===key);}
+function albumReactionControls(group){const key=albumGroupKey(group);return key?`<span class="album-rating">${reactCircles('album',key)}</span>`:'';}
+function artistReleaseGroup(release){return reactableAlbums().find(group=>albumIdentity(group.name)===albumIdentity(release.name)&&group.tracks.some(t=>release.tracks.some(rt=>rt.id===t.id)))||{name:release.name,artist:primaryArtist(release.coverTrack),tracks:release.tracks};}
+function albumHref(group,preferredArtist){const a=preferredArtist&&group.tracks.some(t=>artistsOf(t).some(n=>normalizeRecording(n)===normalizeRecording(preferredArtist)))?preferredArtist:group.artist;return '#album/'+enc(a)+'/'+enc(group.name);}
 function albumGrid(el) {
   const l=buildAlbums(tracks.filter(match)).sort((x,y)=>latest(y.tracks)-latest(x.tracks)||x.name.localeCompare(y.name));
   noView();
@@ -1403,12 +1422,12 @@ function albumPage(el, artist, album) {
   // soundtrack includes its other performers, not just the tile's artist.
   const wanted=albumIdentity(album);
   const group=buildAlbums(tracks).find(x=>albumIdentity(x.name)===wanted &&
-    normalizeRecording(x.artist)===normalizeRecording(artist));
+    (normalizeRecording(x.artist)===normalizeRecording(artist)||x.tracks.some(t=>artistsOf(t).some(name=>normalizeRecording(name)===normalizeRecording(artist)))));
   const l=(group?.tracks||[]).slice().sort(byTrack);
   if(!l.length){el.innerHTML=`<a class="back" href="#recent/albums">← Albums</a>`+empty('Album not found.');noView();return;}
   view={ids:l.map(t=>t.id),label:group.name,pl:null};
   el.innerHTML=`<a class="back" href="#recent/albums">← Albums</a>
-    <div class="hero">${art(albumArt(l[0]),group.name)}<div><h1>${esc(group.name)}</h1><span class="muted">${esc(group.artist)} · ${plural(l.length,'song')}</span>${actions()}</div></div>
+    <div class="hero">${art(albumArt(l[0]),group.name)}<div><h1>${esc(group.name)}</h1><span class="muted">${esc(group.artist)} · ${plural(l.length,'song')}</span><div class="album-page-actions">${actions()}${albumReactionControls(group)}</div></div></div>
     ${l.map((t,i)=>row(t,numLabel(t,i,l))).join('')}`;
 }
 
@@ -1420,7 +1439,7 @@ function artistReleaseMarkup(release, index, display, expanded) {
   const type=release.kind==='single'?'Single / EP':release.kind==='compilation'?'Compilation':'Album';
   const detail=`${release.year||'Date unavailable'} · ${type}`;
   if(display==='list')return `<section class="artist-release-list-row" data-release-item="${index}">
-    <div class="artist-release-list-head">${cover}<div class="artist-release-list-info"><strong>${esc(release.name)}</strong><small class="muted">${esc(detail)} · ${plural(release.tracks.length,'available song')}</small><div class="artist-release-buttons"><button type="button" class="pill" data-artist-release-play="${index}">▶ Play release</button></div></div></div>
+    <div class="artist-release-list-head">${cover}<div class="artist-release-list-info"><strong>${esc(release.name)}</strong><small class="muted">${esc(detail)} · ${plural(release.tracks.length,'available song')}</small><div class="artist-release-buttons"><button type="button" class="pill" data-artist-release-play="${index}">▶ Play release</button>${albumReactionControls(artistReleaseGroup(release))}</div></div></div>
     <div class="artist-release-songs">${release.tracks.map((t,i)=>row(t,numLabel(t,i,release.tracks))).join('')}</div></section>`;
   return `<button type="button" class="tile sq artist-release-tile${expanded?' selected':''}" data-artist-release="${index}" aria-expanded="${expanded}" aria-label="${esc(release.name)} · Show available songs">${cover}<b>${esc(release.name)}</b><span class="muted">${esc(detail)}</span></button>`;
 }
@@ -1436,7 +1455,7 @@ function paintArtistDiscography() {
     <div role="group" class="artist-view-toggle" aria-label="Discography view"><button type="button" class="pill${state.display==='grid'?' on':''}" data-artist-display="grid" aria-label="Grid view" aria-pressed="${state.display==='grid'}">▦ Grid</button><button type="button" class="pill${state.display==='list'?' on':''}" data-artist-display="list" aria-label="List view" aria-pressed="${state.display==='list'}">☷ List</button></div></div></div>`;
   const expanded=releases.findIndex(r=>r.key===state.expanded);
   const body=releases.length?`<div class="artist-releases ${state.display==='grid'?'grid s':'artist-release-list'}">${releases.map((r,i)=>artistReleaseMarkup(r,i,state.display,r.key===state.expanded)).join('')}</div>`:empty('No releases in this category.');
-  const detail=state.display==='grid'&&expanded>=0?`<div class="artist-release-expanded" aria-live="polite"><h3>${esc(releases[expanded].name)} <span class="muted">${plural(releases[expanded].tracks.length,'available song')}</span></h3><button class="pill" type="button" data-artist-release-play="${expanded}">▶ Play release</button>${releases[expanded].tracks.map((t,i)=>row(t,numLabel(t,i,releases[expanded].tracks))).join('')}</div>`:'';
+  const detail=state.display==='grid'&&expanded>=0?`<div class="artist-release-expanded" aria-live="polite"><h3><a class="album-title-link" href="${albumHref(artistReleaseGroup(releases[expanded]),state.name)}">${esc(releases[expanded].name)}</a> <span class="muted">${plural(releases[expanded].tracks.length,'available song')}</span></h3><div class="artist-release-buttons"><button class="pill" type="button" data-artist-release-play="${expanded}">▶ Play release</button>${albumReactionControls(artistReleaseGroup(releases[expanded]))}</div>${releases[expanded].tracks.map((t,i)=>row(t,numLabel(t,i,releases[expanded].tracks))).join('')}</div>`:'';
   const allLink=state.full?`<a class="artist-discography-all" href="#artist/${enc(state.name)}">← Artist overview</a>`:
     `<a class="artist-discography-all" href="#artist/${enc(state.name)}/discography">Show all releases</a>`;
   el.innerHTML=`<div class="artist-section-head"><h2>Discography</h2>${allLink}</div>${controls}${body}${detail}`;
@@ -2507,7 +2526,12 @@ function renderQueue() {
   const up = [];
   for (let k = 1; k < queue.length && up.length < 50; k++) up.push(byId[queue[(qi + k) % queue.length]]);
   const queueLabel=$("#uql");queueLabel.replaceChildren();
-  if(playlistScope?.id){const link=document.createElement('a');link.href='#playlist/'+encodeURIComponent(playlistScope.id);link.textContent=qLabel;link.title='Open playlist';queueLabel.append(link);}else queueLabel.textContent=qLabel;
+  if(playlistScope?.id){const link=document.createElement('a');link.href='#playlist/'+encodeURIComponent(playlistScope.id);link.textContent=qLabel;link.title='Open playlist';queueLabel.append(link);}else {
+    const releaseName=/^Release [“\"](.+)[”\"]$/.exec(qLabel)?.[1];
+    const playing=byId[queue[qi]];const group=releaseName&&playing?reactableAlbums().find(g=>albumIdentity(g.name)===albumIdentity(releaseName)&&g.tracks.some(t=>t.id===playing.id)):null;
+    if(group){const link=document.createElement('a');link.href=albumHref(group,primaryArtist(playing));link.textContent=qLabel;link.title='Open this release under '+primaryArtist(playing);queueLabel.append(link);}
+    else queueLabel.textContent=qLabel;
+  }
   $("#uplist").innerHTML = up.length ? up.filter(Boolean).map((t) =>
     `<button class="qrow" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span></button>`).join("")
     : empty(queue.length ? "That's the last song." : "Play a song to see what's next.");
@@ -2607,7 +2631,7 @@ setInterval(async()=>{
   try {
     await loadPeerReactionCounts();
     const e=await fetch("/api/entity-reactions",{cache:"no-store"});
-    if(e.ok){const data=await e.json();entity={artist:data.artist||{},playlist:data.playlist||{}};ratedPlaylistCache=arr(data.playlist_meta);}
+    if(e.ok){const data=await e.json();entity={artist:data.artist||{},album:data.album||{},playlist:data.playlist||{}};ratedPlaylistCache=arr(data.playlist_meta);}
     // v14: a compact, indexed reaction summary instead of downloading and
     // rebuilding the complete 1,328-track catalogue every 15 seconds.
     const r=await fetch("/api/track-reaction-counts",{cache:"no-store"});

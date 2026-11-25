@@ -393,6 +393,7 @@ root.addEventListener('click',e=>{
   const row=e.target.closest('[data-kind][data-id]');if(!row)return;
   const id=row.dataset.id;
   if(row.dataset.kind==='song')tell('wasp:telemetry-play',{id});
+  else if(row.dataset.kind==='album'&&/^#album\/[^?#]+\/[^?#]+$/.test(id))tell('wasp:telemetry-navigate',{href:id});
   else if(row.dataset.kind==='artist')tell('wasp:telemetry-navigate',{href:'#artist/'+encodeURIComponent(id)});
   else if(row.dataset.kind==='playlist')tell('wasp:telemetry-navigate',{href:'#playlist/'+encodeURIComponent(id)});
 });

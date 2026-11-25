@@ -11,12 +11,13 @@ import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federat
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
 import {RELEASE_SOURCES,fetchUpstream,releaseDecision} from "./release-updates.js";
 import {BUILD_COMMIT} from "./build-commit.js";
+import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.2.2";
-const BUILD_LABEL = "Artist Refinements & Collection Review";
+const BUILD_VERSION = "18.2.2a";
+const BUILD_LABEL = "Album Reactions & Rankings";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2470,19 +2471,19 @@ async function api(req, env, url, ctx) {
   if (path === "/api/entity-reactions" && m === "GET") {
     try {
       const { results } = await DB.prepare(`SELECT kind, entity, COALESCE(SUM(reaction = 'heart'), 0) AS hearts, COALESCE(SUM(reaction = 'like'), 0) AS likes, COALESCE(SUM(reaction = 'dislike'), 0) AS dislikes FROM entity_reactions GROUP BY kind, entity`).all();
-      const out = { artist: Object.create(null), playlist: Object.create(null), playlist_meta: [] };
+      const out = { artist: Object.create(null), album: Object.create(null), playlist: Object.create(null), playlist_meta: [] };
       for (const r of results) if (out[r.kind]) out[r.kind][r.entity] = { hearts: r.hearts, likes: r.likes, dislikes: r.dislikes };
       out.playlist_meta = (await DB.prepare("SELECT id,origin,name,kind,cover_url,username,track_count FROM voted_playlist_cache").all()).results;
       return json(out, 200, { "cache-control": "no-cache" });
     } catch {
-      return json({ artist: {}, playlist: {}, playlist_meta: [] }, 200, { "cache-control": "no-cache" });
+      return json({ artist: {}, album: {}, playlist: {}, playlist_meta: [] }, 200, { "cache-control": "no-cache" });
     }
   }
   if (path === "/api/react-entity" && m === "POST") {
     const b = await req.json().catch(() => ({}));
     const vid = req.headers.get("X-Visitor") || "";
     const type = b.type, key = clean(b.key, 512), kind = b.kind;
-    if (!/^[\w-]{8,64}$/.test(vid) || !["artist", "playlist"].includes(type) || !key || !["heart", "like", "dislike"].includes(kind)) return json({ error: "Bad request." }, 400);
+    if (!/^[\w-]{8,64}$/.test(vid) || !["artist", "album", "playlist"].includes(type) || !key || !["heart", "like", "dislike"].includes(kind)) return json({ error: "Bad request." }, 400);
     const origin = clean(b.origin, 250).replace(/\/$/, "");
     let trustedRemote = false;
     if (origin) {
@@ -2495,6 +2496,11 @@ async function api(req, env, url, ctx) {
       // Peer-only artists can receive votes on this server, but the source
       // must be a configured peer. Voting never alters the source peer.
       if (!local && !trustedRemote) return json({ error: "Artist not found on this server or a connected peer." }, 404);
+    } else if (type === 'album') {
+      const parsed=parseAlbumReactionKey(key);
+      if(!parsed)return json({error:'Invalid album identity.'},400);
+      const local=await DB.prepare('SELECT 1 FROM tracks WHERE lower(trim(album))=? LIMIT 1').bind(parsed.album).first();
+      if(!local&&!trustedRemote)return json({error:'Album unavailable on this server or a connected peer.'},404);
     } else {
       const managed=await DB.prepare("SELECT 1 FROM playlists WHERE id = ?").bind(key).first();
       const user=await DB.prepare("SELECT user_id,is_public FROM user_playlists WHERE id = ?").bind(key).first();
@@ -2637,7 +2643,7 @@ async function api(req, env, url, ctx) {
   if(path==='/api/stars/rankings' && m==='GET'){
     const type=clean(url.searchParams.get('type'),20);
     const least=url.searchParams.get('sort')==='least';
-    if(!['track','artist','playlist'].includes(type))return json({error:'Invalid star ranking type'},400);
+    if(!['track','album','artist','playlist'].includes(type))return json({error:'Invalid star ranking type'},400);
     const visible=type==='track'?
       `AND (EXISTS(SELECT 1 FROM tracks t WHERE t.id=target_key) OR EXISTS(SELECT 1 FROM peers p WHERE instr(target_key,p.url||'|')=1))`:
       type==='playlist'?
@@ -2655,7 +2661,7 @@ async function api(req, env, url, ctx) {
   }
   if(path==='/api/stars/batch' && m==='POST'){
     const b=await req.json().catch(()=>({}));const targets=Array.isArray(b.targets)?b.targets:[];
-    if(targets.length>120||targets.some(t=>!['track','artist','playlist'].includes(t.type)||typeof t.key!=='string'||!t.key||t.key.length>512))return json({error:'Invalid rating lookup'},400);
+    if(targets.length>120||targets.some(t=>!['track','album','artist','playlist'].includes(t.type)||typeof t.key!=='string'||!t.key||t.key.length>512))return json({error:'Invalid rating lookup'},400);
     await DB.prepare(`CREATE TABLE IF NOT EXISTS star_votes(target_type TEXT NOT NULL,target_key TEXT NOT NULL,voter TEXT NOT NULL,stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),updated_at INTEGER NOT NULL,PRIMARY KEY(target_type,target_key,voter))`).run();
     await DB.prepare('CREATE INDEX IF NOT EXISTS idx_star_votes_target ON star_votes(target_type,target_key)').run();
     const visitor=req.headers.get('X-Visitor')||'';
@@ -2669,7 +2675,7 @@ async function api(req, env, url, ctx) {
   if(path==='/api/stars' && m==='POST'){
     const b=await req.json().catch(()=>({})),type=b.type,key=clean(b.key,512),score=Number(b.stars);
     const visitor=req.headers.get('X-Visitor')||'';
-    if(!/^[\w-]{8,64}$/.test(visitor)||!['track','artist','playlist'].includes(type)||!key||!Number.isInteger(score)||score<0||score>5)return json({error:'Invalid star rating.'},400);
+    if(!/^[\w-]{8,64}$/.test(visitor)||!['track','album','artist','playlist'].includes(type)||!key||!Number.isInteger(score)||score<0||score>5)return json({error:'Invalid star rating.'},400);
     const origin=clean(b.origin,250).replace(/\/$/,'');
     let trusted=false;if(origin)trusted=!!(await knownPeer(DB,origin));
     if(type==='track'){
@@ -2677,6 +2683,10 @@ async function api(req, env, url, ctx) {
       else if(!/^[\w-]{1,120}$/.test(key)||!(await DB.prepare('SELECT 1 FROM tracks WHERE id=?').bind(key).first()))return json({error:'Unknown track'},404);
     }else if(type==='artist'){
       if(!await libraryHasArtist(DB,key) && !trusted)return json({error:'Artist unavailable'},404);
+    }else if(type==='album'){
+      const album=parseAlbumReactionKey(key);if(!album)return json({error:'Invalid album identity'},400);
+      const local=await DB.prepare('SELECT 1 FROM tracks WHERE lower(trim(album))=? LIMIT 1').bind(album.album).first();
+      if(!local&&!trusted)return json({error:'Album unavailable'},404);
     }else{
       const server=await DB.prepare('SELECT 1 FROM playlists WHERE id=?').bind(key).first();
       const user=await DB.prepare('SELECT user_id,is_public FROM user_playlists WHERE id=?').bind(key).first();

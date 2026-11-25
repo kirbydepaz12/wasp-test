@@ -9,6 +9,7 @@ const sandbox={
   albumName:t=>t.album||'',artistsOf:t=>t.artists?.length?t.artists:[t.artist],primaryArtist:t=>t.artists?.[0]||t.artist,
   tracks:[],query:'',match:t=>true,latest:ts=>Math.max(...ts.map(t=>t.created_at||0)),
   noView:()=>{}, art:()=>'<img>',albumArt:()=>'',esc:s=>String(s),enc:encodeURIComponent,
+  albumReactionKey:(name,artist)=>`album:v1:${JSON.stringify([name,artist])}`,reactCircles:()=>'<span class="reactions"></span>',
   empty:x=>x,byTrack:(a,b)=>(a.track_no||0)-(b.track_no||0),actions:()=>'',
   plural:(n,w)=>`${n} ${w}s`,numLabel:()=>'',row:t=>`<li>${t.title}</li>`,view:null
 };
@@ -31,6 +32,8 @@ test('Multi-artist soundtrack is a single album tile and opens with all performe
   assert.match(opened.innerHTML,/Song One/);
   assert.match(opened.innerHTML,/Song Two/);
   assert.match(opened.innerHTML,/Song Three/);
+  const byContributor={innerHTML:''};albumPage(byContributor,'Dropkick Murphys',"Tony Hawk's American Wasteland");
+  assert.match(byContributor.innerHTML,/Song One/);assert.match(byContributor.innerHTML,/Song Two/);
 });
 test('Generic album titles stay artist-scoped to avoid unrelated releases merging',()=>{
  const songs=[{artist:'Band A',album:'Greatest Hits'},{artist:'Band B',album:'Greatest Hits'},

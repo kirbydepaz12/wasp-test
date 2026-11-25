@@ -23,7 +23,8 @@ for filename,names in [
  wrapper+='\n{'+src+'\n'+''.join('window.'+n+'='+n+';\n' for n in names)+'}\n'
 # App source and modules execute in the same eval environment after the globals
 # are installed. iframe telemetry navigation is intentionally outside this test.
-bundle=bb+'\n'+art+'\n'+radio+'\n'+builder+'\n'+wrapper+'\n'+app+'''\nwindow.__queueInfo=()=>({queue:[...queue],qi,label:qLabel,current:audio.dataset.id,restored:queueRestored,route:playbackRoute?.resume||null});'''
+album_mod=(P/'album-reactions.mjs').read_text().replace('export const ', 'const ').replace('export function ', 'function ')
+bundle=album_mod+'\n'+bb+'\n'+art+'\n'+radio+'\n'+builder+'\n'+wrapper+'\n'+app+'''\nwindow.__queueInfo=()=>({queue:[...queue],qi,label:qLabel,current:audio.dataset.id,restored:queueRestored,route:playbackRoute?.resume||null});'''
 mock=r'''
 window.__storeMap=JSON.parse(window.__savedStore||'{}');
 Object.defineProperty(window,'sessionStorage',{configurable:true,value:{getItem:k=>window.__storeMap[k]??null,setItem:(k,v)=>window.__storeMap[k]=String(v),removeItem:k=>delete window.__storeMap[k]}});
