@@ -1,4 +1,4 @@
-import {mountHomeRSS} from './rss-home.mjs';
+import {mountHomeRSS} from './rss-home.mjs?v=18.3.0a';
 import { radioIds } from "/radio.js";
 import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";

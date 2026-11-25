@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0">
+<link rel="stylesheet" href="/style.css?v=18.3.0a">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -313,6 +313,8 @@
           <h2>RSS on Home</h2>
           <label class="rss-toggle-label"><input type="checkbox" id="rssEnabled"> <strong>Enable RSS on Home</strong> <span id="rssEnabledStatus" class="muted">OFF by default</span></label>
           <p class="muted">When disabled, nothing appears below Playlists on Home. Your saved RSS tabs and entries remain untouched.</p>
+          <label class="rss-heading-label" for="rssHeading">RSS section title <span class="muted">(optional — blank hides the heading on Home)</span></label>
+          <input id="rssHeading" type="text" maxlength="80" placeholder="News, Events, Music Updates…" autocomplete="off">
           <div class="rss-settings-grid">
             <div><h3>RSS tab position</h3><p class="muted">Choose the alignment of your tabs.</p>
               <div id="rssPositionControls" class="tabs rss-alignment" role="group" aria-label="RSS tab position">
@@ -332,7 +334,7 @@
           <p class="muted">Add as many tabs as you need. Each accepts a public HTTPS RSS/Atom feed URL or a restricted static embed. JavaScript is not executed.</p>
           <div class="rss-editor-grid">
             <div><div id="rssTabsEditor" class="rss-tabs-editor"></div><button type="button" class="btn ghost" id="rssAddTab">＋ Add new tab</button></div>
-            <div><h3 id="rssContentTitle">Content preview</h3><p class="muted">This preview is isolated from the music player.</p><div id="rssContentPreview" class="rss-content-preview"></div></div>
+            <div><h3 id="rssContentTitle">Content preview</h3><p class="muted">This preview is isolated from the music player. Saved feeds can be refreshed without waiting for the cache.</p><button type="button" class="btn ghost" id="rssForceRefresh">Refresh published feed now</button><p id="rssRefreshMsg" class="muted" role="status"></p><div id="rssContentPreview" class="rss-content-preview"></div></div>
           </div>
         </div>
       </div>
@@ -695,6 +697,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.3.0"></script>
+<script type="module" src="/admin.js?v=18.3.0a"></script>
 </body>
 </html>

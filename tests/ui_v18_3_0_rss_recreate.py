@@ -79,6 +79,8 @@ with sync_playwright() as pw:
   page.locator('#rssAddTab').click()
   assert page.locator('[data-rss-tab]').count()==2
   page.locator('#rssEnabled').check()
+  page.locator('#rssHeading').fill('WASP Newsroom')
+  assert page.locator('#rssLayoutPreview .rss-custom-heading').inner_text()=='WASP Newsroom'
   page.locator('[data-rss-position="center"]').click()
   assert page.locator('#rssLayoutPreview .rss-tab-bar').get_attribute('data-position')=='center'
   page.locator('[data-rss-code="1"]').fill('https://example.com/rss.xml')
@@ -86,6 +88,7 @@ with sync_playwright() as pw:
   page.wait_for_function('window.__rssSaves.length>0')
   assert page.evaluate('window.__rssSaves[0].position')=='center'
   assert page.evaluate('window.__rssSaves[0].enabled') is True
+  assert page.evaluate('window.__rssSaves[0].heading')=='WASP Newsroom'
   assert not errors,errors[:5]
   print('PASS v18.3 Recreate and RSS admin controls',width)
   page.close()

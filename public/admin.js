@@ -1294,19 +1294,20 @@ $('#releaseCheck').onclick=()=>selectedReleaseChannel()===savedReleaseChannel?ch
 setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden')&&selectedReleaseChannel()===savedReleaseChannel)void checkReleases();},6*60*60*1000);
 
 // -------- v18.3 RSS settings and safe previews --------
-let rssLoaded=false,rssDraft={enabled:false,position:'left',tabs:[]},rssIndex=0,rssPreviewSeq=0;
+let rssLoaded=false,rssDraft={enabled:false,position:'left',heading:'',tabs:[]},rssIndex=0,rssPreviewSeq=0;
 const rssEscape=esc;
 async function loadRSSAdmin(){
  try{const r=await fetch('/api/admin/rss',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to load RSS');
-  rssDraft={enabled:!!d.enabled,position:d.position||'left',tabs:d.tabs||[]};rssLoaded=true;rssIndex=0;paintRSSAdmin();void loadRSSPreview();
+  rssDraft={enabled:!!d.enabled,position:d.position||'left',heading:d.heading||'',tabs:d.tabs||[]};rssLoaded=true;rssIndex=0;paintRSSAdmin();void loadRSSPreview();
  }catch(e){$('#rssSaveMsg').textContent=e.message;}
 }
 function rssTabPreview(){return `<div class="rss-tab-bar" data-position="${rssDraft.position}">${rssDraft.tabs.map((t,i)=>`<button type="button" class="rss-tab-button" data-rss-focus="${i}" aria-selected="${i===rssIndex}">${rssEscape(t.title||'Untitled')}</button>`).join('')}</div>`;}
 function paintRSSAdmin(){
  $('#rssEnabled').checked=rssDraft.enabled;
+ $('#rssHeading').value=rssDraft.heading||'';
  $('#rssEnabledStatus').textContent=rssDraft.enabled?'ON (pending Save)':'OFF — saved feeds retained';
  document.querySelectorAll('[data-rss-position]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.rssPosition===rssDraft.position)));
- $('#rssLayoutPreview').innerHTML=rssTabPreview()+`<p class="muted">${rssDraft.enabled?'RSS will appear below Playlists when saved.':'RSS is currently disabled; preview remains available to admins.'}</p>`;
+ $('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview()+`<p class="muted">${rssDraft.enabled?'RSS will appear below Playlists when saved.':'RSS is currently disabled; preview remains available to admins.'}</p>`;
  $('#rssTabsEditor').innerHTML=rssDraft.tabs.map((t,i)=>`<div class="rss-admin-tab${rssIndex===i?' is-selected':''}" data-rss-tab="${i}">
    <div class="rss-admin-tab-head"><button type="button" class="btn ghost" data-rss-focus="${i}">${rssEscape(t.title||'RSS Tab '+(i+1))}</button><button type="button" class="btn ghost" data-rss-delete="${i}" title="Remove this saved RSS tab">Remove</button></div>
    ${rssIndex===i?`<label>Title</label><input data-rss-title="${i}" maxlength="70" value="${rssEscape(t.title)}"><label>Public HTTPS feed URL or static embed code</label><textarea data-rss-code="${i}" rows="5" maxlength="12000" placeholder="https://example.org/rss.xml">${rssEscape(t.code)}</textarea><button class="btn ghost" type="button" data-rss-expand="${i}">Expand editor</button>`:''}</div>`).join('');
@@ -1314,6 +1315,7 @@ function paintRSSAdmin(){
  const t=rssDraft.tabs[rssIndex];$('#rssContentPreview').textContent=t?(t.kind==='embed'?'Static embed preview — scripts are disabled.':'Enter or paste a feed URL to preview current items.'):'Add a tab to preview its content.';
 }
 $('#rssEnabled').onchange=e=>{rssDraft.enabled=e.target.checked;paintRSSAdmin();};
+$('#rssHeading').oninput=e=>{rssDraft.heading=e.target.value;$('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview();};
 $('#rssPositionControls').onclick=e=>{const b=e.target.closest('[data-rss-position]');if(!b)return;rssDraft.position=b.dataset.rssPosition;paintRSSAdmin();};
 function rssFocus(i){rssIndex=i;paintRSSAdmin();void loadRSSPreview();}
 $('#settingsRSSPanel').addEventListener('click',e=>{
@@ -1324,7 +1326,7 @@ $('#settingsRSSPanel').addEventListener('click',e=>{
 });
 let rssPreviewDelay;
 $('#rssTabsEditor').addEventListener('input',e=>{
- if(e.target.matches('[data-rss-title]')){rssDraft.tabs[Number(e.target.dataset.rssTitle)].title=e.target.value;$('#rssLayoutPreview').innerHTML=rssTabPreview();$('#rssContentTitle').textContent='Content preview — '+e.target.value;}
+ if(e.target.matches('[data-rss-title]')){rssDraft.tabs[Number(e.target.dataset.rssTitle)].title=e.target.value;$('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview();$('#rssContentTitle').textContent='Content preview — '+e.target.value;}
  if(e.target.matches('[data-rss-code]')){const t=rssDraft.tabs[Number(e.target.dataset.rssCode)];t.code=e.target.value;t.kind=t.code.trim().startsWith('<')?'embed':'feed';clearTimeout(rssPreviewDelay);rssPreviewDelay=setTimeout(loadRSSPreview,650);}
 });
 $('#rssAddTab').onclick=()=>{rssDraft.tabs.push({id:'',title:'RSS Tab '+(rssDraft.tabs.length+1),code:'',kind:'feed'});rssFocus(rssDraft.tabs.length-1);};
@@ -1333,6 +1335,24 @@ $('#rssSave').onclick=async()=>{
  const button=$('#rssSave');button.disabled=true;$('#rssSaveMsg').textContent='Saving RSS settings…';
  try{const r=await post('/api/admin/rss',rssDraft,'PUT'),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to save RSS');rssDraft=d;rssLoaded=true;paintRSSAdmin();$('#rssSaveMsg').textContent='Saved. '+(rssDraft.enabled?'RSS is visible below Playlists.':'RSS is OFF; saved entries are preserved.');}
  catch(e){$('#rssSaveMsg').textContent=e.message;}finally{button.disabled=false;}
+};
+function rssPreviewImage(value){try{const u=new URL(String(value||''));return u.protocol==='https:'?u.href:'';}catch{return '';}}
+function paintRSSPreviewItems(node,items){
+ node.innerHTML=items.length?`<div class="rss-feed-grid">${items.map(item=>{
+   const image=rssPreviewImage(item.image),href=rssPreviewImage(item.url);
+   return `<article class="rss-feed-item"><div class="rss-feed-media">${image?`<img src="${rssEscape(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'<span aria-hidden="true">◉</span>'}</div><div class="rss-feed-info">${href?`<a href="${rssEscape(href)}" target="_blank" rel="noopener noreferrer nofollow">${rssEscape(item.title)}</a>`:`<b>${rssEscape(item.title)}</b>`}<p class="muted">${rssEscape(item.description||'')}</p></div></article>`;
+  }).join('')}</div>`:'<p class="muted">No items returned from feed.</p>';
+}
+$('#rssForceRefresh').onclick=async()=>{
+ const t=rssDraft.tabs[rssIndex],msg=$('#rssRefreshMsg'),button=$('#rssForceRefresh');
+ if(!t?.id){msg.textContent='Save this tab first, then refresh its published feed.';return;}
+ button.disabled=true;++rssPreviewSeq;msg.textContent='Checking the published feed…';
+ try{
+   const r=await post('/api/admin/rss/refresh',{id:t.id}),d=await r.json();
+   if(!r.ok)throw Error(d.error||'Unable to refresh feed');
+   msg.textContent=d.refresh_throttled?'Recently refreshed; showing the latest cached copy.':'Published feed refreshed. Reload Home to see these articles.';
+   if(t.code.trim()===String(rssDraft.tabs[rssIndex]?.code||'').trim())paintRSSPreviewItems($('#rssContentPreview'),d.items||[]);
+ }catch(e){msg.textContent=e.message;}finally{button.disabled=false;}
 };
 async function loadRSSPreview(){
  const t=rssDraft.tabs[rssIndex],node=$('#rssContentPreview'),serial=++rssPreviewSeq;if(!t)return;
@@ -1344,7 +1364,7 @@ async function loadRSSPreview(){
  if(!/^https:\/\//i.test(t.code.trim())){node.textContent='Enter a public HTTPS RSS or Atom URL.';return;}
  node.textContent='Loading feed preview…';
  try{const r=await post('/api/admin/rss/preview',{title:t.title,code:t.code}),d=await r.json();if(serial!==rssPreviewSeq)return;if(!r.ok)throw Error(d.error||'Preview unavailable');
-  node.innerHTML=(d.items||[]).map(item=>`<div class="rss-feed-item"><div><b>${rssEscape(item.title)}</b><p class="muted">${rssEscape(item.description||'')}</p></div></div>`).join('')||'<p class="muted">No items returned from feed.</p>';
+  paintRSSPreviewItems(node,d.items||[]);
  }catch(e){if(serial===rssPreviewSeq)node.textContent='Preview unavailable: '+e.message;}
 }
 // ---------- general settings: branding + advertising ----------

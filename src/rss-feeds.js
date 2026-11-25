@@ -28,6 +28,31 @@ const link=(item,atom)=>{
   if(atom){const m=item.match(/<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i);return unescapeXML(m?.[1]||'');}
   return text(tag(item,'link'));
 };
+// Prefer actual feed image enclosures/media, then HTML image embedded in the
+// publisher's description/content. Only HTTPS image URLs are returned to clients.
+function feedImage(block,articleUrl){
+  const candidates=[];
+  // XML attribute order varies; inspect each element's attributes independently.
+  for(const m of block.matchAll(/<(?:media:thumbnail|media:content|enclosure|itunes:image)\b([^>]*)>/gi)){
+    const element=m[0],attrs=m[1];
+    const attr=name=>{const m=attrs.match(/([\w:-]+)\s*=\s*["']([^"']+)["']/g)||[];return m.map(x=>x.match(/^([\w:-]+)\s*=\s*["']([^"']+)["']/)).find(v=>v&&v[1].toLowerCase()===name)?.[2]||'';};
+    const src=attr('url')||attr('href');
+    const type=attr('type').toLowerCase(),medium=attr('medium').toLowerCase();
+    const isImage=/media:thumbnail|itunes:image/i.test(element)||medium==='image'||type.startsWith('image/')||(!type&&!medium&&/media:content/i.test(element));
+    if(isImage&&src)candidates.push(src);
+  }
+  const html=unescapeXML(tag(block,'content:encoded')||tag(block,'description')||tag(block,'summary')||tag(block,'content'));
+  for(const m of html.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)){
+    const small=/\b(?:width|height)\s*=\s*["']?[012]["']?(?:\s|>)/i.test(m[0]);
+    if(!small)candidates.push(m[1]);
+  }
+  for(const src of candidates){
+    try{const url=new URL(unescapeXML(src),articleUrl||undefined);
+      if(url.protocol==='https:'&&!url.username&&!url.password&&!/\.svg(?:$|[?#])/i.test(url.pathname))return url.href;
+    }catch{}
+  }
+  return '';
+}
 export function parseFeed(xml,{max=30}={}){
   if(typeof xml!=='string'||xml.length>600000)throw Error('Feed is too large.');
   const atom=/<feed(?:\s|>)/i.test(xml),re=atom?/<entry(?:\s[^>]*)?>([\s\S]*?)<\/entry>/gi:/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi;
@@ -36,8 +61,7 @@ export function parseFeed(xml,{max=30}={}){
     const b=m[1],url=link(b,atom);let safe='';try{const u=new URL(url);if(['https:','http:'].includes(u.protocol)&&!u.username&&!u.password)safe=u.href;}catch{}
     const title=text(tag(b,'title')).slice(0,250),description=text(tag(b,'description')||tag(b,'summary')||tag(b,'content')).slice(0,550);
     const date=text(tag(b,'pubDate')||tag(b,'updated')||tag(b,'published')).slice(0,70);
-    const enclosure=b.match(/<(?:enclosure|media:thumbnail|media:content)\b[^>]*\burl\s*=\s*["']([^"']+)["'][^>]*>/i);
-    const imageUrl=enclosure?unescapeXML(enclosure[1]):'';let image='';try{const u=new URL(imageUrl);if(['https:','http:'].includes(u.protocol))image=u.href;}catch{}
+    const image=feedImage(b,safe);
     if(title)items.push({title,description,url:safe,date,image});
   }
   return {format:atom?'atom':'rss',items};

@@ -18,8 +18,8 @@ import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.3.0";
-const BUILD_LABEL = "HIVE Recreate + RSS";
+const BUILD_VERSION = "18.3.0a";
+const BUILD_LABEL = "RSS Feed Refresh + Tiles";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -58,7 +58,8 @@ const PUBLIC_CACHE_TTLS = Object.freeze({
   "/api/playlists": 45,
   "/api/user-playlists": 45,
   "/api/site": 120,
-  "/api/rss": 120,
+  // RSS configuration must reflect administrator changes immediately.
+  // Feed payloads themselves are bounded by the D1 cache and refresh cooldown.
   "/api/entity-reactions": 5,
   "/api/track-reaction-counts": 5,
   "/api/recent-listens": 10,
@@ -504,7 +505,7 @@ async function siteSettings(DB) {
     brand_v: Number(s.brand_v) || 0,
     sidebar: {enabled:s.sidebar_enabled==="1",bbcode:Object.prototype.hasOwnProperty.call(s,"sidebar_bbcode")?s.sidebar_bbcode:null,html:s.sidebar_html||""},
     ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
-    rss: {enabled:s.rss_enabled==='1',position:['left','center','right'].includes(s.rss_position)?s.rss_position:'left'},
+    rss: {enabled:s.rss_enabled==='1',position:['left','center','right'].includes(s.rss_position)?s.rss_position:'left',heading:String(s.rss_heading||'').slice(0,80)},
   };
 }
 async function serveFavicon(env) {
@@ -529,17 +530,18 @@ async function ensureRss(DB){
 }
 async function rssConfig(DB,includeCode=false){
   await ensureRss(DB);
-  const [enabled,position,rows]=await Promise.all([
+  const [enabled,position,heading,rows]=await Promise.all([
     DB.prepare("SELECT value FROM settings WHERE key='rss_enabled'").first(),
     DB.prepare("SELECT value FROM settings WHERE key='rss_position'").first(),
+    DB.prepare("SELECT value FROM settings WHERE key='rss_heading'").first(),
     DB.prepare('SELECT id,title,code,kind,position FROM rss_tabs ORDER BY position,id').all()]);
-  return {enabled:enabled?.value==='1',position:['left','center','right'].includes(position?.value)?position.value:'left',
+  return {enabled:enabled?.value==='1',position:['left','center','right'].includes(position?.value)?position.value:'left',heading:String(heading?.value||'').slice(0,80),
     tabs:rows.results.map(t=>includeCode?t:{id:t.id,title:t.title,kind:t.kind,position:t.position,...(t.kind==='embed'?{code:t.code}:{})})};
 }
 async function rssApi(req,DB,path,m){
   if(path==='/api/rss'&&m==='GET'){
     const config=await rssConfig(DB,false);
-    return json(config.enabled?config:{enabled:false,position:config.position,tabs:[]},200,{'cache-control':'public, max-age=60'});
+    return json(config.enabled?config:{enabled:false,position:config.position,heading:config.heading,tabs:[]},200,{'cache-control':'no-store'});
   }
   const match=path.match(/^\/api\/rss\/feed\/([a-f0-9-]{36})$/);
   if(!match||m!=='GET')return json({error:'Not found.'},404);
@@ -549,14 +551,18 @@ async function rssApi(req,DB,path,m){
   if(!tab)return json({error:'Feed not found.'},404);
   if(tab.kind==='embed')return json({kind:'embed',items:[]},200,{'cache-control':'public, max-age=120'});
   const cached=await DB.prepare('SELECT body,fetched_at FROM rss_feed_cache WHERE tab_id=?').bind(tab.id).first();
-  if(cached&&Date.now()-cached.fetched_at<600000)return json({kind:'feed',...(JSON.parse(cached.body))},200,{'cache-control':'public, max-age=60'});
+  const age=cached?Math.max(0,Date.now()-cached.fetched_at):Infinity;
+  // An explicit public refresh may bypass a normal 2-minute TTL only once per minute.
+  // This keeps the Home button useful without allowing unlimited publisher requests.
+  const requested=new URL(req.url).searchParams.get('refresh')==='1';
+  if(cached&&(age<(requested?60000:120000)))return json({kind:'feed',...JSON.parse(cached.body),updated_at:cached.fetched_at,refresh_throttled:requested&&age<60000},200,{'cache-control':'no-store'});
   try{
     const feed=await fetchFeed(tab.code);
     await DB.prepare(`INSERT INTO rss_feed_cache(tab_id,body,fetched_at) VALUES(?,?,?) ON CONFLICT(tab_id) DO UPDATE SET body=excluded.body,fetched_at=excluded.fetched_at`)
       .bind(tab.id,JSON.stringify(feed),Date.now()).run();
-    return json({kind:'feed',...feed},200,{'cache-control':'public, max-age=60'});
+    return json({kind:'feed',...feed,updated_at:Date.now()},200,{'cache-control':'no-store'});
   }catch(e){
-    if(cached)return json({kind:'feed',...JSON.parse(cached.body),stale:true},200,{'cache-control':'public, max-age=30'});
+    if(cached)return json({kind:'feed',...JSON.parse(cached.body),stale:true,updated_at:cached.fetched_at},200,{'cache-control':'no-store'});
     return json({error:'RSS feed temporarily unavailable: '+String(e.message).slice(0,160)},502);
   }
 }
@@ -565,7 +571,7 @@ async function rssAdminApi(req,DB,m){
   if(m==='GET')return json(await rssConfig(DB,true));
   if(m!=='PUT')return json({error:'Method not allowed'},405);
   const b=await req.json().catch(()=>null);
-  if(!b||typeof b.enabled!=='boolean'||!['left','center','right'].includes(b.position)||!Array.isArray(b.tabs))return json({error:'Invalid RSS settings.'},400);
+  if(!b||typeof b.enabled!=='boolean'||!['left','center','right'].includes(b.position)||!Array.isArray(b.tabs)||typeof (b.heading??'')!=='string'||String(b.heading??'').length>80)return json({error:'Invalid RSS settings.'},400);
   if(JSON.stringify(b).length>200000)return json({error:'RSS settings exceed 200 KB.'},413);
   let rows=[];
   try{rows=b.tabs.map((input,i)=>({id:/^[a-f0-9-]{36}$/.test(String(input.id||''))?input.id:crypto.randomUUID(),...feedTab(input,i),position:i}));}
@@ -573,7 +579,8 @@ async function rssAdminApi(req,DB,m){
   const ids=new Set(rows.map(r=>r.id));if(ids.size!==rows.length)return json({error:'Duplicate RSS tab IDs.'},400);
   const original=(await DB.prepare('SELECT id FROM rss_tabs').all()).results;
   const stmts=[DB.prepare("INSERT INTO settings(key,value) VALUES('rss_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.enabled?'1':'0'),
-    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_position',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.position)];
+    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_position',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.position),
+    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_heading',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(b.heading||'').trim())];
   for(const r of rows)stmts.push(DB.prepare('INSERT INTO rss_tabs(id,title,code,kind,position,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,code=excluded.code,kind=excluded.kind,position=excluded.position')
      .bind(r.id,r.title,r.code,r.kind,r.position,Date.now()));
   for(const old of original)if(!ids.has(old.id)){stmts.push(DB.prepare('DELETE FROM rss_tabs WHERE id=?').bind(old.id));stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(old.id));}
@@ -3314,6 +3321,23 @@ async function api(req, env, url, ctx) {
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
   if(path==='/api/admin/rss')return rssAdminApi(req,DB,m);
+  // Authenticated publisher refresh bypasses the feed TTL, with a brief cooldown
+  // to keep expensive fetches bounded. The selected URL must already be saved.
+  if(path==='/api/admin/rss/refresh'&&m==='POST'){
+    await ensureRss(DB);
+    const b=await req.json().catch(()=>({}));
+    const tab=/^[a-f0-9-]{36}$/.test(String(b?.id||''))
+      ?await DB.prepare('SELECT id,code,kind FROM rss_tabs WHERE id=?').bind(b.id).first():null;
+    if(!tab||tab.kind!=='feed')return json({error:'Select a saved RSS feed tab before refreshing.'},400);
+    const cached=await DB.prepare('SELECT body,fetched_at FROM rss_feed_cache WHERE tab_id=?').bind(tab.id).first();
+    if(cached&&Date.now()-cached.fetched_at<10000)return json({kind:'feed',...JSON.parse(cached.body),updated_at:cached.fetched_at,refresh_throttled:true});
+    try{
+      const feed=await fetchFeed(tab.code);
+      const now=Date.now();
+      await DB.prepare(`INSERT INTO rss_feed_cache(tab_id,body,fetched_at) VALUES(?,?,?) ON CONFLICT(tab_id) DO UPDATE SET body=excluded.body,fetched_at=excluded.fetched_at`).bind(tab.id,JSON.stringify(feed),now).run();
+      return json({kind:'feed',...feed,updated_at:now});
+    }catch(e){return json({error:'Unable to refresh feed: '+String(e.message).slice(0,160)},502);}
+  }
   if(path==='/api/admin/rss/preview'&&m==='POST'){
     const body=await req.json().catch(()=>null);
     try{const t=feedTab(body,0);if(t.kind==='embed')return json({kind:'embed',items:[]});
