@@ -1,3 +1,4 @@
+import {mountHomeRSS} from './rss-home.mjs';
 import { radioIds } from "/radio.js";
 import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";
@@ -426,6 +427,15 @@ async function load() {
   entity = { artist: (en.data && en.data.artist) || {}, album: (en.data && en.data.album) || {}, playlist: (en.data && en.data.playlist) || {} };
   ratedPlaylistCache = arr(en.data?.playlist_meta);
   tracks = arr(t.data); playlists = arr(p.data);
+  // Read-only virtual album links from reviewed HIVE reconstructions. Original
+  // peer recordings retain their source, remote ID, and underlying audio.
+  try{const r=await fetch('/api/recreated-album-tracks',{cache:'no-store'});
+    if(r.ok){const additional=arr(await r.json());for(const item of additional){
+      if(!item?.origin||!item.remote_id||!item.album)continue;
+      const virtualId=item.origin+'|'+item.remote_id+'|recreated|'+item.album;
+      if(!tracks.some(t=>t.id===virtualId))tracks.push({...item,id:virtualId,remote_id:item.remote_id,virtual_album:true});
+    }}
+  }catch{}
   try {const r=await fetch(catalogueURL("/api/user-playlists"));if(r.ok)userPublicPlaylists=arr(await r.json());}catch{}
   peerPlaylists=[];
   loadError = t.fail || p.fail || (t.data && !Array.isArray(t.data) ? "/api/tracks returned something unexpected" : "");
@@ -961,7 +971,11 @@ function homeAlbumEntries(groups, search) {
 function landing(el) {
   noView();
   if (loadError && !tracks.length) { el.innerHTML = errorBox("The music library couldn't be loaded.", loadError); return; }
-  if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); return; }
+  if (!tracks.length) {
+    el.innerHTML=empty("No music yet. Check back soon.")+(site?.rss?.enabled&&!query?'<section id="homeRSS" aria-label="RSS feeds"></section>':'');
+    if(site?.rss?.enabled&&!query){const host=el.querySelector('#homeRSS');if(host)void mountHomeRSS(host);}
+    return;
+  }
   const qOk = (s) => !query || String(s).toLowerCase().includes(query);
   const artists = pickMix(artistPool().filter((a) => qOk(a.name)), (a) => a.created, (a) => a.plays);
   // Use the exact same release groups as #recent/albums and the album page.
@@ -980,7 +994,9 @@ function landing(el) {
     + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${sourceTitle(a.name,artistSources(a.name))}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
     + row("Albums", albums.map(({group,source}) => `<a class="tile sq" href="${albumHref(group)}">${art(albumArt(group.tracks[0]),group.name)}<b>${sourceTitle(group.name,source)}</b><span class="muted">${esc(group.artist)} · ${plural(group.tracks.length,"song")}</span></a>`).join("") + moreTile("#recent/albums", "All albums"))
     + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${sourceTitle(s.t.title,sourcesForTrack(s.t))}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
-    + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"));
+    + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"))
+    + (site?.rss?.enabled&&!query ? '<section id="homeRSS" aria-label="RSS feeds"></section>' : '');
+  if(site?.rss?.enabled&&!query){const host=el.querySelector('#homeRSS');if(host)void mountHomeRSS(host);}
   view = { ids: songs.map((s) => s.t.id), label: "Home", pl: null };
 }
 
@@ -1088,7 +1104,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.2.2b';
+  frame.src='/telemetry.html?v=18.3.0';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));

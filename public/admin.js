@@ -27,7 +27,8 @@ function showPane() {
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   adminPublishNotificationBadge(pendingPublishCount);
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
-  if (k === "settings") showSettingsSubtab(route.split("/")[1] === "release-updates" ? "release-updates" : "general");
+  if (k === "settings") showSettingsSubtab(['release-updates','rss'].includes(route.split('/')[1]) ? route.split('/')[1] : 'general');
+  if (k === 'add') showAddSubtab(route.split('/')[1]==='recreate'?'recreate':'upload');
   if (k === "duplicates") loadDuplicates();
   if (k === "processes") showOperationsTab(route.split("/")[1] === "logs" ? "logs" : "running");
   if (k === "users") showUsersTab(route.split("/")[1] === "announcements" ? "announcements" : "accounts");
@@ -288,12 +289,24 @@ async function show() {
     }).catch(()=>{$("#adminBuild").textContent="WASP · Version unavailable";});
   }
 }
+function showAddSubtab(which='upload'){
+  const recreation=which==='recreate';
+  $('#addUploadPanel').classList.toggle('hidden',recreation);
+  $('#addRecreatePanel').classList.toggle('hidden',!recreation);
+  $('#addTabUpload').setAttribute('aria-selected',String(!recreation));
+  $('#addTabRecreate').setAttribute('aria-selected',String(recreation));
+  if(recreation)void loadCollectionDraftHistory();
+}
+$('#addTabUpload').onclick=()=>{location.hash='add';showAddSubtab('upload')};
+$('#addTabRecreate').onclick=()=>{location.hash='add/recreate';showAddSubtab('recreate')};
+const recreateKind=()=>$('#recreateKind').value;
+$('#recreateKind').onchange=()=>{$('#spotifyCollectionResults').innerHTML='';$('#spotifyCollectionSearch').value='';};
 function syncMode() {
   $("#plField").classList.toggle("hidden", mode() !== "playlist");
   $("#alField").classList.toggle("hidden", mode() !== "album");
   $("#hint").textContent = HINTS[mode()];
-  $("#spotifyCollectionTools").classList.toggle('hidden',mode()==='singles');
-  if(spotifyCollection&&spotifyCollection.kind!==mode()){$('#spotifyCollectionClear').click();spotifyStagedFiles=[];}
+
+
 }
 document.querySelectorAll("input[name=mode]").forEach((r) => r.addEventListener("change", syncMode));
 
@@ -724,39 +737,72 @@ function fileMatchChoices(){
   }
   return assignments;
 }
+const recreateCandidateRows=new Map();
 function paintSpotifyManifest(){
-  const wrap=$('#spotifyCollectionManifest');if(!spotifyCollection){wrap.innerHTML='';return;}
-  const inLibrary=window.__tracks||[],assignments=fileMatchChoices(),used=new Set([...assignments.values()].filter(n=>n>=0));
-  wrap.innerHTML=spotifyCollection.tracks.map((item,index)=>{
-    const assigned=spotifyDraft?.matches?.[index];
-    const fileIndex=assignments.get(index)??-1;
-    if(assigned){const existing=inLibrary.find(t=>t.id===assigned);return `<div class="spotify-manifest-row"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)} <span class="spotify-matched-badge">✓ Approved</span></strong><small class="muted">${esc((item.artists||[]).join(', '))} · ${esc(existing?.title||assigned)}</small></div></div>`;}
-    const found=inLibrary.filter(t=>normalizedSong(t.title)===normalizedSong(item.title)&&songArtistOverlap(item.artists,artistsOf(t)));
-    const chosen=spotifyExistingChoice.get(index)||'';
-    const fileSelect=`<select data-source-file="${index}" aria-label="MP3 file for ${esc(item.title)}"><option value="-1">No local file assigned</option>${spotifyStagedFiles.map((file,i)=>`<option value="${i}"${i===fileIndex?' selected':''}>${esc(file.name)}</option>`).join('')}</select>`;
-    const existingSelect=`<select data-source-track="${index}" aria-label="Existing WASP track for ${esc(item.title)}"><option value="">Choose existing track</option>${[...new Map([...found,...inLibrary.filter(t=>t.id===chosen)].map(t=>[t.id,t])).values()].slice(0,30).map(t=>`<option value="${esc(t.id)}"${chosen===t.id?' selected':''}>${esc(t.title)} — ${esc(artistLine(t))}</option>`).join('')}</select>`;
-    return `<div class="spotify-manifest-row" data-source-index="${index}"><div class="spotify-manifest-title"><strong>${index+1}. ${esc(item.title)}</strong><small class="muted">${esc((item.artists||[]).join(', ')||'Artist unavailable')} · ${spotifyCollection.kind==='album'?'Track '+(item.track_no||index+1):'Playlist entry'} · <b>Missing until approved</b></small></div><div class="spotify-manifest-actions">${fileSelect}<input type="search" class="spotify-existing-search" data-source-find="${index}" placeholder="Find existing WASP track" aria-label="Find existing track for ${esc(item.title)}" maxlength="150">${existingSelect}<button type="button" class="btn ghost" data-source-action="attach" data-source-index="${index}" ${!chosen?'disabled':''}>Approve existing match</button><button type="button" class="btn ghost" data-source-action="request" data-source-index="${index}">Request missing track</button></div><small class="muted" data-source-feedback="${index}">${fileIndex>=0?'Suggested MP3; verify its identity before approving upload.':found.length?'Existing candidates found; select the correct recording.':'No candidate selected; assign a file manually or request the missing recording.'}</small></div>`;
-  }).join('')||'<p class="muted">The reference did not return a verifiable track list.</p>';
-  const missing=spotifyCollection.tracks.length-Object.keys(spotifyDraft?.matches||{}).length;
-  $('#spotifyDraftState').textContent=`${spotifyDraft?.status==='complete'?'Complete':'Pending'} · ${spotifyCollection.tracks.length-missing} approved / ${spotifyCollection.tracks.length} listed tracks · ${missing} missing${spotifyCollection.complete?'':' · partial source catalogue (not verified complete)'}`;
-  $('#spotifyVerifySource').classList.toggle('hidden',spotifyDraft?.status==='complete'||missing>0||spotifyCollection.complete);
-  const remaining=spotifyStagedFiles.map((f,i)=>({f,i})).filter(x=>!used.has(x.i));
-  $('#spotifyUnmatchedFiles').innerHTML=remaining.length?`<h3>Unrecognized files · Review before upload (${remaining.length})</h3><p class="muted">To match one to a missing entry, select that filename from the corresponding track row above. Otherwise keep it outside this collection or exclude it from this batch. Excluding never deletes your PC file or existing WASP audio.</p><div class="spotify-unassigned-list">${remaining.map(({f,i})=>`<label class="spotify-unassigned-item"><span>${esc(f.name)}</span><select data-unmatched-decision="${i}" aria-label="Disposition for ${esc(f.name)}"><option value="exclude"${spotifyUnmatchedChoice.get(i)!=='separate'?' selected':''}>Exclude (do not upload)</option><option value="separate"${spotifyUnmatchedChoice.get(i)==='separate'?' selected':''}>Keep as separate song</option></select></label>`).join('')}</div>`:'';
-  $('#spotifyUploadMatched').disabled=!spotifyStagedFiles.length;
+ const place=$('#spotifyCollectionManifest');if(!spotifyCollection||!spotifyDraft){place.innerHTML='';return;}
+ const rows=spotifyCollection.tracks||[],matches=spotifyDraft.matches||{},found=Object.keys(matches).length;
+ $('#spotifyDraftState').textContent=`${spotifyDraft.status==='complete'?'Complete':'Pending'} · ${found}/${rows.length} matched · ${rows.length-found} require review${spotifyCollection.complete?'':' · source listing may be partial'}`;
+ $('#spotifyVerifySource').classList.toggle('hidden',spotifyDraft.status==='complete'||found!==rows.length||spotifyCollection.complete);
+ place.innerHTML=rows.map((item,i)=>{
+  const assigned=matches[i],badge=assigned?`<span class="recreate-source-badge">✓ ${String(assigned).startsWith('peer:')?'HIVE peer':'Local'} match</span>`:'';
+  return `<div class="recreate-manifest-row${assigned?' is-matched':''}" data-recreate-slot="${i}">
+    <div><b>${i+1}. ${esc(item.title)}</b><small class="muted">${esc((item.artists||[]).join(', ')||'Artist unknown')} · ${spotifyCollection.kind==='album'?'Track '+(item.track_no||i+1):'Playlist entry'}</small>${badge}</div>
+    <div class="recreate-manifest-actions">${assigned?`<small class="muted">${esc(assigned)} · retained</small>`:`<input type="search" data-recreate-q="${i}" placeholder="Find existing local/HIVE song" aria-label="Search matches for ${esc(item.title)}"><button type="button" class="btn ghost" data-recreate-find="${i}">Find potential match</button><select data-recreate-choice="${i}" aria-label="Candidate match for ${esc(item.title)}"><option value="">Choose candidate</option></select><button class="btn ghost" type="button" data-recreate-approve="${i}">Confirm match</button><button class="btn ghost" type="button" data-source-action="request" data-source-index="${i}">Request individual track</button>`}
+      <span class="muted" data-source-feedback="${i}" role="status"></span></div>
+  </div>`;
+ }).join('')||'<p class="muted">No source entries could be retrieved.</p>';
 }
+let recreationRunning=false;
+async function refreshRecreationMatches(){
+ if(recreationRunning||!spotifyDraft)return;
+ recreationRunning=true;const btn=$('#recreateRefresh');btn.disabled=true;
+ const id=spotifyDraft.id,total=spotifyCollection.tracks.length;
+ try{
+  for(let offset=0;offset<total;){
+   if(!spotifyDraft||spotifyDraft.id!==id)break;
+   $('#recreateProgress').textContent=`Matching ${offset}/${total} source entries against local and synced HIVE tracks…`;
+   const r=await post('/api/admin/collection-drafts/'+id+'/automatch',{offset,limit:3});
+   const data=await r.json();if(!r.ok)throw Error(data.error||'Unable to match entries');
+   offset=data.next;spotifyDraft=data;paintSpotifyManifest();
+  }
+  $('#recreateProgress').textContent=`Finished: ${spotifyDraft?.matched||0} / ${total} matched; verify the remaining entries.`;
+ }catch(e){$('#recreateProgress').textContent='Match scan paused: '+e.message+' — matching already saved. Use Refresh HIVE matches to resume.';}
+ finally{recreationRunning=false;btn.disabled=false;void loadCollectionDraftHistory();}
+}
+$('#recreateRefresh').onclick=refreshRecreationMatches;
+async function findRecreateCandidates(slot){
+ const line=document.querySelector(`[data-recreate-slot="${slot}"]`),input=line?.querySelector(`[data-recreate-q="${slot}"]`),select=line?.querySelector(`[data-recreate-choice="${slot}"]`);
+ if(!line||!select||!spotifyDraft)return;
+ const msg=line.querySelector(`[data-source-feedback="${slot}"]`);msg.textContent='Searching local and HIVE catalogues…';
+ try{const qs=new URLSearchParams({slot:String(slot),q:input?.value.trim()||''});
+  const r=await fetch('/api/admin/collection-drafts/'+spotifyDraft.id+'/candidates?'+qs,{cache:'no-store'}),d=await r.json();
+  if(!r.ok)throw Error(d.error||'Could not search');
+  const hits=d.items||[];recreateCandidateRows.set(slot,hits);
+  select.innerHTML='<option value="">Choose matching recording</option>'+hits.map((t,i)=>`<option value="${i}">${esc(t.title)} — ${esc(t.artist)} (${t.source==='peer'?'HIVE peer':'Local'}${t.origin?' · '+esc(t.origin):''})</option>`).join('');
+  msg.textContent=hits.length?`${hits.length} candidate(s). Confirm only the correct recording.`:'No potential matches. Try different search terms or request this track.';
+ }catch(e){msg.textContent=e.message;}
+}
+$('#spotifyCollectionManifest').addEventListener('click',async e=>{
+ const find=e.target.closest('[data-recreate-find]');if(find){await findRecreateCandidates(Number(find.dataset.recreateFind));return;}
+ const approve=e.target.closest('[data-recreate-approve]');if(!approve||!spotifyDraft)return;
+ const slot=Number(approve.dataset.recreateApprove),line=approve.closest('.recreate-manifest-row'),select=line.querySelector('[data-recreate-choice]');
+ const candidate=(recreateCandidateRows.get(slot)||[])[Number(select.value)];if(!select.value||!candidate){line.querySelector('[data-source-feedback]').textContent='Select a candidate first.';return;}
+ if(!confirm(`Confirm “${candidate.title}” by ${candidate.artist} as “${spotifyCollection.tracks[slot].title}”? The audio file will not be copied or deleted.`))return;
+ approve.disabled=true;
+ try{const r=await post('/api/admin/collection-drafts/'+spotifyDraft.id+'/approve',{slot,origin:candidate.origin,id:candidate.id}),d=await r.json();if(!r.ok)throw Error(d.error||'Could not approve candidate');spotifyDraft=d;paintSpotifyManifest();void loadCollectionDraftHistory();}
+ catch(err){line.querySelector('[data-source-feedback]').textContent=err.message;}finally{approve.disabled=false;}
+});
 async function loadCollectionDraft(data){
-  const radio=document.querySelector(`input[name=mode][value="${data.source.kind}"]`);
-  if(radio&&!radio.checked){radio.checked=true;radio.dispatchEvent(new Event('change',{bubbles:true}));}
+  $('#recreateKind').value=data.source.kind;
   spotifyDraft=data;spotifyCollection=data.source;spotifyChoice.clear();spotifyExistingChoice.clear();spotifyUnmatchedChoice.clear();
-  if(spotifyCollection.kind==='album'){$('#alName').value=spotifyCollection.title;$('#alArtist').value='';}
-  if(spotifyCollection.kind==='playlist')$('#plName').value=spotifyCollection.title;
+
   $('#spotifyCollectionSelected').classList.remove('hidden');
   $('#spotifyCollectionSummary').innerHTML=`<strong>${esc(spotifyCollection.title)}</strong><small class="muted">${esc(spotifyCollection.artist||spotifyCollection.provider||'Catalogue')} · ${spotifyCollection.tracks.length} listed entries${spotifyCollection.complete?'':' (partial)'} · <a href="${esc(spotifyCollection.url)}" target="_blank" rel="noopener noreferrer">View source</a></small>`;
-  spotifyCollectionStatus(spotifyCollection.warning||'Draft saved. Matched files and existing tracks require explicit review.',!!spotifyCollection.warning);
+  spotifyCollectionStatus(spotifyCollection.warning||'Draft saved. Strict matches are automatic; ambiguous matches require review.',!!spotifyCollection.warning);
   paintSpotifyManifest();
 }
 async function spotifySearchCollection(){
-  const kind=mode(),q=$('#spotifyCollectionSearch').value.trim(),box=$('#spotifyCollectionResults'),seq=++spotifyLookupSerial;
+  const kind=recreateKind(),q=$('#spotifyCollectionSearch').value.trim(),box=$('#spotifyCollectionResults'),seq=++spotifyLookupSerial;
   if(!['album','playlist'].includes(kind)||q.length<2){box.innerHTML='';return;}
   if(/^https:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:album|playlist)\/[A-Za-z0-9]{10,40}/.test(q)&&q.includes('/'+kind+'/')){
     spotifyLookupResults=[{kind,provider:'spotify-public-embed',url:q,title:'Use this public Spotify '+kind,artist:'From the same public link reader used by WASP users'}];
@@ -782,25 +828,30 @@ $('#spotifyCollectionResults').onclick=async e=>{
   const selected=spotifyLookupResults[Number(button.dataset.spotifyIndex)];if(!selected)return;
   button.disabled=true;spotifyCollectionStatus('Creating a reviewable collection draft…');
   try{
-    let b={kind:mode(),id:selected.id||'',url:selected.provider==='spotify-public-embed'?selected.url:''};
+    let b={kind:recreateKind(),id:selected.id||'',url:selected.provider==='spotify-public-embed'?selected.url:''};
     let response=await post('/api/admin/collection-drafts',b),data=await response.json();
     if(response.status===409&&data.code==='playlist_exists'&&confirm('A playlist with this name already exists. Reuse that playlist for this draft?')){
       response=await post('/api/admin/collection-drafts',{...b,reuse_existing:true});data=await response.json();
     }
     if(!response.ok)throw Error(data.error||'Cannot create collection draft');
-    await loadCollectionDraft(data);$('#spotifyCollectionResults').innerHTML='';$('#spotifyCollectionSearch').setAttribute('aria-expanded','false');
+    await loadCollectionDraft(data);void refreshRecreationMatches();$('#spotifyCollectionResults').innerHTML='';$('#spotifyCollectionSearch').setAttribute('aria-expanded','false');
   }catch(error){spotifyCollectionStatus(error.message,true);}finally{button.disabled=false;}
 };
 async function loadCollectionDraftHistory(){
   const el=$('#spotifyDraftHistory');el.textContent='Loading saved collections…';
   try{
     const r=await fetch('/api/admin/collection-drafts',{cache:'no-store'}),data=await r.json();if(!r.ok)throw Error(data.error||'Cannot load drafts');
-    el.innerHTML=data.items?.length?data.items.map(d=>`<div class="spotify-draft-history-row"><span><b>${esc(d.title)}</b><small class="muted"> ${esc(d.kind)} · ${d.matched}/${d.source.tracks.length} matched · ${esc(d.status)}</small></span><button type="button" class="btn ghost" data-reopen-draft="${esc(d.id)}">Resume</button></div>`).join(''):'<p class="muted">No saved collection drafts yet.</p>';
+    el.innerHTML=data.items?.length?data.items.map(d=>`<div class="spotify-draft-history-row"><span><b>${esc(d.title)}</b><small class="muted"> ${esc(d.kind)} · ${d.matched}/${d.source.tracks.length} matched · ${esc(d.status)}</small></span><div class="form"><button type="button" class="btn ghost" data-reopen-draft="${esc(d.id)}">Resume</button><button type="button" class="btn ghost" data-done-draft="${esc(d.id)}">Done</button></div></div>`).join(''):'<p class="muted">No pending drafts. Finished collections and their songs remain available.</p>';
   }catch(e){el.textContent=e.message;}
 }
 $('#spotifyDraftHistoryWrap').addEventListener('toggle',e=>{if(e.target.open)loadCollectionDraftHistory();});
 $('#spotifyDraftHistoryRefresh').onclick=loadCollectionDraftHistory;
-$('#spotifyDraftHistory').addEventListener('click',async e=>{const b=e.target.closest('[data-reopen-draft]');if(!b)return;
+$('#spotifyDraftHistory').addEventListener('click',async e=>{
+ const done=e.target.closest('[data-done-draft]');if(done){
+  if(!confirm('Mark this assembly as done anyway, even if incomplete? It disappears from Pending drafts but preserves its matched music/playlist. You can search and recreate the same source later.'))return;
+  done.disabled=true;try{const r=await post('/api/admin/collection-drafts/'+done.dataset.doneDraft+'/done',{}),d=await r.json();if(!r.ok)throw Error(d.error||'Could not complete draft');if(spotifyDraft?.id===done.dataset.doneDraft)$('#spotifyCollectionClear').click();await loadCollectionDraftHistory();}catch(e){spotifyCollectionStatus(e.message,true);done.disabled=false;}return;
+ }
+ const b=e.target.closest('[data-reopen-draft]');if(!b)return;
   b.disabled=true;try{const r=await fetch('/api/admin/collection-drafts/'+encodeURIComponent(b.dataset.reopenDraft)),d=await r.json();if(!r.ok)throw Error(d.error||'Cannot reopen');await loadCollectionDraft(d);}catch(err){spotifyCollectionStatus(err.message,true);}finally{b.disabled=false;}
 });
 async function loadSpotifyAttachHistory(){
@@ -853,27 +904,13 @@ $('#spotifyCollectionManifest').addEventListener('change',e=>{
 });
 $('#spotifyUnmatchedFiles').addEventListener('change',e=>{if(e.target.matches('[data-unmatched-decision]'))spotifyUnmatchedChoice.set(Number(e.target.dataset.unmatchedDecision),e.target.value);});
 $('#spotifyCollectionManifest').addEventListener('click',async e=>{
-  const btn=e.target.closest('[data-source-action]');if(!btn||!spotifyCollection||!spotifyDraft)return;
-  const index=Number(btn.dataset.sourceIndex),item=spotifyCollection.tracks[index];if(!item)return;
-  btn.disabled=true;const feedback=$(`[data-source-feedback="${index}"]`);
-  try{
-    if(btn.dataset.sourceAction==='attach'){
-      const track_id=spotifyExistingChoice.get(index);if(!track_id)throw Error('Select a verified existing track first.');
-      if(!confirm(`Approve “${item.title}” as existing track and attach it to “${spotifyCollection.title}”?`))return;
-      const r=await post('/api/admin/collection-drafts/'+spotifyDraft.id+'/assign',{slot:index,track_id});
-      const d=await r.json();if(!r.ok)throw Error(d.error||'Could not approve match');
-      spotifyDraft=d;paintSpotifyManifest();
-      await refresh();
-      spotifyCollectionStatus('Existing song matched. The audio was not reuploaded.');
-    }else{
-      if(!confirm(`Request the missing recording “${item.title}” by ${item.artists?.join(', ')||'Unknown Artist'}?`))return;
-      const r=await post('/api/admin/collection-request-song',{title:item.title,artist:item.artists?.join(', ')||'Unknown Artist'});
-      const d=await r.json();if(!r.ok)throw Error(d.error||'Could not request track');
-      feedback.textContent=d.already_requested?'Already requested.':'Individual track request created; collection stays pending.';
-      feedback.classList.add('spotify-source-success');
-    }
-  }catch(error){if(feedback){feedback.textContent=error.message;feedback.classList.remove('spotify-source-success');}spotifyCollectionStatus(error.message,true);}
-  finally{btn.disabled=false;}
+ const btn=e.target.closest('[data-source-action="request"]');if(!btn||!spotifyCollection||!spotifyDraft)return;
+ const index=Number(btn.dataset.sourceIndex),item=spotifyCollection.tracks[index];if(!item)return;
+ if(!confirm(`Create a separate song request for “${item.title}” by ${(item.artists||[]).join(', ')}?`))return;
+ btn.disabled=true;
+ try{const r=await post('/api/admin/collection-request-song',{title:item.title,artist:item.artists?.join(', ')||'Unknown Artist'}),d=await r.json();if(!r.ok)throw Error(d.error||'Could not request track');
+  const feedback=document.querySelector(`[data-source-feedback="${index}"]`);if(feedback)feedback.textContent=d.already_requested?'Track already requested.':'Individual track request created.';
+ }catch(error){spotifyCollectionStatus(error.message,true);}finally{btn.disabled=false;}
 });
 $('#spotifyVerifySource').onclick=async()=>{
   if(!spotifyDraft||spotifyDraft.remaining)return;
@@ -1053,10 +1090,10 @@ $("#updateBios").addEventListener("click", async (e) => {
 });
 
 const drop = $("#drop");
-$("#files").addEventListener("change",async (e)=>{const files=[...e.target.files];e.target.value='';if(spotifyCollection)await stageSpotifyFiles(files);else enqueue(files);});
+$("#files").addEventListener("change",async (e)=>{const files=[...e.target.files];e.target.value='';enqueue(files);});
 ["dragenter", "dragover"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach((n) => drop.addEventListener(n, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop",async e=>{if(spotifyCollection)await stageSpotifyFiles(e.dataTransfer.files);else enqueue(e.dataTransfer.files);});
+drop.addEventListener("drop",async e=>{enqueue(e.dataTransfer.files);});
 
 // WASP v16.0.5 Mobile Bridge: managed by Network → Mobile Bridge.
 let mobileBridgeLoaded=false;
@@ -1140,15 +1177,19 @@ function paintReleaseRepository(channel){
   $('#releaseRepoLink').textContent=url.slice('https://github.com/'.length);
 }
 function showSettingsSubtab(which='general'){
-  const updates=which==='release-updates';
-  $('#settingsGeneralPanel').classList.toggle('hidden',updates);
+  const updates=which==='release-updates',rss=which==='rss';
+  $('#settingsGeneralPanel').classList.toggle('hidden',updates||rss);
   $('#settingsUpdatesPanel').classList.toggle('hidden',!updates);
-  $('#settingsTabGeneral').setAttribute('aria-selected',String(!updates));
+  $('#settingsRSSPanel').classList.toggle('hidden',!rss);
+  $('#settingsTabGeneral').setAttribute('aria-selected',String(!updates&&!rss));
   $('#settingsTabUpdates').setAttribute('aria-selected',String(updates));
+  $('#settingsTabRSS').setAttribute('aria-selected',String(rss));
   if(updates && (!lastReleaseCheck || selectedReleaseChannel()===savedReleaseChannel))void checkReleases();
+  if(rss&&!rssLoaded)void loadRSSAdmin();
 }
 $('#settingsTabGeneral').onclick=()=>{location.hash='settings';showSettingsSubtab('general');};
 $('#settingsTabUpdates').onclick=()=>{location.hash='settings/release-updates';showSettingsSubtab('release-updates');};
+$('#settingsTabRSS').onclick=()=>{location.hash='settings/rss';showSettingsSubtab('rss');};
 function paintReleaseAlert(info){
   const node=$('#adminReleaseAlert');const decision=info?.decision;
   const available=!!decision?.available&&!releaseAcknowledged(decision.key);
@@ -1252,6 +1293,60 @@ $('#releaseSave').onclick=()=>saveReleaseChannel();
 $('#releaseCheck').onclick=()=>selectedReleaseChannel()===savedReleaseChannel?checkReleases(true):saveReleaseChannel(true);
 setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden')&&selectedReleaseChannel()===savedReleaseChannel)void checkReleases();},6*60*60*1000);
 
+// -------- v18.3 RSS settings and safe previews --------
+let rssLoaded=false,rssDraft={enabled:false,position:'left',tabs:[]},rssIndex=0,rssPreviewSeq=0;
+const rssEscape=esc;
+async function loadRSSAdmin(){
+ try{const r=await fetch('/api/admin/rss',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to load RSS');
+  rssDraft={enabled:!!d.enabled,position:d.position||'left',tabs:d.tabs||[]};rssLoaded=true;rssIndex=0;paintRSSAdmin();void loadRSSPreview();
+ }catch(e){$('#rssSaveMsg').textContent=e.message;}
+}
+function rssTabPreview(){return `<div class="rss-tab-bar" data-position="${rssDraft.position}">${rssDraft.tabs.map((t,i)=>`<button type="button" class="rss-tab-button" data-rss-focus="${i}" aria-selected="${i===rssIndex}">${rssEscape(t.title||'Untitled')}</button>`).join('')}</div>`;}
+function paintRSSAdmin(){
+ $('#rssEnabled').checked=rssDraft.enabled;
+ $('#rssEnabledStatus').textContent=rssDraft.enabled?'ON (pending Save)':'OFF — saved feeds retained';
+ document.querySelectorAll('[data-rss-position]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.rssPosition===rssDraft.position)));
+ $('#rssLayoutPreview').innerHTML=rssTabPreview()+`<p class="muted">${rssDraft.enabled?'RSS will appear below Playlists when saved.':'RSS is currently disabled; preview remains available to admins.'}</p>`;
+ $('#rssTabsEditor').innerHTML=rssDraft.tabs.map((t,i)=>`<div class="rss-admin-tab${rssIndex===i?' is-selected':''}" data-rss-tab="${i}">
+   <div class="rss-admin-tab-head"><button type="button" class="btn ghost" data-rss-focus="${i}">${rssEscape(t.title||'RSS Tab '+(i+1))}</button><button type="button" class="btn ghost" data-rss-delete="${i}" title="Remove this saved RSS tab">Remove</button></div>
+   ${rssIndex===i?`<label>Title</label><input data-rss-title="${i}" maxlength="70" value="${rssEscape(t.title)}"><label>Public HTTPS feed URL or static embed code</label><textarea data-rss-code="${i}" rows="5" maxlength="12000" placeholder="https://example.org/rss.xml">${rssEscape(t.code)}</textarea><button class="btn ghost" type="button" data-rss-expand="${i}">Expand editor</button>`:''}</div>`).join('');
+ $('#rssContentTitle').textContent='Content preview — '+(rssDraft.tabs[rssIndex]?.title||'Select a tab');
+ const t=rssDraft.tabs[rssIndex];$('#rssContentPreview').textContent=t?(t.kind==='embed'?'Static embed preview — scripts are disabled.':'Enter or paste a feed URL to preview current items.'):'Add a tab to preview its content.';
+}
+$('#rssEnabled').onchange=e=>{rssDraft.enabled=e.target.checked;paintRSSAdmin();};
+$('#rssPositionControls').onclick=e=>{const b=e.target.closest('[data-rss-position]');if(!b)return;rssDraft.position=b.dataset.rssPosition;paintRSSAdmin();};
+function rssFocus(i){rssIndex=i;paintRSSAdmin();void loadRSSPreview();}
+$('#settingsRSSPanel').addEventListener('click',e=>{
+ const focus=e.target.closest('[data-rss-focus]'),remove=e.target.closest('[data-rss-delete]'),expand=e.target.closest('[data-rss-expand]');
+ if(focus){rssFocus(Number(focus.dataset.rssFocus));return;}
+ if(remove){if(!confirm('Remove this RSS tab? This action is saved only after Save changes.'))return;rssDraft.tabs.splice(Number(remove.dataset.rssDelete),1);rssIndex=Math.max(0,Math.min(rssIndex,rssDraft.tabs.length-1));paintRSSAdmin();return;}
+ if(expand){const textarea=document.querySelector(`[data-rss-code="${expand.dataset.rssExpand}"]`);if(textarea){textarea.rows=textarea.rows===5?17:5;textarea.focus();}}
+});
+let rssPreviewDelay;
+$('#rssTabsEditor').addEventListener('input',e=>{
+ if(e.target.matches('[data-rss-title]')){rssDraft.tabs[Number(e.target.dataset.rssTitle)].title=e.target.value;$('#rssLayoutPreview').innerHTML=rssTabPreview();$('#rssContentTitle').textContent='Content preview — '+e.target.value;}
+ if(e.target.matches('[data-rss-code]')){const t=rssDraft.tabs[Number(e.target.dataset.rssCode)];t.code=e.target.value;t.kind=t.code.trim().startsWith('<')?'embed':'feed';clearTimeout(rssPreviewDelay);rssPreviewDelay=setTimeout(loadRSSPreview,650);}
+});
+$('#rssAddTab').onclick=()=>{rssDraft.tabs.push({id:'',title:'RSS Tab '+(rssDraft.tabs.length+1),code:'',kind:'feed'});rssFocus(rssDraft.tabs.length-1);};
+$('#rssReset').onclick=()=>loadRSSAdmin();
+$('#rssSave').onclick=async()=>{
+ const button=$('#rssSave');button.disabled=true;$('#rssSaveMsg').textContent='Saving RSS settings…';
+ try{const r=await post('/api/admin/rss',rssDraft,'PUT'),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to save RSS');rssDraft=d;rssLoaded=true;paintRSSAdmin();$('#rssSaveMsg').textContent='Saved. '+(rssDraft.enabled?'RSS is visible below Playlists.':'RSS is OFF; saved entries are preserved.');}
+ catch(e){$('#rssSaveMsg').textContent=e.message;}finally{button.disabled=false;}
+};
+async function loadRSSPreview(){
+ const t=rssDraft.tabs[rssIndex],node=$('#rssContentPreview'),serial=++rssPreviewSeq;if(!t)return;
+ if(t.code.trim().startsWith('<')){
+  node.textContent='Static embed (sandboxed, no JavaScript).';
+  if(/<script\b|on\w+\s*=|javascript\s*:/i.test(t.code)){node.textContent='Active scripts are not permitted in RSS embeds.';return;}
+  const iframe=document.createElement('iframe');iframe.className='rss-embed-preview';iframe.setAttribute('sandbox','');iframe.setAttribute('referrerpolicy','no-referrer');iframe.srcdoc=t.code;node.replaceChildren(iframe);return;
+ }
+ if(!/^https:\/\//i.test(t.code.trim())){node.textContent='Enter a public HTTPS RSS or Atom URL.';return;}
+ node.textContent='Loading feed preview…';
+ try{const r=await post('/api/admin/rss/preview',{title:t.title,code:t.code}),d=await r.json();if(serial!==rssPreviewSeq)return;if(!r.ok)throw Error(d.error||'Preview unavailable');
+  node.innerHTML=(d.items||[]).map(item=>`<div class="rss-feed-item"><div><b>${rssEscape(item.title)}</b><p class="muted">${rssEscape(item.description||'')}</p></div></div>`).join('')||'<p class="muted">No items returned from feed.</p>';
+ }catch(e){if(serial===rssPreviewSeq)node.textContent='Preview unavailable: '+e.message;}
+}
 // ---------- general settings: branding + advertising ----------
 let site = null;
 function paintFavicon() {

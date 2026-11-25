@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.2.2b">
+<link rel="stylesheet" href="/style.css?v=18.3.0">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -94,7 +94,11 @@
     <!-- Add music -->
     <section class="pane hidden" id="s-add">
       <h1>Add music</h1>
-      <div class="card">
+      <div class="tabs sub" role="tablist" aria-label="Add music workflow">
+        <button type="button" class="tab" id="addTabUpload" role="tab" aria-selected="true" aria-controls="addUploadPanel">Upload music</button>
+        <button type="button" class="tab" id="addTabRecreate" role="tab" aria-selected="false" aria-controls="addRecreatePanel">Recreate playlist / album</button>
+      </div>
+      <div class="card" id="addUploadPanel" role="tabpanel" aria-labelledby="addTabUpload">
         <fieldset><legend class="muted">Upload as</legend>
           <label><input type="radio" name="mode" value="singles" checked> Singles</label>
           <label><input type="radio" name="mode" value="playlist"> Playlist</label>
@@ -110,19 +114,33 @@
           <label for="alName" class="muted">Album</label><input id="alName" type="text" maxlength="200" placeholder="From tags if blank">
           <label for="alArtist" class="muted">Artist</label><input id="alArtist" type="text" maxlength="200" placeholder="From tags if blank">
         </div>
-        <section id="spotifyCollectionTools" class="spotify-collection-tools hidden" aria-label="Spotify collection guide">
+
+        <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
+        <p class="msg err" id="upMsg" role="alert"></p>
+        <div class="batch hidden" id="batch" aria-live="polite">
+          <div class="form" style="justify-content:space-between;margin-bottom:8px"><strong id="batchText"></strong><span class="muted" id="batchSub"></span></div>
+          <div class="bar big" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchBarWrap"><i id="batchBar"></i></div>
+          <p class="muted" id="batchSummary" style="margin:8px 0 0"></p>
+        </div>
+        <div id="queue"></div>
+      </div>
+      <div id="addRecreatePanel" class="card hidden" role="tabpanel" aria-labelledby="addTabRecreate">
+        <p class="muted">Reconstruct an album or playlist from existing music. This does not upload audio. The Upload music tab retains Singles / Playlist / Album uploads.</p>
+        <section id="spotifyCollectionTools" class="spotify-collection-tools" aria-label="Recreate playlist or album">
           <h2>Find an album or recreate a playlist</h2>
-          <p class="muted">Search as you type, just like user album requests (public Deezer catalogue; no Spotify credentials). For a specific public Spotify playlist, paste its link to use the same playlist recreation reader as users. Only metadata is retrieved; audio always comes from your own uploads.</p>
+          <p class="muted">Search as you type, just like user album requests. Select a release or paste a public Spotify playlist link. WASP checks its own songs and synced HIVE peers without uploading or downloading MP3s.</p>
+          <div class="form" style="gap:8px;margin-bottom:8px"><label for="recreateKind" class="muted">Recreate</label><select id="recreateKind"><option value="album">Album</option><option value="playlist">Playlist</option></select></div>
           <div class="form" style="gap:8px"><label class="hidden" for="spotifyCollectionSearch">Album or playlist reference search</label><input id="spotifyCollectionSearch" type="search" maxlength="220" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="spotifyCollectionResults" aria-expanded="false" placeholder="Search album / playlist name or paste Spotify playlist URL" style="flex:1;min-width:170px"><button type="button" class="btn ghost" id="spotifyCollectionSearchButton">Search</button></div>
           <p class="msg" id="spotifyCollectionStatus" role="status" aria-live="polite"></p>
           <div id="spotifyCollectionResults" class="spotify-collection-results" role="listbox" aria-label="Matching album or playlist references"></div>
           <div id="spotifyCollectionSelected" class="hidden">
             <div id="spotifyCollectionSummary" class="spotify-collection-summary"></div>
-            <p class="muted">Choose MP3s below, then review every track-to-entry assignment. Unrecognized files can be matched manually, kept as separate songs, or excluded from this upload. No existing library audio will be deleted.</p>
+            <p class="muted">Matches are found automatically from this server and synchronized HIVE peers. For uncertain or missing entries, manually search like Admin → Requests. No MP3 upload is needed; no existing audio is deleted.</p>
+            <div class="form" style="margin:12px 0;gap:10px;flex-wrap:wrap"><button type="button" class="btn" id="recreateRefresh">Refresh HIVE matches</button><span id="recreateProgress" class="muted" role="status"></span></div>
             <p class="spotify-draft-state" id="spotifyDraftState" role="status"></p><button type="button" id="spotifyVerifySource" class="btn ghost hidden" style="margin-bottom:12px">I verified all source entries · Finish collection</button><div id="spotifyCollectionManifest" class="spotify-collection-manifest"></div>
-            <section id="spotifyUnmatchedFiles" aria-label="Unmatched upload review"></section>
+            <section id="spotifyUnmatchedFiles" class="hidden" aria-label="Unmatched upload review"></section>
             <div class="form" style="margin-top:12px;gap:9px;flex-wrap:wrap">
-              <button type="button" class="btn" id="spotifyUploadMatched" disabled>Review and upload approved MP3s</button>
+              <button type="button" class="btn hidden" id="spotifyUploadMatched" disabled>Review and upload approved MP3s</button>
               <button type="button" class="btn ghost" id="spotifyCollectionClear">Close this draft</button>
             </div>
           </div>
@@ -133,14 +151,6 @@
             <button type="button" class="btn ghost" id="spotifyAttachmentHistoryRefresh">Refresh history</button>
           </details>
         </section>
-        <label class="drop" id="drop" for="files" style="display:block">Drop .mp3 files here, or click to choose<input id="files" type="file" accept=".mp3,audio/mpeg" multiple class="hidden"></label>
-        <p class="msg err" id="upMsg" role="alert"></p>
-        <div class="batch hidden" id="batch" aria-live="polite">
-          <div class="form" style="justify-content:space-between;margin-bottom:8px"><strong id="batchText"></strong><span class="muted" id="batchSub"></span></div>
-          <div class="bar big" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchBarWrap"><i id="batchBar"></i></div>
-          <p class="muted" id="batchSummary" style="margin:8px 0 0"></p>
-        </div>
-        <div id="queue"></div>
       </div>
     </section>
 
@@ -210,6 +220,7 @@
       <div class="tabs sub" role="tablist" aria-label="General settings sections">
         <button class="tab" id="settingsTabGeneral" type="button" role="tab" aria-controls="settingsGeneralPanel" aria-selected="true">General</button>
         <button class="tab" id="settingsTabUpdates" type="button" role="tab" aria-controls="settingsUpdatesPanel" aria-selected="false">Release Updates</button>
+        <button class="tab" id="settingsTabRSS" type="button" role="tab" aria-controls="settingsRSSPanel" aria-selected="false">RSS</button>
       </div>
       <div id="settingsGeneralPanel" role="tabpanel" aria-labelledby="settingsTabGeneral">
       <div class="card">
@@ -295,6 +306,34 @@
           </div>
           <div class="release-update-result" id="releaseResult" role="status">Checking GitHub…</div>
           <p class="muted" style="font-size:12px">Checks are cached server-side for up to six hours. When an installed commit ID is unavailable, the first observed commit is used as a baseline; later commits generate alerts. A GitHub commit does not prove your deployment has changed. For accurate deployed-commit detection, build with a Git SHA or configure WASP_BUILD_SHA. See the release notes for limitations.</p>
+        </div>
+      </div>
+      <div id="settingsRSSPanel" class="hidden" role="tabpanel" aria-labelledby="settingsTabRSS">
+        <div class="card rss-admin-main">
+          <h2>RSS on Home</h2>
+          <label class="rss-toggle-label"><input type="checkbox" id="rssEnabled"> <strong>Enable RSS on Home</strong> <span id="rssEnabledStatus" class="muted">OFF by default</span></label>
+          <p class="muted">When disabled, nothing appears below Playlists on Home. Your saved RSS tabs and entries remain untouched.</p>
+          <div class="rss-settings-grid">
+            <div><h3>RSS tab position</h3><p class="muted">Choose the alignment of your tabs.</p>
+              <div id="rssPositionControls" class="tabs rss-alignment" role="group" aria-label="RSS tab position">
+                <button type="button" class="tab" data-rss-position="left">Left</button>
+                <button type="button" class="tab" data-rss-position="center">Center</button>
+                <button type="button" class="tab" data-rss-position="right">Right</button>
+              </div>
+              <button class="btn" type="button" id="rssSave" style="margin-top:16px">Save RSS settings and tabs</button>
+              <button class="btn ghost" type="button" id="rssReset">Discard unsaved changes</button>
+              <p id="rssSaveMsg" class="msg" role="status"></p>
+            </div>
+            <div><h3>Live Home preview</h3><p class="muted">Preview updates as you edit, before saving.</p><div id="rssLayoutPreview" class="rss-layout-preview"></div></div>
+          </div>
+        </div>
+        <div class="card rss-admin-editor">
+          <h2>RSS Tab Editor</h2>
+          <p class="muted">Add as many tabs as you need. Each accepts a public HTTPS RSS/Atom feed URL or a restricted static embed. JavaScript is not executed.</p>
+          <div class="rss-editor-grid">
+            <div><div id="rssTabsEditor" class="rss-tabs-editor"></div><button type="button" class="btn ghost" id="rssAddTab">＋ Add new tab</button></div>
+            <div><h3 id="rssContentTitle">Content preview</h3><p class="muted">This preview is isolated from the music player.</p><div id="rssContentPreview" class="rss-content-preview"></div></div>
+          </div>
         </div>
       </div>
     </section>
@@ -656,6 +695,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.2.2b"></script>
+<script type="module" src="/admin.js?v=18.3.0"></script>
 </body>
 </html>

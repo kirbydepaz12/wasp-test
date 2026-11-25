@@ -11,13 +11,15 @@ import {syncFederatedFromGateway, ensureFederationSchema} from "./mobile-federat
 import {extractEmbeddedArt, MAX_ID3_ART_READ, MAX_EMBEDDED_IMAGE} from "./embedded-art.js";
 import {RELEASE_SOURCES,fetchUpstream,releaseDecision} from "./release-updates.js";
 import {BUILD_COMMIT} from "./build-commit.js";
+import {safeFeedUrl,feedTab,fetchFeed} from './rss-feeds.js';
+import {autoRecreateMatch,recreateCandidates} from './collection-recreate.js';
 import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.2.2b";
-const BUILD_LABEL = "Home Albums Carousel";
+const BUILD_VERSION = "18.3.0";
+const BUILD_LABEL = "HIVE Recreate + RSS";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -56,6 +58,7 @@ const PUBLIC_CACHE_TTLS = Object.freeze({
   "/api/playlists": 45,
   "/api/user-playlists": 45,
   "/api/site": 120,
+  "/api/rss": 120,
   "/api/entity-reactions": 5,
   "/api/track-reaction-counts": 5,
   "/api/recent-listens": 10,
@@ -95,6 +98,7 @@ function invalidatePublicCache(req,url,res,ctx) {
   if(path.startsWith("/api/admin/playlists") || path === "/api/admin/clean") paths.add("/api/playlists");
   if(path.startsWith("/api/user/playlists") || path === "/api/admin/clean") paths.add("/api/user-playlists");
   if(path === "/api/admin/settings" || path === "/api/admin/favicon" || path === "/api/admin/brand-image") paths.add("/api/site");
+  if(path === "/api/admin/rss") {paths.add("/api/rss");paths.add("/api/site");}
   if(path === "/api/admin/network") {
     for(const p of Object.keys(PUBLIC_CACHE_TTLS)) paths.add(p);
   }
@@ -500,6 +504,7 @@ async function siteSettings(DB) {
     brand_v: Number(s.brand_v) || 0,
     sidebar: {enabled:s.sidebar_enabled==="1",bbcode:Object.prototype.hasOwnProperty.call(s,"sidebar_bbcode")?s.sidebar_bbcode:null,html:s.sidebar_html||""},
     ad: { enabled: s.ad_enabled === "1", html: s.ad_html || "", height: Number(s.ad_height) || 340 },
+    rss: {enabled:s.rss_enabled==='1',position:['left','center','right'].includes(s.rss_position)?s.rss_position:'left'},
   };
 }
 async function serveFavicon(env) {
@@ -513,6 +518,71 @@ async function serveFavicon(env) {
   return new Response(obj.body, { headers: h });
 }
 
+// v18.3 RSS. Feed bodies are cached for ten minutes; listener requests do not
+// fetch external feeds in the render path or execute publisher HTML.
+const rssReady=new WeakSet();
+async function ensureRss(DB){
+  if(rssReady.has(DB))return;
+  await DB.prepare(`CREATE TABLE IF NOT EXISTS rss_tabs(id TEXT PRIMARY KEY,title TEXT NOT NULL,code TEXT NOT NULL,kind TEXT NOT NULL,position INTEGER NOT NULL,created_at INTEGER NOT NULL)`).run();
+  await DB.prepare(`CREATE TABLE IF NOT EXISTS rss_feed_cache(tab_id TEXT PRIMARY KEY,body TEXT NOT NULL,fetched_at INTEGER NOT NULL)`).run();
+  rssReady.add(DB);
+}
+async function rssConfig(DB,includeCode=false){
+  await ensureRss(DB);
+  const [enabled,position,rows]=await Promise.all([
+    DB.prepare("SELECT value FROM settings WHERE key='rss_enabled'").first(),
+    DB.prepare("SELECT value FROM settings WHERE key='rss_position'").first(),
+    DB.prepare('SELECT id,title,code,kind,position FROM rss_tabs ORDER BY position,id').all()]);
+  return {enabled:enabled?.value==='1',position:['left','center','right'].includes(position?.value)?position.value:'left',
+    tabs:rows.results.map(t=>includeCode?t:{id:t.id,title:t.title,kind:t.kind,position:t.position,...(t.kind==='embed'?{code:t.code}:{})})};
+}
+async function rssApi(req,DB,path,m){
+  if(path==='/api/rss'&&m==='GET'){
+    const config=await rssConfig(DB,false);
+    return json(config.enabled?config:{enabled:false,position:config.position,tabs:[]},200,{'cache-control':'public, max-age=60'});
+  }
+  const match=path.match(/^\/api\/rss\/feed\/([a-f0-9-]{36})$/);
+  if(!match||m!=='GET')return json({error:'Not found.'},404);
+  await ensureRss(DB);
+  const config=await rssConfig(DB,false);if(!config.enabled)return json({error:'RSS is disabled.'},404);
+  const tab=await DB.prepare('SELECT id,code,kind FROM rss_tabs WHERE id=?').bind(match[1]).first();
+  if(!tab)return json({error:'Feed not found.'},404);
+  if(tab.kind==='embed')return json({kind:'embed',items:[]},200,{'cache-control':'public, max-age=120'});
+  const cached=await DB.prepare('SELECT body,fetched_at FROM rss_feed_cache WHERE tab_id=?').bind(tab.id).first();
+  if(cached&&Date.now()-cached.fetched_at<600000)return json({kind:'feed',...(JSON.parse(cached.body))},200,{'cache-control':'public, max-age=60'});
+  try{
+    const feed=await fetchFeed(tab.code);
+    await DB.prepare(`INSERT INTO rss_feed_cache(tab_id,body,fetched_at) VALUES(?,?,?) ON CONFLICT(tab_id) DO UPDATE SET body=excluded.body,fetched_at=excluded.fetched_at`)
+      .bind(tab.id,JSON.stringify(feed),Date.now()).run();
+    return json({kind:'feed',...feed},200,{'cache-control':'public, max-age=60'});
+  }catch(e){
+    if(cached)return json({kind:'feed',...JSON.parse(cached.body),stale:true},200,{'cache-control':'public, max-age=30'});
+    return json({error:'RSS feed temporarily unavailable: '+String(e.message).slice(0,160)},502);
+  }
+}
+async function rssAdminApi(req,DB,m){
+  await ensureRss(DB);
+  if(m==='GET')return json(await rssConfig(DB,true));
+  if(m!=='PUT')return json({error:'Method not allowed'},405);
+  const b=await req.json().catch(()=>null);
+  if(!b||typeof b.enabled!=='boolean'||!['left','center','right'].includes(b.position)||!Array.isArray(b.tabs))return json({error:'Invalid RSS settings.'},400);
+  if(JSON.stringify(b).length>200000)return json({error:'RSS settings exceed 200 KB.'},413);
+  let rows=[];
+  try{rows=b.tabs.map((input,i)=>({id:/^[a-f0-9-]{36}$/.test(String(input.id||''))?input.id:crypto.randomUUID(),...feedTab(input,i),position:i}));}
+  catch(e){return json({error:e.message},400)}
+  const ids=new Set(rows.map(r=>r.id));if(ids.size!==rows.length)return json({error:'Duplicate RSS tab IDs.'},400);
+  const original=(await DB.prepare('SELECT id FROM rss_tabs').all()).results;
+  const stmts=[DB.prepare("INSERT INTO settings(key,value) VALUES('rss_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.enabled?'1':'0'),
+    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_position',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.position)];
+  for(const r of rows)stmts.push(DB.prepare('INSERT INTO rss_tabs(id,title,code,kind,position,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,code=excluded.code,kind=excluded.kind,position=excluded.position')
+     .bind(r.id,r.title,r.code,r.kind,r.position,Date.now()));
+  for(const old of original)if(!ids.has(old.id)){stmts.push(DB.prepare('DELETE FROM rss_tabs WHERE id=?').bind(old.id));stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(old.id));}
+  // Invalidate only changed feeds; disabling RSS never deletes feed entries.
+  const previous=(await DB.prepare('SELECT id,code FROM rss_tabs').all()).results;
+  for(const r of rows)if(previous.find(x=>x.id===r.id)?.code!==r.code)stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(r.id));
+  for(let i=0;i<stmts.length;i+=50)await DB.batch(stmts.slice(i,i+50));
+  return json(await rssConfig(DB,true));
+}
 // ---------- artists ----------
 // A song can have several artists ("The Interrupters, Rancid"). They are split on ; / , feat. ft. featuring vs,
 // except for the names below, which really contain those characters. Add your own to KEEP if a name gets split wrongly
@@ -1251,6 +1321,29 @@ async function publicCollectionResolve(kind,{id='',url=''}={}){
     url:`https://www.deezer.com/${kind}/${id}`,image:safeImage(d.cover_medium||d.picture_medium),
     tracks,source_total:advertised,complete,warning:complete?'':'The catalogue is partial; unknown entries are not treated as missing.'};
 }
+async function assignRecreationTrack(DB,row,items,slot,ref,isPeer){
+  if(row.kind==='album'){
+    const album=clean(row.title,200),no=Number(items[slot].track_no)||slot+1;
+    if(isPeer){
+      await DB.prepare(`CREATE TABLE IF NOT EXISTS recreated_album_peer_tracks(album TEXT NOT NULL,track_ref TEXT NOT NULL,track_no INTEGER NOT NULL,source_url TEXT NOT NULL,PRIMARY KEY(album,track_ref))`).run();
+      await DB.prepare('INSERT OR REPLACE INTO recreated_album_peer_tracks(album,track_ref,track_no,source_url) VALUES(?,?,?,?)').bind(album,ref,no,row.source_url).run();
+    }else{
+      const track=await DB.prepare('SELECT album,track_no FROM tracks WHERE id=?').bind(ref).first();
+      if(track&&(track.album!==album||Number(track.track_no)!==no)){
+        await ensureAlbumAttachHistory(DB);
+        await DB.batch([DB.prepare('INSERT INTO album_attach_history(id,track_id,old_album,old_track_no,new_album,at) VALUES(?,?,?,?,?,?)')
+         .bind(crypto.randomUUID(),ref,track.album||'',Number(track.track_no)||0,album,Date.now()),
+         DB.prepare('UPDATE tracks SET album=?,track_no=? WHERE id=?').bind(album,no,ref)]);
+        await touchCatalogue(DB);
+      }
+    }
+  }else{
+    const exists=await DB.prepare('SELECT id FROM playlists WHERE id=?').bind(row.playlist_id).first();
+    if(!exists)throw Error('Recreated playlist was removed.');
+    await DB.prepare('INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)').bind(row.playlist_id,ref,Number(row.created_at)+slot).run();
+    await touchCatalogue(DB);
+  }
+}
 const collectionDraftReady=new WeakSet();
 async function ensureCollectionDraftSchema(DB){
   if(collectionDraftReady.has(DB))return;
@@ -1259,6 +1352,7 @@ async function ensureCollectionDraftSchema(DB){
     source_json TEXT NOT NULL,matches_json TEXT NOT NULL DEFAULT '{}',
     playlist_id TEXT NOT NULL DEFAULT '',verified_complete INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)`).run();
   try{await DB.prepare('ALTER TABLE admin_collection_drafts ADD COLUMN verified_complete INTEGER NOT NULL DEFAULT 0').run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}
+  try{await DB.prepare('ALTER TABLE admin_collection_drafts ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0').run();}catch(e){if(!/duplicate column/i.test(String(e.message)))throw e;}
   await DB.prepare('CREATE INDEX IF NOT EXISTS idx_admin_collection_drafts_updated ON admin_collection_drafts(updated_at)').run();
   collectionDraftReady.add(DB);
 }
@@ -1266,7 +1360,8 @@ function collectionDraftView(row){
   const source=JSON.parse(row.source_json),matches=JSON.parse(row.matches_json||'{}');
   const total=source.tracks?.length||0,matched=Object.keys(matches).filter(i=>matches[i]).length;
   return {id:row.id,kind:row.kind,title:row.title,source,matched,remaining:total-matched,matches,
-    status:(source.complete||row.verified_complete)&&matched===total&&total>0?'complete':'pending',playlist_id:row.playlist_id||'',
+    status:Number(row.archived_at)>0?'done':(source.complete||row.verified_complete)&&matched===total&&total>0?'complete':'pending',playlist_id:row.playlist_id||'',
+    archived_at:Number(row.archived_at)||0,
     created_at:row.created_at,updated_at:row.updated_at};
 }
 const spotifyCollectionRequestReady=new WeakSet();
@@ -1998,6 +2093,7 @@ async function api(req, env, url, ctx) {
   const m = req.method;
   const DB = env.DB;
   let x;
+  if(path==='/api/rss'||path.startsWith('/api/rss/feed/'))return rssApi(req,DB,path,m);
   // v18.1.2 — administrator-only process monitor and audit history.
   if(path.startsWith('/api/admin/processes')){
     const info=await sessionInfo(req,env);
@@ -2373,6 +2469,14 @@ async function api(req, env, url, ctx) {
       ON CONFLICT(key) DO UPDATE SET body=excluded.body,expires_at=excluded.expires_at`)
       .bind(key,JSON.stringify(rows),now+300000).run();
     return json(rows,200,{'cache-control':'public, max-age=180'});
+  }
+  if(path==='/api/recreated-album-tracks'&&m==='GET'){
+    const exists=await DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='recreated_album_peer_tracks'").first();
+    if(!exists)return json([]);
+    const rows=(await DB.prepare(`SELECT a.album,a.track_no,r.ref,r.origin,r.remote_id,r.title,r.artist,r.duration,r.cover_url
+      FROM recreated_album_peer_tracks a JOIN peer_track_refs r ON r.ref=a.track_ref ORDER BY a.album,a.track_no`).all()).results;
+    return json(rows.map(r=>({id:r.ref,remote_id:r.remote_id,origin:r.origin,title:r.title,artist:r.artist,
+      artists:r.artist,album:r.album,track_no:r.track_no,duration:r.duration,cover_url:r.cover_url,recreated:true})));
   }
   if (path === "/api/tracks" && m === "GET") {
     // Provide verified file/HIVE metadata with the catalogue so the browser can
@@ -3209,6 +3313,12 @@ async function api(req, env, url, ctx) {
   // ---------- admin only ----------
   const sid = auth?.token;
   if (!sid || auth.role !== "admin") return json({ error: "Admin access required." }, 403);
+  if(path==='/api/admin/rss')return rssAdminApi(req,DB,m);
+  if(path==='/api/admin/rss/preview'&&m==='POST'){
+    const body=await req.json().catch(()=>null);
+    try{const t=feedTab(body,0);if(t.kind==='embed')return json({kind:'embed',items:[]});
+      return json({kind:'feed',...await fetchFeed(t.code)});}catch(error){return json({error:error.message},400);}
+  }
   // v18.2.1: All catalogue lookups and retagging actions are administrator-only.
   // v18.2.2: reviewable admin collection assembly; no Spotify API credentials.
   if(path==='/api/admin/collection-guide/search'&&m==='GET'){
@@ -3224,7 +3334,7 @@ async function api(req, env, url, ctx) {
   if(path==='/api/admin/collection-drafts'){
     await ensureCollectionDraftSchema(DB);
     if(m==='GET'){
-      const rows=(await DB.prepare('SELECT * FROM admin_collection_drafts ORDER BY updated_at DESC LIMIT 35').all()).results;
+      const rows=(await DB.prepare('SELECT * FROM admin_collection_drafts WHERE archived_at=0 ORDER BY updated_at DESC LIMIT 100').all()).results;
       return json({items:rows.map(collectionDraftView)});
     }
     if(m==='POST'){
@@ -3234,7 +3344,7 @@ async function api(req, env, url, ctx) {
       catch(e){return json({error:e.message},502);}
       if(!source.tracks?.length)return json({error:'No verified song entries were returned.'},409);
       // Reopening the same source uses its existing durable draft and playlist.
-      const prior=await DB.prepare('SELECT * FROM admin_collection_drafts WHERE source_url=? AND kind=? ORDER BY updated_at DESC LIMIT 1').bind(source.url,b.kind).first();
+      const prior=await DB.prepare('SELECT * FROM admin_collection_drafts WHERE source_url=? AND kind=? AND archived_at=0 ORDER BY updated_at DESC LIMIT 1').bind(source.url,b.kind).first();
       if(prior)return json(collectionDraftView(prior));
       let pid='';
       if(b.kind==='playlist'){
@@ -3250,11 +3360,67 @@ async function api(req, env, url, ctx) {
     }
     return json({error:'Method not allowed'},405);
   }
-  if((x=path.match(/^\/api\/admin\/collection-drafts\/([a-f0-9-]{36})(?:\/(assign|verify))?$/))){
+  if((x=path.match(/^\/api\/admin\/collection-drafts\/([a-f0-9-]{36})(?:\/(assign|verify|done|automatch|candidates|approve))?$/))){
     await ensureCollectionDraftSchema(DB);
     const row=await DB.prepare('SELECT * FROM admin_collection_drafts WHERE id=?').bind(x[1]).first();
     if(!row)return json({error:'Draft not found.'},404);
     if(m==='GET'&&!x[2])return json(collectionDraftView(row));
+    if(m==='POST'&&x[2]==='done'){
+      if(row.archived_at)return json({ok:true,archived:true});
+      await DB.prepare('UPDATE admin_collection_drafts SET archived_at=?,updated_at=? WHERE id=?').bind(Date.now(),Date.now(),row.id).run();
+      return json({ok:true,archived:true,preserved_audio:true,preserved_playlist:true});
+    }
+    if(row.archived_at)return json({error:'This draft is completed. Search the collection again to recreate it.'},409);
+    if((m==='POST'&&x[2]==='automatch')||(m==='GET'&&x[2]==='candidates')){
+      const source=JSON.parse(row.source_json),items=source.tracks||[],body=m==='POST'?await req.json().catch(()=>({})):{};
+      const slot=m==='GET'?Number(url.searchParams.get('slot')):0;
+      if(m==='GET'&&(!Number.isSafeInteger(slot)||slot<0||slot>=items.length))return json({error:'Invalid source entry.'},400);
+      const offset=Math.min(items.length,Math.max(0,Number(body?.offset)||0));
+      const batchSize=Math.max(1,Math.min(5,Number(body?.limit)||3));
+      // Use the same synced local/peer catalogue as the request matcher.
+      const catalogue=await spotifyImportCatalogue(DB);
+      if(m==='GET'){
+        const q=clean(url.searchParams.get('q')||'',120).toLowerCase().trim();
+        if(!q)return json({items:recreateCandidates(items[slot],catalogue.local,catalogue.remote)});
+        const hits=[...catalogue.local,...catalogue.remote].filter(t=>(String(t.title||'')+' '+String(t.artist||'')).toLowerCase().includes(q)).slice(0,40);
+        return json({items:hits.map(t=>({id:String(t.remote_id||t.id),origin:t.origin||'',source:t.origin?'peer':'local',title:t.title,artist:t.artist||'',duration:t.duration||0}))});
+      }
+      const matches=JSON.parse(row.matches_json||'{}'),review=[];
+      for(let i=offset;i<Math.min(items.length,offset+batchSize);i++){
+        if(matches[i])continue;
+        const result=autoRecreateMatch(items[i],catalogue.local,catalogue.remote);
+        if(!result.match){review.push({slot:i,status:result.ambiguous?'ambiguous':'missing',candidates:result.candidates.slice(0,4)});continue;}
+        const hit=result.match;
+        const ref=hit.source==='peer'?'peer:'+await sha256(hit.origin+'\n'+hit.id):hit.id;
+        const previous=Object.values(matches);
+        if(previous.includes(ref)){review.push({slot:i,status:'ambiguous',reason:'Track already used in draft'});continue;}
+        if(hit.source==='peer'){
+          await DB.prepare('INSERT OR IGNORE INTO peer_track_refs(ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)')
+            .bind(ref,hit.origin,hit.id,hit.title,hit.artist,'',hit.duration||0,'').run();
+        }
+        await assignRecreationTrack(DB,row,items,i,ref,hit.source==='peer');
+        matches[i]=ref;review.push({slot:i,status:hit.source==='peer'?'matched_peer':'matched_local',ref});
+      }
+      await DB.prepare('UPDATE admin_collection_drafts SET matches_json=?,updated_at=? WHERE id=?').bind(JSON.stringify(matches),Date.now(),row.id).run();
+      const next=Math.min(items.length,offset+batchSize);
+      return json({next,complete:next>=items.length,review,...collectionDraftView({...row,matches_json:JSON.stringify(matches)})});
+    }
+    if(m==='POST'&&x[2]==='approve'){
+      const b=await req.json().catch(()=>null),slot=Number(b?.slot),origin=String(b?.origin||''),id=String(b?.id||'');
+      const source=JSON.parse(row.source_json),items=source.tracks||[];
+      if(!Number.isSafeInteger(slot)||slot<0||slot>=items.length||!id||id.length>120||origin.length>300)return json({error:'Invalid match selection.'},400);
+      const matches=JSON.parse(row.matches_json||'{}');if(matches[slot])return json({error:'This slot is already matched.'},409);
+      const catalogue=await spotifyImportCatalogue(DB);
+      const candidate=[...catalogue.local,...catalogue.remote].find(t=>String(t.origin||'')===origin&&String(t.remote_id||t.id)===id);
+      if(!candidate)return json({error:'The selected track is not in an authorized local or synced peer catalogue.'},404);
+      const ref=origin?'peer:'+await sha256(origin+'\n'+id):id;
+      if(Object.values(matches).includes(ref))return json({error:'This track is already assigned elsewhere in this draft.'},409);
+      if(origin)await DB.prepare('INSERT OR IGNORE INTO peer_track_refs(ref,origin,remote_id,title,artist,album,duration,cover_url) VALUES(?,?,?,?,?,?,?,?)')
+        .bind(ref,origin,id,candidate.title,candidate.artist||'',candidate.album||'',Number(candidate.duration)||0,clean(candidate.cover_url||'',500)).run();
+      await assignRecreationTrack(DB,row,items,slot,ref,!!origin);
+      matches[slot]=ref;await DB.prepare('UPDATE admin_collection_drafts SET matches_json=?,updated_at=? WHERE id=?').bind(JSON.stringify(matches),Date.now(),row.id).run();
+      return json({ok:true,...collectionDraftView({...row,matches_json:JSON.stringify(matches)})});
+    }
     if(m==='POST'&&x[2]==='verify'){
       const b=await req.json().catch(()=>null),draft=collectionDraftView(row);
       if(b?.confirm!=='complete'||draft.remaining!==0)return json({error:'All listed entries must be matched; type complete to verify the source manually.'},400);
@@ -3264,31 +3430,14 @@ async function api(req, env, url, ctx) {
     if(m==='POST'&&x[2]==='assign'){
       const b=await req.json().catch(()=>null),slot=Number(b?.slot),id=String(b?.track_id||'');
       const source=JSON.parse(row.source_json),items=source.tracks||[];
-      if(!Number.isSafeInteger(slot)||slot<0||slot>=items.length||!(/^[a-zA-Z0-9_-]{1,100}$/.test(id)))return json({error:'Choose a valid source entry and existing track.'},400);
-      const track=await DB.prepare('SELECT id,title,artist,album,track_no FROM tracks WHERE id=?').bind(id).first();
-      if(!track)return json({error:'Track not found on this server.'},404);
+      if(!Number.isSafeInteger(slot)||slot<0||slot>=items.length||!(/^[a-zA-Z0-9_-]{1,100}$/.test(id)||/^peer:[a-f0-9]{64}$/.test(id)))return json({error:'Choose a valid source entry and existing local/HIVE track.'},400);
+      const isPeer=id.startsWith('peer:');
+      const track=isPeer?await DB.prepare('SELECT ref AS id,title,artist,album FROM peer_track_refs WHERE ref=?').bind(id).first():await DB.prepare('SELECT id,title,artist,album,track_no FROM tracks WHERE id=?').bind(id).first();
+      if(!track)return json({error:'Track is not registered in local or trusted HIVE catalogue.'},404);
       const matches=JSON.parse(row.matches_json||'{}');
       if(matches[slot]&&matches[slot]!==id)return json({error:'This source entry has already been approved. Review the assignment before changing it.'},409);
       if(Object.entries(matches).some(([k,v])=>Number(k)!==slot&&v===id))return json({error:'This audio track is already assigned to another source entry.'},409);
-      const entry=items[slot];
-      if(row.kind==='album'){
-        const album=clean(row.title,200),no=Number(entry.track_no)||slot+1;
-        if(track.album!==album||Number(track.track_no)!==no){
-          await ensureAlbumAttachHistory(DB);
-          await DB.batch([
-            DB.prepare('INSERT INTO album_attach_history(id,track_id,old_album,old_track_no,new_album,at) VALUES(?,?,?,?,?,?)')
-              .bind(crypto.randomUUID(),id,track.album||'',Number(track.track_no)||0,album,Date.now()),
-            DB.prepare('UPDATE tracks SET album=?,track_no=? WHERE id=?').bind(album,no,id)
-          ]);
-          await touchCatalogue(DB);
-        }
-      }else{
-        const exists=await DB.prepare('SELECT id FROM playlists WHERE id=?').bind(row.playlist_id).first();
-        if(!exists)return json({error:'Draft playlist was removed. Do not assign tracks until restored.'},409);
-        await DB.prepare('INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,added_at) VALUES(?,?,?)')
-          .bind(row.playlist_id,id,Date.now()+slot).run();
-        await touchCatalogue(DB);
-      }
+      await assignRecreationTrack(DB,row,items,slot,id,isPeer);
       matches[slot]=id;
       await DB.prepare('UPDATE admin_collection_drafts SET matches_json=?,updated_at=? WHERE id=?').bind(JSON.stringify(matches),Date.now(),row.id).run();
       return json({ok:true,track_id:id,slot,unchanged_audio:true,...collectionDraftView({...row,matches_json:JSON.stringify(matches)})});
