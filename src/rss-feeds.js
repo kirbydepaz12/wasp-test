@@ -15,7 +15,9 @@ export function feedTab(input,i=0){
   const kind=code.startsWith('<')?'embed':'feed';
   if(kind==='feed'&&!safeFeedUrl(code))throw Error('Enter a public HTTPS RSS/Atom URL, or a sandboxed embed snippet.');
   if(kind==='embed'&&/<\s*(?:script|object|embed|base|form|meta)\b|javascript\s*:|on\w+\s*=/i.test(code))throw Error('Scripts and active HTML are not allowed in RSS embeds.');
-  return {title,code,kind};
+  const icon_url=String(input?.icon_url||'').trim();
+  if(icon_url&&!safeFeedUrl(icon_url))throw Error('RSS tab icons must be public HTTPS image URLs.');
+  return {title,code,kind,icon_url};
 }
 const unescapeXML=s=>String(s||'').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi,'$1')
   .replace(/&(?:amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-f]+));/gi,(m,d,h)=>{

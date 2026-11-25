@@ -18,8 +18,8 @@ import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.3.0b";
-const BUILD_LABEL = "RSS Seamless Hover Cards";
+const BUILD_VERSION = "18.3.0c";
+const BUILD_LABEL = "Music Folders and RSS Pinned Tabs";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -526,17 +526,19 @@ async function ensureRss(DB){
   if(rssReady.has(DB))return;
   await DB.prepare(`CREATE TABLE IF NOT EXISTS rss_tabs(id TEXT PRIMARY KEY,title TEXT NOT NULL,code TEXT NOT NULL,kind TEXT NOT NULL,position INTEGER NOT NULL,created_at INTEGER NOT NULL)`).run();
   await DB.prepare(`CREATE TABLE IF NOT EXISTS rss_feed_cache(tab_id TEXT PRIMARY KEY,body TEXT NOT NULL,fetched_at INTEGER NOT NULL)`).run();
+  await DB.prepare(`CREATE TABLE IF NOT EXISTS rss_tab_icons(tab_id TEXT PRIMARY KEY,icon_url TEXT NOT NULL DEFAULT '')`).run();
   rssReady.add(DB);
 }
 async function rssConfig(DB,includeCode=false){
   await ensureRss(DB);
-  const [enabled,position,heading,rows]=await Promise.all([
+  const [enabled,position,heading,showTitles,rows]=await Promise.all([
     DB.prepare("SELECT value FROM settings WHERE key='rss_enabled'").first(),
     DB.prepare("SELECT value FROM settings WHERE key='rss_position'").first(),
     DB.prepare("SELECT value FROM settings WHERE key='rss_heading'").first(),
-    DB.prepare('SELECT id,title,code,kind,position FROM rss_tabs ORDER BY position,id').all()]);
-  return {enabled:enabled?.value==='1',position:['left','center','right'].includes(position?.value)?position.value:'left',heading:String(heading?.value||'').slice(0,80),
-    tabs:rows.results.map(t=>includeCode?t:{id:t.id,title:t.title,kind:t.kind,position:t.position,...(t.kind==='embed'?{code:t.code}:{})})};
+    DB.prepare("SELECT value FROM settings WHERE key='rss_show_titles'").first(),
+    DB.prepare("SELECT t.id,t.title,t.code,t.kind,t.position,COALESCE(i.icon_url,'') AS icon_url FROM rss_tabs t LEFT JOIN rss_tab_icons i ON i.tab_id=t.id ORDER BY t.position,t.id").all()]);
+  return {enabled:enabled?.value==='1',position:['left','center','right'].includes(position?.value)?position.value:'left',heading:String(heading?.value||'').slice(0,80),show_titles:showTitles?.value!=='0',
+    tabs:rows.results.map(t=>includeCode?t:{id:t.id,title:t.title,kind:t.kind,position:t.position,icon_url:t.icon_url,...(t.kind==='embed'?{code:t.code}:{})})};
 }
 async function rssApi(req,DB,path,m){
   if(path==='/api/rss'&&m==='GET'){
@@ -571,7 +573,7 @@ async function rssAdminApi(req,DB,m){
   if(m==='GET')return json(await rssConfig(DB,true));
   if(m!=='PUT')return json({error:'Method not allowed'},405);
   const b=await req.json().catch(()=>null);
-  if(!b||typeof b.enabled!=='boolean'||!['left','center','right'].includes(b.position)||!Array.isArray(b.tabs)||typeof (b.heading??'')!=='string'||String(b.heading??'').length>80)return json({error:'Invalid RSS settings.'},400);
+  if(!b||typeof b.enabled!=='boolean'||!['left','center','right'].includes(b.position)||!Array.isArray(b.tabs)||typeof (b.heading??'')!=='string'||String(b.heading??'').length>80||typeof (b.show_titles??true)!=='boolean')return json({error:'Invalid RSS settings.'},400);
   if(JSON.stringify(b).length>200000)return json({error:'RSS settings exceed 200 KB.'},413);
   let rows=[];
   try{rows=b.tabs.map((input,i)=>({id:/^[a-f0-9-]{36}$/.test(String(input.id||''))?input.id:crypto.randomUUID(),...feedTab(input,i),position:i}));}
@@ -580,10 +582,13 @@ async function rssAdminApi(req,DB,m){
   const original=(await DB.prepare('SELECT id FROM rss_tabs').all()).results;
   const stmts=[DB.prepare("INSERT INTO settings(key,value) VALUES('rss_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.enabled?'1':'0'),
     DB.prepare("INSERT INTO settings(key,value) VALUES('rss_position',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.position),
-    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_heading',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(b.heading||'').trim())];
-  for(const r of rows)stmts.push(DB.prepare('INSERT INTO rss_tabs(id,title,code,kind,position,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,code=excluded.code,kind=excluded.kind,position=excluded.position')
+    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_heading',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(b.heading||'').trim()),
+    DB.prepare("INSERT INTO settings(key,value) VALUES('rss_show_titles',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(b.show_titles===false?'0':'1')];
+  for(const r of rows){stmts.push(DB.prepare('INSERT INTO rss_tabs(id,title,code,kind,position,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,code=excluded.code,kind=excluded.kind,position=excluded.position')
      .bind(r.id,r.title,r.code,r.kind,r.position,Date.now()));
-  for(const old of original)if(!ids.has(old.id)){stmts.push(DB.prepare('DELETE FROM rss_tabs WHERE id=?').bind(old.id));stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(old.id));}
+     stmts.push(DB.prepare('INSERT INTO rss_tab_icons(tab_id,icon_url) VALUES(?,?) ON CONFLICT(tab_id) DO UPDATE SET icon_url=excluded.icon_url').bind(r.id,r.icon_url));
+  }
+  for(const old of original)if(!ids.has(old.id)){stmts.push(DB.prepare('DELETE FROM rss_tabs WHERE id=?').bind(old.id));stmts.push(DB.prepare('DELETE FROM rss_tab_icons WHERE tab_id=?').bind(old.id));stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(old.id));}
   // Invalidate only changed feeds; disabling RSS never deletes feed entries.
   const previous=(await DB.prepare('SELECT id,code FROM rss_tabs').all()).results;
   for(const r of rows)if(previous.find(x=>x.id===r.id)?.code!==r.code)stmts.push(DB.prepare('DELETE FROM rss_feed_cache WHERE tab_id=?').bind(r.id));
@@ -2101,6 +2106,25 @@ async function api(req, env, url, ctx) {
   const DB = env.DB;
   let x;
   if(path==='/api/rss'||path.startsWith('/api/rss/feed/'))return rssApi(req,DB,path,m);
+  // Docker-only music directory registry. Admin credentials stay in the Worker;
+  // only the per-installation scanner secret can reach the loopback gateway.
+  if(path==='/api/admin/music-folders'){
+    const info=await sessionInfo(req,env);
+    if(info?.role!=='admin')return json({error:'Administrator required'},403);
+    if(env.WASP_RUNTIME!=='docker'||!env.SCANNER_SECRET)return json({error:'Only available on Docker deployments.'},404);
+    if(!['GET','POST','DELETE'].includes(m))return json({error:'Method not allowed'},405);
+    let body;
+    if(m!=='GET'){
+      body=await req.json().catch(()=>null);
+      if(!body||typeof body.path!=='string'||body.path.length>180)return json({error:'Invalid container folder.'},400);
+    }
+    try{
+      const response=await fetch('http://127.0.0.1:8788/_internal/music-folders',{
+        method:m,headers:{'x-scanner-secret':env.SCANNER_SECRET,'content-type':'application/json'},
+        ...(body?{body:JSON.stringify({path:body.path})}:{}),signal:AbortSignal.timeout(5000)});
+      const data=await response.json();return json(data,response.status,{'cache-control':'no-store'});
+    }catch(e){return json({error:'Docker folder scanner unavailable: '+String(e.message).slice(0,150)},503);}
+  }
   // v18.1.2 — administrator-only process monitor and audit history.
   if(path.startsWith('/api/admin/processes')){
     const info=await sessionInfo(req,env);

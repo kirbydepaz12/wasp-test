@@ -1280,3 +1280,32 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 /* Keep the narrower RSS editor preview readable without changing Home's 4-up grid. */
 .rss-content-preview .rss-feed-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:590px){.rss-content-preview .rss-feed-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* v18.3.0c — music folders, player playlist action, icon-only RSS tabs. */
+.collection-subtabs{margin-bottom:14px}
+.docker-folder-list{margin:16px 0}
+.docker-folder-row{display:flex;align-items:center;gap:12px;padding:12px 6px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+.docker-folder-row code{font-size:15px;color:var(--accent);flex:1;min-width:120px;overflow-wrap:anywhere}
+#playlistAdd svg{width:20px;height:20px;stroke:currentColor;fill:none}
+#playlistAdd{font-size:inherit;line-height:normal}
+.rss-admin-tab[draggable="true"]{cursor:grab}
+.rss-admin-tab.drag-over{border-color:#c4f06a;box-shadow:0 0 0 1px #c4f06a inset;background:#242424}
+.rss-admin-tab-head{justify-content:flex-start}
+.rss-admin-tab-head [data-rss-focus]{margin-right:auto;min-width:0;text-overflow:ellipsis;overflow:hidden}
+.rss-drag-handle{cursor:grab;user-select:none;touch-action:none;font-size:20px;color:#aaa;padding:5px 6px}
+.rss-admin-tab input[data-rss-code]{height:43px;padding:0 12px;border-radius:8px;font-size:14px}
+.rss-admin-tab input[data-rss-icon]{height:43px;padding:0 12px;border-radius:8px;font-size:14px}
+.rss-tab-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:34px}
+.rss-tab-icon{width:18px;height:18px;flex:0 0 18px;object-fit:contain;border-radius:3px}
+.rss-tab-button.rss-icon-only{width:42px;padding:6px!important;min-width:42px;clip-path:none!important;border-radius:10px!important}
+.rss-tab-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rss-tab-button img{pointer-events:none}
+
+#rssTabsEditor textarea.rss-feed-code{height:46px;min-height:46px;max-height:46px;resize:none;border-radius:8px;padding:9px 12px;line-height:1.45;font-size:14px;box-sizing:border-box;overflow:auto;white-space:nowrap}
+#rssTabsEditor textarea.rss-feed-code.rss-expanded{height:235px;max-height:235px;min-height:235px;white-space:pre-wrap;resize:vertical}
+.rss-small-move{border:1px solid #555;border-radius:8px;padding:5px 9px;background:transparent;color:#eee;cursor:pointer;font-weight:700}
+.rss-small-move:hover:not(:disabled){border-color:#c4f06a;color:#c4f06a}
+.rss-small-move:disabled{opacity:.35;cursor:default}
+.rss-tab-button.rss-icon-only{position:relative;overflow:visible}
+.rss-tab-button.rss-icon-only::after{content:attr(data-title);position:absolute;z-index:35;top:calc(100% + 8px);left:50%;transform:translateX(-50%);padding:6px 10px;background:#222;border:1px solid #555;border-radius:6px;color:#fff;font-weight:600;font-size:12px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .1s ease}
+.rss-tab-button.rss-icon-only:hover::after,.rss-tab-button.rss-icon-only:focus-visible::after{opacity:1}

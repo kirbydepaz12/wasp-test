@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0b">
+<link rel="stylesheet" href="/style.css?v=18.3.0c">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -98,7 +98,7 @@
       <button class="ib tip" id="prev" data-tip="Previous" aria-label="Previous"><svg class="fill" viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
       <button class="ib play tip" id="pp" data-tip="Play" aria-label="Play"><svg class="fill" viewBox="0 0 24 24" id="ppi"><path d="M7 4v16l13-8z"/></svg></button>
       <button class="ib tip" id="next" data-tip="Next" aria-label="Next"><svg class="fill" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
-      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button><button class="ib tip" id="playlistAdd" title="Add playing song to playlist" aria-label="Add playing song to playlist">＋</button>
+      <button class="ib tip" id="rep" data-tip="Repeat: off" aria-label="Repeat: off"><svg><use href="#i-repeat"/></svg><span class="badge" id="repT"></span></button><button class="ib tip" id="playlistAdd" data-tip="Add to playlist" title="Add playing song to playlist" aria-label="Add playing song to playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M4 11h10M4 16h7"/><path d="M18 12v8M14 16h8"/></svg></button>
     </div>
     <div class="seek"><span class="muted" id="cur">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Seek"><span class="muted" id="dur">0:00</span></div>
   </div>
@@ -151,6 +151,6 @@
   </div>
 </dialog>
 <dialog id="playlistDialog" class="playlist-dialog" aria-label="Add to playlist"><div class="playlist-dialog-content"><h2>Add to playlist</h2><label for="playlistOptions">Existing playlist</label><select id="playlistOptions"></select><div class="playlist-dialog-divider">Or create a new playlist</div><label for="newPlaylistName">New playlist name</label><input id="newPlaylistName" maxlength="80" placeholder="New playlist"><label class="playlist-check"><input type="checkbox" id="newPlaylistPublic"> Public playlist</label><p class="msg err" id="playlistMessage" role="status"></p><div class="playlist-dialog-actions"><button class="btn ghost" id="playlistCancel" type="button">Cancel</button><button class="btn" id="playlistSave" type="button">Add</button></div></div></dialog>
-<script src="/app.js?v=18.3.0b" type="module"></script>
+<script src="/app.js?v=18.3.0c" type="module"></script>
 </body>
 </html>

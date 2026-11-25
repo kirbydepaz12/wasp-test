@@ -17,6 +17,46 @@ const small = 'style="min-height:36px;padding:0 14px"';
 const mini = (src, label) => `<span class="art" data-i="${esc((label || "?").trim().charAt(0).toUpperCase())}">${src ? `<img alt="" src="${esc(src)}">` : ""}</span>`;
 document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.remove(); }, true);
 
+// Docker-specific collection subtab: only registered bind-mounted directories.
+let dockerFoldersAvailable=false;
+async function loadDockerMusicFolders(){
+ const status=$('#dockerMusicMessage');
+ try{
+   const response=await fetch('/api/admin/music-folders',{cache:'no-store'});
+   if(response.status===404){dockerFoldersAvailable=false;$('#collectionTabFolders').classList.add('hidden');return false;}
+   const data=await response.json();if(!response.ok)throw Error(data.error||'Unable to read Docker folders');
+   dockerFoldersAvailable=true;$('#collectionTabFolders').classList.remove('hidden');
+   const defaults=new Set(data.defaults||[]),more=new Set(data.additional||[]);
+   $('#dockerMusicRoots').innerHTML=(data.roots||[]).map(root=>`<div class="docker-folder-row"><code>${esc(root)}</code><span class="muted">${defaults.has(root)?'Default mount':more.has(root)?'Additional mount':'Configured mount'}</span>${more.has(root)?`<button class="btn ghost" type="button" data-folder-remove="${esc(root)}">Remove from scanner</button>`:''}</div>`).join('');
+   status.textContent=data.scanning?'Directory scanner is currently running.':'Paths are read-only; music scanning runs automatically.';
+   return true;
+ }catch(e){status.textContent=e.message;return false;}
+}
+async function showCollectionTab(view='songs'){
+ const folderView=view==='music-folders';
+ if(folderView){const ok=await loadDockerMusicFolders();if(!ok){$('#collectionSongsPanel').classList.remove('hidden');$('#collectionFoldersPanel').classList.add('hidden');return;}}
+ else void loadDockerMusicFolders();
+ $('#collectionSongsPanel').classList.toggle('hidden',folderView);
+ $('#collectionFoldersPanel').classList.toggle('hidden',!folderView);
+ $('#collectionTabSongs').setAttribute('aria-selected',String(!folderView));
+ $('#collectionTabFolders').setAttribute('aria-selected',String(folderView));
+}
+$('#collectionTabSongs').onclick=()=>{location.hash='collection';void showCollectionTab('songs')};
+$('#collectionTabFolders').onclick=()=>{location.hash='collection/music-folders';void showCollectionTab('music-folders')};
+$('#dockerMusicAdd').onclick=async()=>{
+ const el=$('#dockerMusicRoot'),status=$('#dockerMusicMessage'),button=$('#dockerMusicAdd');button.disabled=true;
+ status.textContent='Validating container directory…';
+ try{const r=await post('/api/admin/music-folders',{path:el.value.trim()}),d=await r.json();if(!r.ok)throw Error(d.error||'Could not add folder');el.value='';await loadDockerMusicFolders();status.textContent='Saved. The new directory will be indexed automatically; reload Songs after scanning completes.';}
+ catch(e){status.textContent=e.message;}finally{button.disabled=false;}
+};
+$('#dockerMusicRoots').onclick=async e=>{
+ const button=e.target.closest('[data-folder-remove]');if(!button)return;
+ const folder=button.dataset.folderRemove;
+ if(!confirm('Stop indexing '+folder+'? This does not remove the Docker bind mount or delete music. Existing indexed tracks may still appear until reconciled.'))return;
+ button.disabled=true;
+ try{const r=await post('/api/admin/music-folders',{path:folder},'DELETE'),d=await r.json();if(!r.ok)throw Error(d.error||'Could not unregister folder');await loadDockerMusicFolders();$('#dockerMusicMessage').textContent='Removed from future scans. Existing audio was not deleted.';}
+ catch(err){$('#dockerMusicMessage').textContent=err.message;button.disabled=false;}
+};
 // ---------- sections (left menu) ----------
 const PANES = { collection: "Music collection", duplicates: "Duplicate management", add: "Add music", playlists: "Playlists", requests: "Requests", settings: "General settings", account: "Account settings", network: "Network, Metadata, Telemetry", processes: "Running processes", danger: "Danger", users: "Users & Announcements", docs: "Update documentations" };
 function showPane() {
@@ -27,6 +67,7 @@ function showPane() {
     `<a class="nav-item${id === "danger" ? " dng" : ""}" href="#${id}"${id === k ? ' aria-current="page"' : ""}>${label}</a>`).join("");
   adminPublishNotificationBadge(pendingPublishCount);
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("hidden", p.id !== "s-" + k));
+  if (k === 'collection') void showCollectionTab(route.split('/')[1]==='music-folders'?'music-folders':'songs');
   if (k === "settings") showSettingsSubtab(['release-updates','rss'].includes(route.split('/')[1]) ? route.split('/')[1] : 'general');
   if (k === 'add') showAddSubtab(route.split('/')[1]==='recreate'?'recreate':'upload');
   if (k === "duplicates") loadDuplicates();
@@ -1294,42 +1335,75 @@ $('#releaseCheck').onclick=()=>selectedReleaseChannel()===savedReleaseChannel?ch
 setInterval(()=>{if(!document.hidden&&!$('#panel').classList.contains('hidden')&&selectedReleaseChannel()===savedReleaseChannel)void checkReleases();},6*60*60*1000);
 
 // -------- v18.3 RSS settings and safe previews --------
-let rssLoaded=false,rssDraft={enabled:false,position:'left',heading:'',tabs:[]},rssIndex=0,rssPreviewSeq=0;
+let rssLoaded=false,rssDraft={enabled:false,position:'left',heading:'',show_titles:true,tabs:[]},rssIndex=0,rssPreviewSeq=0;
 const rssEscape=esc;
 async function loadRSSAdmin(){
  try{const r=await fetch('/api/admin/rss',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to load RSS');
-  rssDraft={enabled:!!d.enabled,position:d.position||'left',heading:d.heading||'',tabs:d.tabs||[]};rssLoaded=true;rssIndex=0;paintRSSAdmin();void loadRSSPreview();
+  rssDraft={enabled:!!d.enabled,position:d.position||'left',heading:d.heading||'',show_titles:d.show_titles!==false,tabs:d.tabs||[]};rssLoaded=true;rssIndex=0;paintRSSAdmin();void loadRSSPreview();
  }catch(e){$('#rssSaveMsg').textContent=e.message;}
 }
-function rssTabPreview(){return `<div class="rss-tab-bar" data-position="${rssDraft.position}">${rssDraft.tabs.map((t,i)=>`<button type="button" class="rss-tab-button" data-rss-focus="${i}" aria-selected="${i===rssIndex}">${rssEscape(t.title||'Untitled')}</button>`).join('')}</div>`;}
+function rssPreviewIcon(url){try{const u=new URL(String(url||''));return u.protocol==='https:'&&!u.username&&!u.password?u.href:'';}catch{return '';}}
+function rssTabLabel(t,i,active=false){
+ const show=rssDraft.show_titles!==false,title=rssEscape(t.title||'RSS Tab '+(i+1)),icon=rssPreviewIcon(t.icon_url)||'/wasp-icon.png';
+ return `<button type="button" class="rss-tab-button${show?'':' rss-icon-only'}" data-rss-focus="${i}" data-title="${title}" title="${title}" aria-label="${title}" aria-selected="${active}">${!show||rssPreviewIcon(t.icon_url)?`<img class="rss-tab-icon" src="${rssEscape(icon)}" alt="" referrerpolicy="no-referrer">`:''}${show?`<span>${title}</span>`:''}</button>`;
+}
+function rssTabPreview(){return `<div class="rss-tab-bar" data-position="${rssDraft.position}">${rssDraft.tabs.map((t,i)=>rssTabLabel(t,i,i===rssIndex)).join('')}</div>`;}
+
 function paintRSSAdmin(){
  $('#rssEnabled').checked=rssDraft.enabled;
+ $('#rssShowTitles').checked=rssDraft.show_titles!==false;
  $('#rssHeading').value=rssDraft.heading||'';
  $('#rssEnabledStatus').textContent=rssDraft.enabled?'ON (pending Save)':'OFF — saved feeds retained';
  document.querySelectorAll('[data-rss-position]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.rssPosition===rssDraft.position)));
  $('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview()+`<p class="muted">${rssDraft.enabled?'RSS will appear below Playlists when saved.':'RSS is currently disabled; preview remains available to admins.'}</p>`;
  $('#rssTabsEditor').innerHTML=rssDraft.tabs.map((t,i)=>`<div class="rss-admin-tab${rssIndex===i?' is-selected':''}" data-rss-tab="${i}">
-   <div class="rss-admin-tab-head"><button type="button" class="btn ghost" data-rss-focus="${i}">${rssEscape(t.title||'RSS Tab '+(i+1))}</button><button type="button" class="btn ghost" data-rss-delete="${i}" title="Remove this saved RSS tab">Remove</button></div>
-   ${rssIndex===i?`<label>Title</label><input data-rss-title="${i}" maxlength="70" value="${rssEscape(t.title)}"><label>Public HTTPS feed URL or static embed code</label><textarea data-rss-code="${i}" rows="5" maxlength="12000" placeholder="https://example.org/rss.xml">${rssEscape(t.code)}</textarea><button class="btn ghost" type="button" data-rss-expand="${i}">Expand editor</button>`:''}</div>`).join('');
+   <div class="rss-admin-tab-head"><span class="rss-drag-handle" role="button" tabindex="0" draggable="true" data-rss-drag="${i}" title="Drag to reorder RSS tab" aria-label="Drag ${rssEscape(t.title||'RSS Tab')} to reorder">⠿</span><button type="button" class="btn ghost" data-rss-focus="${i}">${rssEscape(t.title||'RSS Tab '+(i+1))}</button><button type="button" class="rss-small-move" data-rss-move="${i}" data-rss-direction="-1" title="Move up" aria-label="Move ${rssEscape(t.title)} up" ${i===0?'disabled':''}>↑</button><button type="button" class="rss-small-move" data-rss-move="${i}" data-rss-direction="1" title="Move down" aria-label="Move ${rssEscape(t.title)} down" ${i===rssDraft.tabs.length-1?'disabled':''}>↓</button><button type="button" class="btn ghost" data-rss-delete="${i}" title="Remove this saved RSS tab">Remove</button></div>
+   ${rssIndex===i?`<label>Title</label><input data-rss-title="${i}" maxlength="70" value="${rssEscape(t.title)}"><label>Public HTTPS feed URL or static embed code</label><textarea class="rss-feed-code" data-rss-code="${i}" rows="1" maxlength="12000" placeholder="https://example.org/rss.xml">${rssEscape(t.code)}</textarea><label>Optional icon image URL (public HTTPS)</label><input data-rss-icon="${i}" type="url" maxlength="1600" value="${rssEscape(t.icon_url||'')}" placeholder="https://example.com/icon.png"><p class="muted" style="font-size:12px">When titles are hidden, WASP uses its own icon unless you provide one here.</p><button class="btn ghost" type="button" data-rss-expand="${i}">Expand editor</button>`:''}</div>`).join('');
  $('#rssContentTitle').textContent='Content preview — '+(rssDraft.tabs[rssIndex]?.title||'Select a tab');
  const t=rssDraft.tabs[rssIndex];$('#rssContentPreview').textContent=t?(t.kind==='embed'?'Static embed preview — scripts are disabled.':'Enter or paste a feed URL to preview current items.'):'Add a tab to preview its content.';
 }
 $('#rssEnabled').onchange=e=>{rssDraft.enabled=e.target.checked;paintRSSAdmin();};
+$('#rssShowTitles').onchange=e=>{rssDraft.show_titles=e.target.checked;paintRSSAdmin();};
 $('#rssHeading').oninput=e=>{rssDraft.heading=e.target.value;$('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview();};
 $('#rssPositionControls').onclick=e=>{const b=e.target.closest('[data-rss-position]');if(!b)return;rssDraft.position=b.dataset.rssPosition;paintRSSAdmin();};
 function rssFocus(i){rssIndex=i;paintRSSAdmin();void loadRSSPreview();}
 $('#settingsRSSPanel').addEventListener('click',e=>{
- const focus=e.target.closest('[data-rss-focus]'),remove=e.target.closest('[data-rss-delete]'),expand=e.target.closest('[data-rss-expand]');
+ const focus=e.target.closest('[data-rss-focus]'),remove=e.target.closest('[data-rss-delete]'),expand=e.target.closest('[data-rss-expand]'),move=e.target.closest('[data-rss-move]');
+ if(move){rssMove(Number(move.dataset.rssMove),Number(move.dataset.rssDirection));return;}
  if(focus){rssFocus(Number(focus.dataset.rssFocus));return;}
  if(remove){if(!confirm('Remove this RSS tab? This action is saved only after Save changes.'))return;rssDraft.tabs.splice(Number(remove.dataset.rssDelete),1);rssIndex=Math.max(0,Math.min(rssIndex,rssDraft.tabs.length-1));paintRSSAdmin();return;}
- if(expand){const textarea=document.querySelector(`[data-rss-code="${expand.dataset.rssExpand}"]`);if(textarea){textarea.rows=textarea.rows===5?17:5;textarea.focus();}}
+ if(expand){const textarea=document.querySelector(`[data-rss-code="${expand.dataset.rssExpand}"]`);if(textarea){textarea.classList.toggle('rss-expanded');textarea.rows=textarea.classList.contains('rss-expanded')?17:1;textarea.focus();}}
 });
 let rssPreviewDelay;
 $('#rssTabsEditor').addEventListener('input',e=>{
  if(e.target.matches('[data-rss-title]')){rssDraft.tabs[Number(e.target.dataset.rssTitle)].title=e.target.value;$('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview();$('#rssContentTitle').textContent='Content preview — '+e.target.value;}
  if(e.target.matches('[data-rss-code]')){const t=rssDraft.tabs[Number(e.target.dataset.rssCode)];t.code=e.target.value;t.kind=t.code.trim().startsWith('<')?'embed':'feed';clearTimeout(rssPreviewDelay);rssPreviewDelay=setTimeout(loadRSSPreview,650);}
+ if(e.target.matches('[data-rss-icon]')){rssDraft.tabs[Number(e.target.dataset.rssIcon)].icon_url=e.target.value;$('#rssLayoutPreview').innerHTML=(rssDraft.heading?`<h3 class="rss-custom-heading">${rssEscape(rssDraft.heading)}</h3>`:'')+rssTabPreview();}
 });
-$('#rssAddTab').onclick=()=>{rssDraft.tabs.push({id:'',title:'RSS Tab '+(rssDraft.tabs.length+1),code:'',kind:'feed'});rssFocus(rssDraft.tabs.length-1);};
+let rssDragFrom=-1;
+function rssMove(from,step){const to=from+step;if(from<0||to<0||to>=rssDraft.tabs.length)return;const selected=rssDraft.tabs[rssIndex];const [item]=rssDraft.tabs.splice(from,1);rssDraft.tabs.splice(to,0,item);rssIndex=rssDraft.tabs.indexOf(selected);paintRSSAdmin();}
+$('#rssTabsEditor').addEventListener('dragstart',e=>{const handle=e.target.closest('[data-rss-drag]');if(!handle)return;rssPointerStart=null;rssDragFrom=Number(handle.dataset.rssDrag);e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(rssDragFrom));});
+$('#rssTabsEditor').addEventListener('dragover',e=>{const row=e.target.closest('[data-rss-tab]');if(row&&rssDragFrom>=0){e.preventDefault();e.dataTransfer.dropEffect='move';row.classList.add('drag-over');}});
+$('#rssTabsEditor').addEventListener('dragleave',e=>{const row=e.target.closest('[data-rss-tab]');if(row&&!row.contains(e.relatedTarget))row.classList.remove('drag-over');});
+$('#rssTabsEditor').addEventListener('drop',e=>{const row=e.target.closest('[data-rss-tab]');if(!row||rssDragFrom<0)return;e.preventDefault();rssPointerStart=null;const from=rssDragFrom,to=Number(row.dataset.rssTab);rssDragFrom=-1;if(from===to){paintRSSAdmin();return;}const selected=rssDraft.tabs[rssIndex];const [item]=rssDraft.tabs.splice(from,1);rssDraft.tabs.splice(to,0,item);rssIndex=rssDraft.tabs.indexOf(selected);paintRSSAdmin();});
+$('#rssTabsEditor').addEventListener('dragend',()=>{rssDragFrom=-1;document.querySelectorAll('.rss-admin-tab.drag-over').forEach(el=>el.classList.remove('drag-over'));});
+// Pointer fallback for touchscreens and browsers that suppress native drag events.
+let rssPointerStart=null;
+$('#rssTabsEditor').addEventListener('pointerdown',e=>{const handle=e.target.closest('[data-rss-drag]');if(!handle)return;rssPointerStart={index:Number(handle.dataset.rssDrag),x:e.clientX,y:e.clientY};});
+document.addEventListener('pointerup',e=>{
+ if(!rssPointerStart)return;
+ const start=rssPointerStart;rssPointerStart=null;
+ if(Math.abs(e.clientX-start.x)+Math.abs(e.clientY-start.y)<12)return;
+ const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-rss-tab]');
+ if(!target)return;
+ const selected=rssDraft.tabs[rssIndex],to=Number(target.dataset.rssTab);
+ if(start.index===to||start.index<0||to<0||to>=rssDraft.tabs.length)return;
+ const [item]=rssDraft.tabs.splice(start.index,1);rssDraft.tabs.splice(to,0,item);rssIndex=rssDraft.tabs.indexOf(selected);paintRSSAdmin();
+});
+document.addEventListener('pointercancel',()=>{rssPointerStart=null;});
+
+
+$('#rssAddTab').onclick=()=>{rssDraft.tabs.push({id:'',title:'RSS Tab '+(rssDraft.tabs.length+1),code:'',kind:'feed',icon_url:''});rssFocus(rssDraft.tabs.length-1);};
 $('#rssReset').onclick=()=>loadRSSAdmin();
 $('#rssSave').onclick=async()=>{
  const button=$('#rssSave');button.disabled=true;$('#rssSaveMsg').textContent='Saving RSS settings…';

@@ -38,7 +38,11 @@ export async function mountHomeRSS(host,fetcher=fetch){
      status.textContent=d.stale?'Showing saved articles; the publisher is temporarily unavailable.':d.refresh_throttled?'Recently checked. Refresh is limited to once per minute.':when?'Feed checked: '+when:'';
    }catch(e){if(my===generation&&host.isConnected){body.textContent='Could not load feed: '+e.message;status.textContent='';}}
  };
- bar.innerHTML=manifest.tabs.map((t,i)=>`<button type="button" class="rss-tab-button" data-rss-idx="${i}" aria-selected="${i===0}">${escapeText(t.title)}</button>`).join('');
+ const showTitles=manifest.show_titles!==false;
+ bar.innerHTML=manifest.tabs.map((t,i)=>{
+   const title=escapeText(t.title),custom=safePublicUrl(t.icon_url),icon=custom||'/wasp-icon.png';
+   return `<button type="button" class="rss-tab-button${showTitles?'':' rss-icon-only'}" data-rss-idx="${i}" data-title="${title}" aria-label="${title}" title="${title}" aria-selected="${i===0}">${!showTitles||custom?`<img class="rss-tab-icon" src="${escapeText(icon)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:''}${showTitles?`<span>${title}</span>`:''}</button>`;
+ }).join('');
  bar.addEventListener('click',e=>{const b=e.target.closest('[data-rss-idx]');if(b)void show(Number(b.dataset.rssIdx));});
  refresh.addEventListener('click',()=>{if(!refresh.disabled)void show(active,true);});
  void show(0);

@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-3-0B-RSS-HOVER-CARDS.md">Latest feature guide (v18.3.0b)</a>
+    <a href="docs/V18-3-0C-MUSIC-FOLDERS-RSS-PINNED-TABS.md">Latest feature guide (v18.3.0c)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.3.0b — Seamless RSS Hover Cards.** See the [feature guide](docs/V18-3-0B-RSS-HOVER-CARDS.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.3.0c — Docker Music Folders & RSS Pinned Tabs.** See the [feature guide](docs/V18-3-0C-MUSIC-FOLDERS-RSS-PINNED-TABS.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -107,6 +107,8 @@ For direct Docker Compose use, configure the same variables in `.env` or your ho
 docker compose up -d --build
 ```
 
+**Additional mounted music folders (Docker only):** To scan directories beyond `/music`, first add read-only bind mounts in Portainer (for example host `/data/extra-music` mapped to container `/music2`). Redeploy without removing persistent volumes. Then open **Admin → Music collection → Music Folders**, enter `/music2`, and select **Add folder**. More than one additional root can be registered; the original `/music` stays active. This interface only registers already-mounted container directories—it cannot create Docker mounts. The extra paths persist inside the existing scanner-state volume. See the [v18.3.0c guide](docs/V18-3-0C-MUSIC-FOLDERS-RSS-PINNED-TABS.md).
+
 **Music folder and uploads are separate.** The container indexes files from `MUSIC_FOLDER` without renaming, moving or deleting the originals. Use an **absolute path on the Docker host**, not a folder on your laptop unless it is the host. `UPLOAD_FOLDER` must be writable and persistent. You can update the folder mapping later in Portainer without changing the music files.
 
 **Preserve your existing data:** Keep the `wasp-v16-local-state`, `wasp-v16-caddy-data` and `wasp-v16-caddy-config` named volumes, plus the upload folder and the existing music mount. These names are retained in the current Compose file for compatibility with earlier WASP installations. **Never use `docker compose down -v`** as an update step or delete Docker volumes to repair a build. A source-only update should not overwrite your production data.
@@ -133,6 +135,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.3.0c — Multiple Docker Music Folders & RSS Pinned Tabs | [Read-only additional mounts, reorderable icon-only RSS tabs, player button refresh](docs/V18-3-0C-MUSIC-FOLDERS-RSS-PINNED-TABS.md) |
 | v18.3.0b — Seamless RSS Hover Cards | [No outer RSS container surface; hover/focus-only news-card backgrounds and borders](docs/V18-3-0B-RSS-HOVER-CARDS.md) |
 | v18.3.0 — HIVE Collection Recreation + RSS | [Recreate from synchronized HIVE tracks, manual matching, opt-in RSS feeds and previews](docs/V18-3-0-RECREATE-RSS.md) |
 | v18.2.2b — Home Albums Carousel | [Artists → Albums → Songs → Playlists; carousel grouping, HIVE source indicators and navigation](docs/V18-2-2B-HOME-ALBUMS.md) |

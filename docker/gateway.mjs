@@ -9,8 +9,11 @@ import {createPeerRelay} from './peer-relay.mjs';
 import {folderFallbackCover} from './folder-art.mjs';
 import {unchanged,loadFileIndex,saveFileIndex} from './file-index-cache.mjs';
 import {createOfflineMetadata} from './offline-metadata.mjs';
+import {validMusicRoot,verifyMusicRoot,readMusicRoots,saveMusicRoots,combinedMusicRoots} from './music-folders.mjs';
 
-const roots=(process.env.MUSIC_SCAN_PATHS||'/music').split(',').map(x=>x.trim()).filter(Boolean);
+const baseRoots=(process.env.MUSIC_SCAN_PATHS||'/music').split(',').map(x=>x.trim()).filter(Boolean);
+let extraRoots=await readMusicRoots();
+const activeRoots=()=>combinedMusicRoots(baseRoots,extraRoots);
 const port=Number(process.env.GATEWAY_PORT||8788), worker='http://127.0.0.1:8787';
 const secret=process.env.SCANNER_SECRET;
 const offline=createOfflineMetadata({secret,autoUpdate:process.env.WASP_OFFLINE_AUTO_UPDATE==='1'});
@@ -54,7 +57,7 @@ async function scan(){
   let token=persisted.token;
   try{const r=await fetch(worker+'/api/internal/folder-rescan-token',{headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(5000)});if(r.ok)token=String((await r.json()).token||'');}catch{}
   const force=token!==persisted.token;
-  const found=new Map();for(const root of roots)await walk(root,found,force);
+  const found=new Map();for(const root of activeRoots())await walk(root,found,force);
   // Never commit the cache until all changed tracks were acknowledged; a failed
   // database write must be retried on the next directory poll.
   const changed=[...found.values()].filter(t=>force||t.tagVersion!==1&&!unchanged(catalogue.get(t.id)||persisted.tracks.get(t.id),{mtimeMs:t.mtime,size:t.size})||(catalogue.get(t.id)||persisted.tracks.get(t.id))?.tagVersion!==2);
@@ -194,6 +197,26 @@ const server=http.createServer(async(req,res)=>{
  if(u.pathname==='/_internal/hash-scan'&&req.method==='POST'){
    if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
    void hashScan();res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({ok:true}));return;
+ }
+ if(u.pathname==='/_internal/music-folders'){
+   if(!secret||req.headers['x-scanner-secret']!==secret){res.writeHead(403);res.end();return;}
+   const send=(status,data)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data));};
+   if(req.method==='GET'){send(200,{runtime:'docker',defaults:baseRoots,additional:extraRoots,roots:activeRoots(),scanning});return;}
+   if(!['POST','DELETE'].includes(req.method)){send(405,{error:'Method not allowed'});return;}
+   let buf='';try{for await(const chunk of req){buf+=chunk;if(buf.length>2048)throw Error('Request too large');}
+     const body=JSON.parse(buf),folder=req.method==='DELETE'?validMusicRoot(body.path):await verifyMusicRoot(body.path);
+     if(!folder)throw Error('Invalid container music folder.');
+     if(req.method==='POST'){
+       if(baseRoots.includes(folder)||extraRoots.includes(folder)){send(409,{error:'This folder is already registered.'});return;}
+       if(extraRoots.length>=32){send(400,{error:'Maximum 32 additional folders per instance.'});return;}
+       const updated=[...extraRoots,folder];await saveMusicRoots(updated);extraRoots=updated;
+       send(200,{ok:true,roots:activeRoots(),defaults:baseRoots,additional:extraRoots,scanning:true});setTimeout(()=>void scan(),20);return;
+     }
+     if(baseRoots.includes(folder)){send(400,{error:'The default /music folder cannot be removed here.'});return;}
+     if(!extraRoots.includes(folder)){send(404,{error:'The folder is not registered.'});return;}
+     const updated=extraRoots.filter(s=>s!==folder);await saveMusicRoots(updated);extraRoots=updated;
+     send(200,{ok:true,roots:activeRoots(),defaults:baseRoots,additional:extraRoots,scanning});
+   }catch(e){send(400,{error:String(e.message||e).slice(0,250)});}return;
  }
  if(u.pathname==='/api/local/scan'&&req.method==='POST'){res.writeHead(404);res.end();return;}
  if(u.pathname.startsWith('/audio/folder-')){

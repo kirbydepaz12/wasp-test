@@ -46,6 +46,10 @@ services:
     volumes:
       - wasp-v16-local-state:/app/.wrangler/state
       - ${MUSIC_FOLDER:-./music}:/music:ro
+      # For an additional Music Folders entry in Admin, first add each real
+      # Docker bind mount here (or in Portainer) and redeploy this stack.
+      # Example: - /absolute/host/extra-music:/music2:ro
+      # Then register /music2 in Admin → Music collection → Music Folders.
       - ${UPLOAD_FOLDER:-./uploads}:/data/uploads
       - wasp-v16-caddy-data:/data
       - wasp-v16-caddy-config:/config

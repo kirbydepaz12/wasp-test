@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0b">
+<link rel="stylesheet" href="/style.css?v=18.3.0c">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -53,6 +53,11 @@
     <!-- Music collection -->
     <section class="pane" id="s-collection">
       <h1>Music collection</h1>
+      <div class="tabs collection-subtabs" id="collectionSubtabs" role="tablist" aria-label="Music collection view">
+        <button type="button" class="tab" id="collectionTabSongs" aria-selected="true">Songs</button>
+        <button type="button" class="tab hidden" id="collectionTabFolders" aria-selected="false">Music Folders</button>
+      </div>
+      <div id="collectionSongsPanel">
       <div class="card hidden" id="pcMetadataSourcePanel">
         <h2>Local Music Metadata Source <span class="muted">· Windows PC only</span></h2>
         <p class="muted">Read Picard-corrected MP3 tags from your PC. This only builds a metadata catalogue; it does not upload, rename or delete audio, or add songs to the playable collection.</p>
@@ -69,6 +74,17 @@
         <input id="songQ" type="search" placeholder="Search songs" style="width:100%;max-width:360px;margin-bottom:12px">
         <div style="overflow-x:auto"><table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Plays</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
         <nav class="pager" id="pager" aria-label="Song pages"></nav>
+      </div>
+      </div>
+      <div id="collectionFoldersPanel" class="hidden">
+        <div class="card">
+          <h2>Music Folders <span class="muted">· Docker only</span></h2>
+          <p class="muted">The default <code>/music</code> stays active. To add folders, first bind-mount the host directory to an additional container path in Portainer (for example, host <code>/data/music2</code> → container <code>/music2</code>, read-only). Then register that exact container path below. WASP cannot create a Docker mount.</p>
+          <div class="form" style="gap:10px;align-items:center"><label for="dockerMusicRoot">Container folder</label><input id="dockerMusicRoot" type="text" placeholder="/music2" autocomplete="off" spellcheck="false" style="flex:1;min-width:150px"><button class="btn" type="button" id="dockerMusicAdd" aria-label="Add a mounted music folder">＋ Add folder</button></div>
+          <p id="dockerMusicMessage" class="muted" role="status" aria-live="polite"></p>
+          <div id="dockerMusicRoots" class="docker-folder-list"></div>
+          <p class="muted">New folders are indexed in the background and on subsequent scanner cycles. Music is never moved, copied or deleted. Removing a folder from scanning does not delete existing indexed database records; unmounted files will not play.</p>
+        </div>
       </div>
     </section>
 
@@ -330,8 +346,8 @@
           </div>
         </div>
         <div class="card rss-admin-editor">
-          <h2>RSS Tab Editor</h2>
-          <p class="muted">Add as many tabs as you need. Each accepts a public HTTPS RSS/Atom feed URL or a restricted static embed. JavaScript is not executed.</p>
+          <div class="form" style="align-items:center;gap:14px;flex-wrap:wrap"><h2 style="margin:0">RSS Tab Editor</h2><label class="rss-toggle-label" for="rssShowTitles"><input type="checkbox" id="rssShowTitles" checked> Show titles</label></div>
+          <p class="muted">Add, drag to reorder, and customize tabs. Unchecking Show titles uses pinned-tab-style icons; their names remain available on hover and keyboard focus. Each tab accepts a public HTTPS RSS/Atom feed URL or restricted static embed.</p>
           <div class="rss-editor-grid">
             <div><div id="rssTabsEditor" class="rss-tabs-editor"></div><button type="button" class="btn ghost" id="rssAddTab">＋ Add new tab</button></div>
             <div><h3 id="rssContentTitle">Content preview</h3><p class="muted">This preview is isolated from the music player. Saved feeds can be refreshed without waiting for the cache.</p><button type="button" class="btn ghost" id="rssForceRefresh">Refresh published feed now</button><p id="rssRefreshMsg" class="muted" role="status"></p><div id="rssContentPreview" class="rss-content-preview"></div></div>
@@ -697,6 +713,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.3.0b"></script>
+<script type="module" src="/admin.js?v=18.3.0c"></script>
 </body>
 </html>
