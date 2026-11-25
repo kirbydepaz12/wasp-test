@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-3-0-RECREATE-RSS.md">Latest feature guide (v18.3.0)</a>
+    <a href="docs/V18-3-0B-RSS-HOVER-CARDS.md">Latest feature guide (v18.3.0b)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.3.0 — HIVE Collection Recreation + RSS.** See the [feature guide](docs/V18-3-0-RECREATE-RSS.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.3.0b — Seamless RSS Hover Cards.** See the [feature guide](docs/V18-3-0B-RSS-HOVER-CARDS.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -133,6 +133,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.3.0b — Seamless RSS Hover Cards | [No outer RSS container surface; hover/focus-only news-card backgrounds and borders](docs/V18-3-0B-RSS-HOVER-CARDS.md) |
 | v18.3.0 — HIVE Collection Recreation + RSS | [Recreate from synchronized HIVE tracks, manual matching, opt-in RSS feeds and previews](docs/V18-3-0-RECREATE-RSS.md) |
 | v18.2.2b — Home Albums Carousel | [Artists → Albums → Songs → Playlists; carousel grouping, HIVE source indicators and navigation](docs/V18-2-2B-HOME-ALBUMS.md) |
 | v18.2.2a — Album hearts, stars & release navigation | [Album reactions, ranking tabs and clickable Up Next releases](docs/V18-2-2A-ALBUM-REACTIONS-RANKINGS.md) |

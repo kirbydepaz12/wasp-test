@@ -29,11 +29,25 @@ with sync_playwright() as pw:
     observed=page.locator('.rss-feed-grid').evaluate('(el)=>getComputedStyle(el).gridTemplateColumns.split(" ").length')
     assert observed==columns,(width,observed)
     bg=page.locator('.rss-home-block').evaluate('(el)=>getComputedStyle(el).backgroundColor')
-    assert bg=='rgb(23, 23, 23)',(width,bg)
+    assert bg=='rgba(0, 0, 0, 0)',(width,bg)
+    assert page.locator('.rss-home-block').evaluate('(el)=>getComputedStyle(el).borderTopWidth')=='0px'
+    tile=page.locator('.rss-feed-item').first
+    assert tile.evaluate('(el)=>getComputedStyle(el).backgroundColor')=='rgba(0, 0, 0, 0)'
+    assert tile.evaluate('(el)=>getComputedStyle(el).borderTopColor')=='rgba(0, 0, 0, 0)'
+    tile.hover()
+    page.wait_for_timeout(220) # allow CSS transition to complete
+    assert tile.evaluate('(el)=>getComputedStyle(el).backgroundColor')=='rgb(32, 32, 32)'
+    assert tile.evaluate('(el)=>getComputedStyle(el).borderTopColor')=='rgb(80, 80, 80)'
+    page.mouse.move(2,2)
+    page.wait_for_timeout(220)
+    assert tile.evaluate('(el)=>getComputedStyle(el).backgroundColor')=='rgba(0, 0, 0, 0)'
+    tile.locator('a').focus()
+    page.wait_for_timeout(220)
+    assert tile.evaluate('(el)=>getComputedStyle(el).backgroundColor')=='rgb(32, 32, 32)'
     page.locator('.rss-refresh-button').click()
     page.wait_for_function('window.__feedCalls.some(s=>s.includes("refresh=1"))')
     assert not errors,errors
-    print('PASS RSS grid, heading, neutral background, refresh at width',width)
+    print('PASS RSS grid, seamless cards, hover/focus, refresh at width',width)
     page.close()
   # Blank title leaves no RSS heading, with tabs still shown.
   page=browser.new_page(viewport={'width':1200,'height':800});page.goto('about:blank')

@@ -1,7 +1,10 @@
-# WASP v17.0.1 — Changes-only upgrade patch
+# WASP v18.3.0b changes-only patch
 
-Apply only to the complete **WASP v17.0.0** source repository. Unzip these files over the repository root (not into another nested folder). The patch preserves files not listed in PATCH-MANIFEST.json. Keep existing database, R2 storage, Docker volume mounts, secrets, user accounts and peer registry unchanged. Do not delete persistent data volumes.
+Apply ONLY to the exact unmodified v18.3.0a source tree.
 
-Suggested process: back up staging D1/Docker state, commit current Git revision, extract, inspect changes, commit and deploy to staging. On rollback, restore code at the saved v17.0.0 revision; database additions are additive, but restoring data requires the backup. Verify `/#top/telemetry` and active playback before production consideration.
+1. Back up the deployed source and persistent data.
+2. Extract this ZIP over the contents of the existing project folder (the folder with package.json), preserving paths.
+3. Do not delete Docker volumes or reset D1/R2.
+4. Rebuild/redeploy Test and verify hover styling before moving to Main or Docker.
 
-Included: source changes, `public/telemetry-world.json` public-domain local map geometry, new backend tests, a new UI test, and release documentation. No live servers are modified by this ZIP.
+This patch contains only changed/added project files. PATCH-INSTRUCTIONS.md is informational and not part of the project.

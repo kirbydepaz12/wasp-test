@@ -1,4 +1,4 @@
-// v18.3.0a RSS rail — independent of the persistent music player.
+// v18.3.0b RSS rail — independent of the persistent music player.
 const escapeText=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safePublicUrl=s=>{try{const u=new URL(String(s||''));return u.protocol==='https:'&&!u.username&&!u.password?u.href:'';}catch{return '';}};
 export function formatRSSItem(item){
