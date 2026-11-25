@@ -1206,7 +1206,7 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .spotify-draft-history-row>span{min-width:160px;flex:1;overflow-wrap:anywhere}
 @media(max-width:560px){.spotify-unassigned-item{align-items:stretch}.spotify-unassigned-item select{width:100%;max-width:none}}
 
-/* v18.2.2a: album hearts and five-star ratings use existing WASP controls. */
+/* v18.2.2b: album hearts and five-star ratings use existing WASP controls. */
 .album-page-actions,.artist-release-buttons{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .album-page-actions .form{margin:0!important;display:inline-flex;align-items:center;flex-wrap:wrap}
 .album-rating,.album-rating .rcircles{display:inline-flex;align-items:center;gap:9px;margin:0}

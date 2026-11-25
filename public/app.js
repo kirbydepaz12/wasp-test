@@ -947,12 +947,27 @@ function artistPool() {
   return getArtistIndex().alphabetical;
 }
 const moreTile = (href, label) => `<a class="simtile" href="${href}"><span class="art round dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span><b>Show more</b><span class="muted">${esc(label)}</span></a>`;
+// Feed the Home album carousel from the same cached, deduplicated catalogue
+// groups used by the Albums tab. Never synthesize a new audio/playlist item.
+function homeAlbumEntries(groups, search) {
+  const needle=String(search||'').trim().toLowerCase();
+  return groups.filter(g=>!needle || `${g.name} ${g.artist} ${g.tracks.map(t=>artistLine(t)).join(' ')}`.toLowerCase().includes(needle)).map(group=>({
+    id:albumGroupKey(group),group,
+    created:group.tracks.reduce((n,t)=>Math.max(n,Number(t.created_at)||0),0),
+    plays:group.tracks.reduce((n,t)=>n+Math.max(0,Number(t.plays)||0),0),
+    source:group.tracks.reduce((o,t)=>{const s=sourcesForTrack(t);return {local:o.local||s.local,peer:o.peer||s.peer};},{local:false,peer:false})
+  }));
+}
 function landing(el) {
   noView();
   if (loadError && !tracks.length) { el.innerHTML = errorBox("The music library couldn't be loaded.", loadError); return; }
   if (!tracks.length) { el.innerHTML = empty("No music yet. Check back soon."); return; }
   const qOk = (s) => !query || String(s).toLowerCase().includes(query);
   const artists = pickMix(artistPool().filter((a) => qOk(a.name)), (a) => a.created, (a) => a.plays);
+  // Use the exact same release groups as #recent/albums and the album page.
+  // A compilation stays one album even when its songs have different artists.
+  // The home rails mix recently added, popular and other available entries.
+  const albums = pickMix(homeAlbumEntries(reactableAlbums(),query), (a) => a.created, (a) => a.plays);
   const songs = pickMix(tracks.filter(match).map((t) => ({ id: t.id, t, created: t.created_at || 0, plays: t.plays || 0 })), (s) => s.created, (s) => s.plays);
   const pls = pickMix(playlists.filter((p) => qOk(p.name)).map((p) => ({
     id: p.id, p, created: p.updated_at || p.created_at || 0,
@@ -963,6 +978,7 @@ function landing(el) {
   el.innerHTML =
     (ad ? `<div class="home-ad">${ad}</div>` : "")
     + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${sourceTitle(a.name,artistSources(a.name))}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
+    + row("Albums", albums.map(({group,source}) => `<a class="tile sq" href="${albumHref(group)}">${art(albumArt(group.tracks[0]),group.name)}<b>${sourceTitle(group.name,source)}</b><span class="muted">${esc(group.artist)} · ${plural(group.tracks.length,"song")}</span></a>`).join("") + moreTile("#recent/albums", "All albums"))
     + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${sourceTitle(s.t.title,sourcesForTrack(s.t))}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
     + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"));
   view = { ids: songs.map((s) => s.t.id), label: "Home", pl: null };
@@ -1072,7 +1088,7 @@ function renderTelemetryMount(el,tab,sub){
   frame.setAttribute('loading','lazy');
   frame.style.height='540px';
   // Build the same-origin feature view only after the navigation actually opens it.
-  frame.src='/telemetry.html?v=18.2.2a';
+  frame.src='/telemetry.html?v=18.2.2b';
   el.replaceChildren(frame);
   noView();
   frame.addEventListener('load',()=>sendTelemetryRows(frame,tab,sub));
