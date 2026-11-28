@@ -1,0 +1,30 @@
+WASP v18.3.0d delists-only patch
+
+APPLY TO: exact WASP v18.3.0c (Music Folders & RSS Pinned Tabs) source tree.
+Not compatible with earlier unreleased v18.3.0d legal-pages build.
+Back up files, D1/SQLite and Docker persistent volumes; do not clear volumes.
+Extract this archive's directories/files over the v18.3.0c source tree.
+Run the bundled tests. For Docker rebuild the image rather than only restarting.
+Keep an alternative takedown available before rolling back as older code will not enforce rules.
+
+Modified/new paths:
+README.md
+docker/gateway.mjs
+docker/peer-relay.mjs
+docs/V18-3-0D-LOCAL-ARTIST-SONG-DELISTS.md
+package.json
+public/admin.html
+public/admin.js
+public/app.js
+public/index.html
+public/style.css
+src/delists.js
+src/index.js
+src/mobile-bridge.js
+src/release-docs.js
+tests/peer_relay.test.mjs
+tests/ui_v18_3_0d_delists.py
+tests/v14_0_2_refresh_crons_peerplays.test.mjs
+tests/v16_mobile_bridge.test.mjs
+tests/v18_1_2_admin_process_logs.test.mjs
+tests/v18_3_0d_delists.test.mjs

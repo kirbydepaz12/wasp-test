@@ -41,6 +41,12 @@ test('same-origin relay: discovery, artwork, range, copy metadata, and security 
   });
   const peerBase=await listen(peer);
   const worker=http.createServer((req,res)=>{
+    if(req.url.startsWith('/api/internal/delist/check')){
+      const q=new URL(req.url,'http://localhost').searchParams;
+      const allow=q.get('remote_id')==='song-1' || q.get('remote_id')==='redirect';
+      res.writeHead(200,{'content-type':'application/json'});
+      return res.end(JSON.stringify({allowed:allow,known:allow}));
+    }
     if(req.url==='/api/network/peers'){
       res.setHeader('content-type','application/json');
       res.end(JSON.stringify([{id:'federation-1',url:peerBase,name:'Cloudflare via bridge',track_count:1328}]));

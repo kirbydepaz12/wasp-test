@@ -1309,3 +1309,16 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .rss-tab-button.rss-icon-only{position:relative;overflow:visible}
 .rss-tab-button.rss-icon-only::after{content:attr(data-title);position:absolute;z-index:35;top:calc(100% + 8px);left:50%;transform:translateX(-50%);padding:6px 10px;background:#222;border:1px solid #555;border-radius:6px;color:#fff;font-weight:600;font-size:12px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .1s ease}
 .rss-tab-button.rss-icon-only:hover::after,.rss-tab-button.rss-icon-only:focus-visible::after{opacity:1}
+
+/* v18.3.0d: non-destructive local delists. Keep metadata and artist links. */
+.delisted-track{opacity:.43;filter:grayscale(.85);cursor:not-allowed!important;}
+.delisted-track:hover{background:transparent!important;}
+.delisted-label{display:inline-block;margin-left:.5rem;padding:2px 6px;border:1px solid var(--line2);border-radius:5px;font-size:10px;font-weight:600;color:var(--muted)}
+.delisted-track [data-artist-link]{pointer-events:auto;cursor:pointer;}
+
+.delists-entries{margin-top:8px;border:1px solid var(--line);border-radius:12px;padding:8px 12px;max-height:530px;overflow:auto;}
+.delist-entry{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 4px;border-bottom:1px solid var(--line)}
+.delist-entry:last-child{border-bottom:0}
+.delist-entry strong,.delist-entry span{display:block}
+.delist-entry .muted{font-size:12px;margin-top:4px}
+@media(max-width:650px){.delist-entry{align-items:flex-start;flex-direction:column}}

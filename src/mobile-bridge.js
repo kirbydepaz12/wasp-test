@@ -1,3 +1,4 @@
+import {readDelists,evaluateDelist} from "./delists.js";
 import {recordTelemetryListen} from "./telemetry.js";
 import {requireNoRedirect} from './peer-fetch.js';
 import {readFederatedCatalogue, publicPeerOrigin} from './mobile-federation.js';
@@ -542,8 +543,22 @@ export async function handleMobileRest(req,env,url,options={}){
   if(action==='ping')return protocolResponse({},null,format);
   if(action==='getLicense')return protocolResponse({license:{valid:true}},null,format);
   if(action==='tokenInfo')return protocolResponse({tokenInfo:{username:auth.username}},null,format);
-  let catalogue;
-  try{catalogue=await libraryForRequest(env.DB);}catch{return protoError(0,'Unable to read music catalogue',format);}
+  let original;
+  try{original=await libraryForRequest(env.DB);}catch{return protoError(0,'Unable to read music catalogue',format);}
+  const localPolicy=await readDelists(env.DB);
+  const allowed=track=>!evaluateDelist(track,localPolicy);
+  // The virtual music library is cached for ten seconds across requests: never
+  // mutate the shared maps or album arrays, even when changing delist rules.
+  // Subsonic cannot render disabled rows, so omit restricted songs and prevent
+  // playback, while the browser WASP UI continues showing them as unavailable.
+  const safeAlbums=new Map([...original.albums].map(([id,a])=>[id,{...a,songs:a.songs.filter(allowed)}])
+    .filter(([,a])=>a.songs.length));
+  const safeArtists=new Map([...original.artists].map(([id,a])=>[id,{...a,albums:new Set([...a.albums].filter(x=>safeAlbums.has(x)))}])
+    .filter(([,a])=>a.albums.size));
+  const catalogue={...original,tracks:original.tracks.filter(allowed),
+    byId:new Map([...original.byId].filter(([,t])=>allowed(t))),
+    byOrigin:new Map([...original.byOrigin].filter(([,t])=>allowed(t))),
+    albums:safeAlbums,artists:safeArtists};
   const {tracks,albums,artists}=catalogue;
   // Fetch account hearts only for browse endpoints. Audio byte-range requests
   // must not incur an extra D1 read for every seek/buffer operation.

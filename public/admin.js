@@ -70,6 +70,7 @@ function showPane() {
   if (k === 'collection') void showCollectionTab(route.split('/')[1]==='music-folders'?'music-folders':'songs');
   if (k === "settings") showSettingsSubtab(['release-updates','rss'].includes(route.split('/')[1]) ? route.split('/')[1] : 'general');
   if (k === 'add') showAddSubtab(route.split('/')[1]==='recreate'?'recreate':'upload');
+  if (k === 'danger') showDangerTab(route.split('/')[1]==='clean'?'clean':'delists');
   if (k === "duplicates") loadDuplicates();
   if (k === "processes") showOperationsTab(route.split("/")[1] === "logs" ? "logs" : "running");
   if (k === "users") showUsersTab(route.split("/")[1] === "announcements" ? "announcements" : "accounts");
@@ -1747,6 +1748,59 @@ $("#pwForm").addEventListener("submit", async (e) => {
   if (r.ok) { pwDlg.close(); flashMsg("#acctMsg", "Password changed. Other devices were logged out."); }
   else $("#pwMsg").textContent = (await r.json()).error;
 });
+
+// ---------- danger: local artist and song delists ----------
+let delistsBusy=false;
+function showDangerTab(name='delists'){
+  const delists=name!=='clean';
+  $('#dangerDelistsPanel').classList.toggle('hidden',!delists);
+  $('#dangerCleanPanel').classList.toggle('hidden',delists);
+  $('#dangerTabDelists').setAttribute('aria-selected',String(delists));
+  $('#dangerTabClean').setAttribute('aria-selected',String(!delists));
+  if(delists)void loadDelists();
+}
+$('#dangerTabDelists').onclick=()=>{location.hash='danger/delists';showDangerTab('delists');};
+$('#dangerTabClean').onclick=()=>{location.hash='danger/clean';showDangerTab('clean');};
+const delistsType=$('#delistsType');
+function paintDelistsType(){const song=delistsType.value==='song';$('#delistsTitleWrap').classList.toggle('hidden',!song);$('#delistsTitle').required=song;}
+delistsType.addEventListener('change',paintDelistsType);paintDelistsType();
+async function loadDelists(){
+  if(delistsBusy)return;
+  try{
+    const r=await fetch('/api/admin/delists',{cache:'no-store'}),d=await r.json();
+    if(!r.ok)throw Error(d.error||'Could not retrieve delists');
+    $('#delistsSearchable').checked=d.searchable!==false;
+    $('#delistsEntries').innerHTML=d.rules.length?d.rules.map(rule=>`<div class="delist-entry">
+      <div><strong>${esc(rule.kind==='artist'?rule.artist:rule.title)}</strong><span class="muted">${rule.kind==='artist'?'All credited songs':'Song · '+esc(rule.artist)}</span></div>
+      <button type="button" class="btn ghost" data-delist-remove="${esc(rule.id)}">Restore playback</button>
+      </div>`).join(''):'<p class="muted">No active delists. All otherwise available music can play.</p>';
+  }catch(e){$('#delistsStatus').textContent=e.message;}
+}
+$('#delistsRefresh').onclick=()=>void loadDelists();
+$('#delistsSearchable').onchange=async e=>{
+  const check=e.currentTarget;check.disabled=true;
+  try{const r=await fetch('/api/admin/delists/searchable',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({searchable:check.checked})}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to save');$('#delistsStatus').textContent=d.searchable?'Delisted titles remain searchable.':'Delisted titles are excluded from search; browsing and telemetry remain.';}
+  catch(err){$('#delistsStatus').textContent=err.message;check.checked=!check.checked;}
+  finally{check.disabled=false;}
+};
+$('#delistsAddForm').onsubmit=async e=>{
+  e.preventDefault();if(delistsBusy)return;
+  delistsBusy=true;const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;
+  try{const r=await post('/api/admin/delists',{kind:delistsType.value,artist:$('#delistsArtist').value,title:$('#delistsTitle').value});const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to delist');
+    $('#delistsStatus').textContent='Delist saved. Streaming is blocked on this instance. No files were deleted.';
+    $('#delistsTitle').value='';$('#delistsArtist').value='';}
+  catch(err){$('#delistsStatus').textContent=err.message;}
+  finally{delistsBusy=false;submit.disabled=false;await loadDelists();}
+};
+$('#delistsEntries').onclick=async e=>{
+  const b=e.target.closest('[data-delist-remove]');if(!b)return;
+  if(!confirm('Remove this local restriction and allow this music to play again?'))return;
+  b.disabled=true;
+  try{const r=await fetch('/api/admin/delists/'+encodeURIComponent(b.dataset.delistRemove),{method:'DELETE'}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to remove rule');
+    $('#delistsStatus').textContent='Restriction removed. This change does not alter the source server or music files.';
+  }catch(err){$('#delistsStatus').textContent=err.message;}
+  finally{b.disabled=false;await loadDelists();}
+};
 
 // ---------- danger: clean database ----------
 const cleanDlg = $("#cleanDlg");

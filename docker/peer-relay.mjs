@@ -41,7 +41,7 @@ function transferHeaders(raw) {
   return out;
 }
 
-export function createPeerRelay({ worker = 'http://127.0.0.1:8787', ttlMs = 5000, originAliases = process.env.PEER_RELAY_ALIASES || '' } = {}) {
+export function createPeerRelay({ worker = 'http://127.0.0.1:8787', scannerSecret = process.env.SCANNER_SECRET || '', ttlMs = 5000, originAliases = process.env.PEER_RELAY_ALIASES || '' } = {}) {
   // Optional admin-defined mapping from canonical peer origins to a known
   // connected bridge. Used for copied playlists with source URLs referring to
   // the upstream site's public hostname rather than its Tailscale proxy.
@@ -55,6 +55,16 @@ export function createPeerRelay({ worker = 'http://127.0.0.1:8787', ttlMs = 5000
     return canonical && configured && configured.origin===safeBase(p.url)?.origin;
   }).map(([origin])=>new URL(origin).origin);
   let cache = null, expires = 0, inFlight = null;
+  const peerTrackCache=new Map();
+  async function peerTrack(peer,remoteId){
+    const key=peer.id,now=Date.now(),prior=peerTrackCache.get(key);
+    if(prior&&prior.expires>now)return prior.songs.get(remoteId)||null;
+    const response=await fetch(peer.url.replace(/\/$/,'')+'/api/tracks',{redirect:'manual',headers:{accept:'application/json'},signal:AbortSignal.timeout(12000)});
+    if(!response.ok||Number(response.headers.get('content-length'))>8*1024*1024)throw Error('Peer catalogue unavailable');
+    const rows=await response.json();if(!Array.isArray(rows)||rows.length>30000)throw Error('Peer catalogue too large');
+    const songs=new Map(rows.filter(x=>x&&typeof x.id==='string').map(x=>[x.id,x]));
+    peerTrackCache.set(key,{songs,expires:now+60000});return songs.get(remoteId)||null;
+  }
   async function listPeers() {
     if (cache && Date.now() < expires) return cache;
     if (inFlight) return inFlight;
@@ -89,6 +99,26 @@ export function createPeerRelay({ worker = 'http://127.0.0.1:8787', ttlMs = 5000
     try { peer = (await listPeers()).find(p=>p.id === match[1]); }
     catch { httpJson(res, 502, {error:'Peer registry unavailable'}); return true; }
     if (!peer) { httpJson(res, 404, {error:'Unknown connected peer'}); return true; }
+    // For audio, ask this server's database before forwarding a single byte.
+    // A missing/unknown track is blocked rather than allowing a policy bypass.
+    if(ALLOWED_AUDIO.test(match[2])){
+      const remoteId=match[2].slice('/audio/'.length);
+      try{
+        const qp=new URLSearchParams({origin:peer.url,remote_id:remoteId});
+        const gate=await fetch(worker+'/api/internal/delist/check?'+qp,{headers:{'x-scanner-secret':scannerSecret},cache:'no-store',signal:AbortSignal.timeout(5000)});
+        if(!gate.ok){httpJson(res,503,{error:'Playback policy unavailable'});return true;}
+        let verdict=await gate.json();
+        if(!verdict.allowed&&!verdict.known){
+          const peerSong=await peerTrack(peer,remoteId);
+          if(peerSong){
+            qp.set('source_title',String(peerSong.title||''));qp.set('source_artist',String(peerSong.artist||''));
+            const check=await fetch(worker+'/api/internal/delist/check?'+qp,{headers:{'x-scanner-secret':scannerSecret},cache:'no-store',signal:AbortSignal.timeout(5000)});
+            if(check.ok)verdict=await check.json();
+          }
+        }
+        if(!verdict.allowed){httpJson(res,451,{error:'Unavailable on this WASP server'});return true;}
+      }catch{httpJson(res,503,{error:'Playback policy unavailable'});return true;}
+    }
     const base = safeBase(peer.url);
     if (!base) { httpJson(res, 502, {error:'Invalid configured peer'}); return true; }
 

@@ -220,7 +220,13 @@ const server=http.createServer(async(req,res)=>{
  }
  if(u.pathname==='/api/local/scan'&&req.method==='POST'){res.writeHead(404);res.end();return;}
  if(u.pathname.startsWith('/audio/folder-')){
-  const t=catalogue.get(u.pathname.slice(7));if(!t){res.writeHead(404);res.end();return;}streamFile(req,res,t);return;
+  const id=u.pathname.slice(7),t=catalogue.get(id);
+  if(!t){res.writeHead(404);res.end();return;}
+  try{
+   const check=await fetch(worker+'/api/internal/delist/check?id='+encodeURIComponent(id),{headers:{'x-scanner-secret':secret},signal:AbortSignal.timeout(5000),cache:'no-store'});
+   if(!check.ok || !(await check.json()).allowed){res.writeHead(451,{'cache-control':'no-store'});res.end('Unavailable on this WASP server');return;}
+  }catch{res.writeHead(503);res.end('Playback policy unavailable');return;}
+  streamFile(req,res,t);return;
  }
  if(u.pathname==='/art/track'&&u.searchParams.get('id')?.startsWith('folder-')){
   const cover=await ensureFolderCover(catalogue.get(u.searchParams.get('id')));

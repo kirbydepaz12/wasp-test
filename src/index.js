@@ -13,13 +13,14 @@ import {RELEASE_SOURCES,fetchUpstream,releaseDecision} from "./release-updates.j
 import {BUILD_COMMIT} from "./build-commit.js";
 import {safeFeedUrl,feedTab,fetchFeed} from './rss-feeds.js';
 import {autoRecreateMatch,recreateCandidates} from './collection-recreate.js';
+import {readDelists,markDelisted,evaluateDelist,addDelist,removeDelist} from "./delists.js";
 import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.3.0c";
-const BUILD_LABEL = "Music Folders and RSS Pinned Tabs";
+const BUILD_VERSION = "18.3.0d";
+const BUILD_LABEL = "Local Artist & Song Delists";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -54,6 +55,7 @@ const clean = (v, max = 200) => String(v ?? "").trim().slice(0, max);
 // Cache API entries are regional and expire automatically. Login, account,
 // private playlist, lyric requests, and admin responses are NEVER cached here.
 const PUBLIC_CACHE_TTLS = Object.freeze({
+  // Public catalogue caching is retained; policy is a separate no-store read.
   "/api/tracks": 45,
   "/api/playlists": 45,
   "/api/user-playlists": 45,
@@ -95,6 +97,7 @@ function invalidatePublicCache(req,url,res,ctx) {
   if(req.method === "GET" || !res.ok || typeof caches === "undefined" || !caches.default) return;
   const path=url.pathname;
   const paths=new Set();
+  if(path.startsWith("/api/admin/delists")) {paths.add("/api/tracks");paths.add("/api/playlists");}
   if(path === "/api/internal/folder-index" || path.startsWith("/api/admin/tracks/") || path === "/api/admin/upload" || path === "/api/admin/clean") paths.add("/api/tracks");
   if(path.startsWith("/api/admin/playlists") || path === "/api/admin/clean") paths.add("/api/playlists");
   if(path.startsWith("/api/user/playlists") || path === "/api/admin/clean") paths.add("/api/user-playlists");
@@ -2105,6 +2108,46 @@ async function api(req, env, url, ctx) {
   const m = req.method;
   const DB = env.DB;
   let x;
+  // Delists are server-local, never shared as peer decisions or telemetry changes.
+  if(path==='/api/delists'&&m==='GET')return json(await readDelists(DB));
+  if(path==='/api/admin/delists'||path.startsWith('/api/admin/delists/')){
+    const admin=await sessionInfo(req,env);
+    if(admin?.role!=='admin')return json({error:'Administrator required'},403);
+    if(path==='/api/admin/delists'&&m==='GET')return json(await readDelists(DB));
+    if(path==='/api/admin/delists'&&m==='POST'){
+      try{return json(await addDelist(DB,await req.json().catch(()=>({}))),201);}catch(e){return json({error:e.message},400);}
+    }
+    if(path==='/api/admin/delists/searchable'&&m==='PUT'){
+      const body=await req.json().catch(()=>({}));
+      if(typeof body.searchable!=='boolean')return json({error:'Invalid visibility setting'},400);
+      await DB.prepare("INSERT INTO settings(key,value) VALUES('delists_searchable',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.searchable?'1':'0').run();
+      return json(await readDelists(DB));
+    }
+    const match=path.match(/^\/api\/admin\/delists\/([a-f0-9-]{36})$/i);
+    if(match&&m==='DELETE')return json(await removeDelist(DB,match[1]));
+    return json({error:'Method not allowed'},405);
+  }
+  // Docker gateways use an authenticated loopback check before serving
+  // read-only folder bytes and each peer-relayed audio request.
+  if(path==='/api/internal/delist/check'&&m==='GET'){
+    if(!env.SCANNER_SECRET||req.headers.get('x-scanner-secret')!==env.SCANNER_SECRET)
+      return json({error:'Forbidden'},403);
+    const id=clean(url.searchParams.get('id'),160),origin=clean(url.searchParams.get('origin'),300),remote=clean(url.searchParams.get('remote_id'),120);
+    let track=null;
+    if(origin&&remote){
+      track=await DB.prepare('SELECT title,artist FROM peer_track_refs WHERE origin=? AND remote_id=? LIMIT 1').bind(origin,remote).first();
+      if(!track)track=await DB.prepare('SELECT title,artist FROM peer_reaction_tracks WHERE origin=? AND remote_id=? LIMIT 1').bind(origin,remote).first();
+    }else if(id){track=await DB.prepare('SELECT title,artist,artists FROM tracks WHERE id=?').bind(id).first();}
+    // Only the scanner secret can reach this endpoint. In the peer relay case
+    // the gateway obtains fallback metadata directly from the approved peer.
+    if(!track&&origin&&remote&&url.searchParams.get('source_title')&&url.searchParams.get('source_artist')){
+      track={title:clean(url.searchParams.get('source_title'),200),artist:clean(url.searchParams.get('source_artist'),200)};
+    }
+    const policy=await readDelists(DB);
+    // When a peer track is not indexed locally, don't allow unreviewed audio
+    // through the proxy while there is a restriction list to enforce.
+    return json({allowed:(!policy.rules.length||!!track) && !evaluateDelist(track,policy),known:!!track,reason:track?evaluateDelist(track,policy):policy.rules.length?'unindexed':null});
+  }
   if(path==='/api/rss'||path.startsWith('/api/rss/feed/'))return rssApi(req,DB,path,m);
   // Docker-only music directory registry. Admin credentials stay in the Worker;
   // only the per-installation scanner secret can reach the loopback gateway.
@@ -2282,6 +2325,9 @@ async function api(req, env, url, ctx) {
         if(new URL(bridgeOrigin).origin===origin && new URL(publicOrigin).protocol==="https:")canonical=new URL(publicOrigin).origin;
       }
     }catch{}
+    const knownTrack=await DB.prepare('SELECT title,artist FROM peer_track_refs WHERE origin=? AND remote_id=? LIMIT 1').bind(origin,remote).first();
+    const policy=await readDelists(DB);
+    if(evaluateDelist(knownTrack||{title:b.title,artist:b.artist},policy))return json({error:'Delisted on this server'},451);
     const eventId=playEventId(req);
     const inserted=await recordListen(env,{track_id:remote,origin:canonical,remote_id:remote,title:b.title,artist:b.artist,album:b.album,cover_url:b.cover_url,duration:b.duration},{eventId});
     // Docker can send genuine listening events directly to its configured
@@ -2506,8 +2552,9 @@ async function api(req, env, url, ctx) {
     if(!exists)return json([]);
     const rows=(await DB.prepare(`SELECT a.album,a.track_no,r.ref,r.origin,r.remote_id,r.title,r.artist,r.duration,r.cover_url
       FROM recreated_album_peer_tracks a JOIN peer_track_refs r ON r.ref=a.track_ref ORDER BY a.album,a.track_no`).all()).results;
-    return json(rows.map(r=>({id:r.ref,remote_id:r.remote_id,origin:r.origin,title:r.title,artist:r.artist,
-      artists:r.artist,album:r.album,track_no:r.track_no,duration:r.duration,cover_url:r.cover_url,recreated:true})));
+    const policy=await readDelists(DB);
+    return json(rows.map(r=>markDelisted({id:r.ref,remote_id:r.remote_id,origin:r.origin,title:r.title,artist:r.artist,
+      artists:r.artist,album:r.album,track_no:r.track_no,duration:r.duration,cover_url:r.cover_url,recreated:true},policy)));
   }
   if (path === "/api/tracks" && m === "GET") {
     // Provide verified file/HIVE metadata with the catalogue so the browser can
@@ -2530,7 +2577,8 @@ async function api(req, env, url, ctx) {
     } catch {
       results=(await DB.prepare(`SELECT ${TRACK_COLS} FROM tracks t LEFT JOIN reactions r ON r.track_id=t.id GROUP BY t.id ORDER BY t.created_at DESC`).all()).results;
     }
-    return json(results.map((t) => { let artists; try { artists = artistsOfRow(t); } catch { artists = [t.artist || "Unknown Artist"]; } return { ...t, artists }; }));
+    const policy=await readDelists(DB);
+    return json(results.map((t) => { let artists; try { artists = artistsOfRow(t); } catch { artists = [t.artist || "Unknown Artist"]; } return markDelisted({ ...t, artists },policy); }));
   }
   if (path === "/api/track-reaction-counts" && m === "GET") {
     const {results}=await DB.prepare(`SELECT track_id AS id,
@@ -2960,6 +3008,7 @@ async function api(req, env, url, ctx) {
   if ((x = path.match(/^\/api\/play\/([\w-]+)$/)) && m === "POST") {
     const track=await DB.prepare("SELECT id,title,artist,album,duration FROM tracks WHERE id=?").bind(x[1]).first();
     if(!track)return json({error:"Track not found"},404);
+    if(evaluateDelist(track,await readDelists(DB)))return json({error:'Delisted on this server'},451);
     await recordListen(env,{track_id:track.id,remote_id:track.id,title:track.title,artist:track.artist,album:track.album,duration:track.duration},{relayed:req.headers.get("x-wasp-relay-play")==="1",eventId:playEventId(req)});
     return json({ ok: true });
   }
@@ -4557,7 +4606,12 @@ export default {
         const obj=await env.MUSIC.get(`art/user-playlist/${id}`);if(!obj)return new Response("Not found",{status:404});
         const h=new Headers();obj.writeHttpMetadata(h);h.set("cache-control","public, max-age=3600");return withCors(new Response(obj.body,{headers:h}),share);
       }
-      if (url.pathname.startsWith("/audio/")) return withCors(await serveAudio(req, env, url.pathname.slice(7)), share);
+      if (url.pathname.startsWith("/audio/")) {
+        const id=url.pathname.slice(7),track=await env.DB.prepare('SELECT id,title,artist,artists FROM tracks WHERE id=?').bind(id).first();
+        if(!track)return new Response('Track unavailable',{status:404,headers:{'cache-control':'no-store'}});
+        if(evaluateDelist(track,await readDelists(env.DB)))return new Response('Delisted on this WASP server',{status:451,headers:{'cache-control':'no-store'}});
+        return withCors(await serveAudio(req, env, id), share);
+      }
       if (["/art/album", "/art/artist", "/art/track", "/art/playlist"].includes(url.pathname)) return withCors(await serveArt(env, url), share);
       if (url.pathname.startsWith("/api/")) {
         // Persist an audit record and expose in-flight admin operations.

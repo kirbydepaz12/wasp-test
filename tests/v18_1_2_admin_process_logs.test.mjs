@@ -37,7 +37,7 @@ test('v18.1.2 auth, action history excludes secrets, clear is admin-only and aud
   const after=(await f.api('/api/admin/processes/logs','GET',undefined,f.admin)).body.entries;
   assert.equal(after.length,1);assert.equal(after[0].action,'Admin audit history cleared');
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM server_announcements').get().n,1,'clearing logs must not delete announcements');
-  assert.equal((await f.api('/api/admin/version','GET',undefined,f.admin)).body.version,'18.3.0c');
+  assert.equal((await f.api('/api/admin/version','GET',undefined,f.admin)).body.version,'18.3.0d');
  }finally{f.sqlite.close();}
 });
 

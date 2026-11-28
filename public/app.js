@@ -1,4 +1,4 @@
-import {mountHomeRSS} from './rss-home.mjs?v=18.3.0c';
+import {mountHomeRSS} from './rss-home.mjs?v=18.3.0d';
 import { radioIds } from "/radio.js";
 import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";
@@ -97,6 +97,38 @@ const KEY = { heart: "hearts", like: "likes", dislike: "dislikes" };
 
 let tracks = [], byId = {}, playlists = [], userPublicPlaylists = [], peerPlaylists = [], query = "";
 let peerTrackLookup = new Map();
+// Delisting is an instance-local playback restriction. Keep the cards, titles,
+// and historical telemetry; only playback and optional search are affected.
+let localDelists={rules:[],searchable:true};
+const normDelist=v=>String(v||'').normalize('NFKC').trim().replace(/\s+/g,' ').toLowerCase();
+function delistReason(t){
+  if(!t||!localDelists.rules?.length)return '';
+  const names=artistsOf(t).map(normDelist),title=normDelist(t.title);
+  for(const rule of localDelists.rules){
+    if(rule.kind==='artist'&&names.includes(rule.key_artist))return 'artist';
+    if(rule.kind==='song'&&title===rule.key_title&&names.includes(rule.key_artist))return 'song';
+  }
+  return '';
+}
+function markDelistedTrack(t){if(t){t.delist_reason=delistReason(t);t.delisted=!!t.delist_reason;}return t;}
+function applyDelists(){
+  for(const t of tracks)markDelistedTrack(t);
+  for(const t of peerTrackLookup.values())markDelistedTrack(t);
+  for(const t of Object.values(byId))markDelistedTrack(t);
+  for(const t of peerReactionTracks.values())markDelistedTrack(t);
+}
+async function refreshDelists({rerender=false}={}){
+  try{
+    const r=await fetch('/api/delists',{cache:'no-store'});if(!r.ok)return;
+    const next=await r.json();if(!Array.isArray(next.rules))return;
+    const changed=JSON.stringify(localDelists)!==JSON.stringify(next);
+    localDelists=next;applyDelists();
+    if(changed&&cur()?.delisted){routingIntent=false;clearRouteTimer();audio.pause();audio.removeAttribute('src');audio.load();routeNotice('This track has been delisted on this server.');}
+    if(changed&&rerender){invalidateArtistIndex();render();}
+  }catch{}
+}
+setInterval(()=>{if(!document.hidden)void refreshDelists({rerender:true});},30000);
+
 // Recreated only after loading a fresh catalogue (including peer snapshots).
 // Artist cards never scan the entire local/HIVE library one by one.
 let artistIndexCache = null;
@@ -407,6 +439,7 @@ async function load() {
   if(loadingCatalogue)return;
   loadingCatalogue=true;
   try {
+  await refreshDelists();
   try {const r=await fetch("/api/catalog-version",{cache:"no-store"});if(r.ok)catalogueRevision=(await r.json()).revision||"";}catch{}
 
   const steps = [
@@ -531,6 +564,7 @@ async function load() {
     const r=await fetch("/api/user/peer-tracks");
     if(r.ok)for(const t of await r.json())if(!byId[t.id])byId[t.id]={...t,remote_id:t.remote_id,origin:t.origin,artists:[t.artist],cover_url:t.cover_url};
   } catch {}
+  applyDelists();
   invalidateArtistIndex();reactableAlbumCache=null;
   restorePlaybackQueue();
   paintBoot(100, "Songs, artists and playlists");
@@ -550,6 +584,7 @@ async function pollCatalogueChanges() {
   if(Date.now()-lastCatalogueCheck<20000)return;
   lastCatalogueCheck=Date.now();
   let updated=false;
+  await refreshDelists();
   try {const r=await fetch("/api/catalog-version",{cache:"no-store"});if(r.ok){
     const value=(await r.json()).revision||"0";
     if(catalogueRevision && value!==catalogueRevision)updated=true;
@@ -632,7 +667,7 @@ function renderSub(tab, sub) {
   bar.innerHTML = Object.entries(sm.items).map(([s, sv]) =>
     `<a href="#${tab}${s === sm.def ? "" : "/" + s}"${s === sub ? ' aria-current="page"' : ""}>${sv}</a>`).join("");
 }
-const match = (t) => !query || `${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query);
+const match = (t) => !query || (localDelists.searchable===false && t.delisted?false:`${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query));
 const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
 // The number from the song's own track tag, even when only one song of the album is here. Without any tags, the position.
 const numLabel = (t, i, l) => t.track_no || (l.some((x) => x.track_no) ? "–" : i + 1);
@@ -666,8 +701,8 @@ function artistLinks(t){
 function row(t, num, extra = "", cover = false) {
   // Metadata is shown only when verified/available; never infer a release year.
   const year=trackYear(t),tags=trackGenres(t);
-  return `<button class="row track-detail-row" data-id="${esc(t.id)}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
-    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}<small class="compact-artist">${artistLinks(t)}</small></span>
+  return `<button class="row track-detail-row${t.delisted?' delisted-track':''}" data-id="${esc(t.id)}" aria-disabled="${!!t.delisted}" title="${t.delisted?'Delisted on this WASP server':''}"><span class="n">${cover ? art(albumArt(t), albumName(t) || t.title) : num}</span>
+    <span class="t">${sourceTitle(t.title,sourcesForTrack(t))}${t.delisted?'<span class="delisted-label">Unavailable</span>':''}<small class="compact-artist">${artistLinks(t)}</small></span>
     <span class="al muted" title="Album">${esc(extra || albumName(t) || "Single")}</span>
     <span class="row-artists muted" title="Artists">${artistLinks(t)}</span>
     <span class="row-year muted" title="Release year">${year||'—'}</span>
@@ -676,7 +711,7 @@ function row(t, num, extra = "", cover = false) {
 }
 function rowHeading(){return `<div class="track-column-head" aria-hidden="true"><span>#</span><span>Title</span><span>Album</span><span>Artists</span><span>Year</span><span>Genre</span><span>Duration</span></div>`;}
 const songTiles = (l, extra) => `<div class="grid s">${l.map((t) =>
-  `<button class="tile sq song" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<b>${sourceTitle(t.title,sourcesForTrack(t))}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
+  `<button class="tile sq song${t.delisted?' delisted-track':''}" data-id="${esc(t.id)}" aria-disabled="${!!t.delisted}">${art(albumArt(t), albumName(t) || t.title)}<b>${sourceTitle(t.title,sourcesForTrack(t))}${t.delisted?' · Unavailable':''}</b><span class="muted">${esc(artistLine(t))}</span>${extra ? `<span class="muted">${esc(extra(t))}</span>` : ""}</button>`).join("")}</div>`;
 const empty = (msg) => `<div class="empty">${msg}</div>`;
 let entity = { artist: {}, album: {}, playlist: {} };
 let ratedPlaylistCache = []; // Locally voted peer playlists remain listed when a peer is offline.
@@ -993,7 +1028,7 @@ function landing(el) {
     (ad ? `<div class="home-ad">${ad}</div>` : "")
     + row("Artists", artists.map((a) => `<a class="tile" href="#artist/${enc(a.name)}">${art(artistArt(a.name), a.name)}<b>${sourceTitle(a.name,artistSources(a.name))}</b><span class="muted">${plural(a.songs, "song")}</span></a>`).join("") + moreTile("#artists", "All artists"))
     + row("Albums", albums.map(({group,source}) => `<a class="tile sq" href="${albumHref(group)}">${art(albumArt(group.tracks[0]),group.name)}<b>${sourceTitle(group.name,source)}</b><span class="muted">${esc(group.artist)} · ${plural(group.tracks.length,"song")}</span></a>`).join("") + moreTile("#recent/albums", "All albums"))
-    + row("Songs", songs.map((s) => `<button class="tile sq song" data-id="${s.t.id}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${sourceTitle(s.t.title,sourcesForTrack(s.t))}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
+    + row("Songs", songs.map((s) => `<button class="tile sq song${s.t.delisted?' delisted-track':''}" data-id="${s.t.id}" aria-disabled="${!!s.t.delisted}">${art(albumArt(s.t), albumName(s.t) || s.t.title)}<b>${sourceTitle(s.t.title,sourcesForTrack(s.t))}</b><span class="muted">${esc(artistLine(s.t))}</span></button>`).join("") + moreTile("#recent", "All songs"))
     + row("Playlists", pls.map((x) => playlistTile(x.p)).join("") + moreTile("#playlists", "All playlists"))
     + (site?.rss?.enabled&&!query ? '<section id="homeRSS" aria-label="RSS feeds"></section>' : '');
   if(site?.rss?.enabled&&!query){const host=el.querySelector('#homeRSS');if(host)void mountHomeRSS(host);}
@@ -1129,7 +1164,7 @@ window.addEventListener('message',event=>{
     if(Number.isFinite(h))frame.style.height=Math.max(250,Math.min(15000,h+8))+'px';
   } else if(data.type==='wasp:telemetry-play'){
     const id=String(data.id||'');
-    if(byId[id])play(id); // Never create a second audio element.
+    if(byId[id]&&!byId[id].delisted)play(id); // Never create a second audio element.
   } else if(data.type==='wasp:telemetry-navigate'){
     const allowed=/^#(?:artist|album|playlist|top|hearts|stars)(?:\/[^?#]*)?$/;
     if(typeof data.href==='string'&&data.href.length<=500&&allowed.test(data.href))location.hash=data.href;
@@ -1359,7 +1394,8 @@ function artistGrid(el, recent) {
     const subset=buildArtistIndex(tracks.filter(match),[],artistsOf,normalizeRecording);
     entries=subset.newest;
   } else entries=recent?index.newest:index.alphabetical;
-  if (searchTokens.length) entries=entries.filter(e=>searchTokens.some(token=>normal(e.name).includes(token)));
+  if (searchTokens.length) entries=entries.filter(e=>searchTokens.some(token=>normal(e.name).includes(token))&&
+    (localDelists.searchable!==false||tracks.some(t=>!t.delisted&&artistsOf(t).some(a=>normDelist(a)===normDelist(e.name)))));
   noView();
   if (!entries.length) { el.innerHTML=empty("Nothing matches your search.");return; }
   const card=(entry)=>`<a class="tile" href="#artist/${enc(entry.name)}">${art(artistArt(entry.name),entry.name)}<b>${sourceTitle(entry.name,artistSources(entry.name))}</b><span class="muted">${plural(entry.songs,"song")}</span></a>`;
@@ -2357,6 +2393,7 @@ function restorePlaybackQueue() {
 }
 function resumeRestoredPlayback() {
   if(!queueRestored||!cur()||audio.src)return false;
+  if(cur()?.delisted){queueRestored=false;routeNotice("Delisted on this WASP server.");return true;}
   queueRestored=false;
   beginRoute(cur(),resumePosition);
   rememberPlaybackQueue(true);
@@ -2368,6 +2405,9 @@ function findPlaylist(pl) {
   return [...playlists, ...peerPlaylists, ...userPublicPlaylists].find(p => p.id === pl) || null;
 }
 function startQueue(ids, id, label, pl, kind = "") {
+  ids=ids.filter(trackId=>byId[trackId]&&!byId[trackId].delisted);
+  if(!ids.length){popup('No playable tracks','Every matching track is delisted or unavailable on this WASP server.');return;}
+  if(!ids.includes(id))id=ids[0];
   const source = findPlaylist(pl);
   playlistScope = source ? {
     id: source.id,
@@ -2450,6 +2490,7 @@ function recoverRoute(reason){
   route.exhausted=true;routingIntent=false;audio.pause();routeNotice(reason+'. Press play to retry.');
 }
 function beginRoute(t,position=0){
+  if(t?.delisted){routeNotice('Delisted on this WASP server.');return;}
   clearRouteTimer();routingIntent=true;routeNotice('');
   playbackRoute={serial:++routeSerial,attempt:0,sources:routeCandidates(t),index:0,retried:false,exhausted:false,lastTime:position,source:null,loading:true};
   startRouteSource(playbackRoute,position);
@@ -2474,6 +2515,7 @@ audio.addEventListener('pause',()=>{if(playbackRoute&&!playbackRoute.switching&&
 function play(id,opts={}) {
   const t = byId[id];
   if (!t) return;
+  if(t.delisted){popup('Playback unavailable','This song or one of its artists is delisted on this WASP server.');return;}
   qi = opts.restored&&queue[opts.queueIndex]===id?opts.queueIndex:queue.indexOf(id);
   if (qi < 0) { queue = [id]; qi = 0; }
   audio.dataset.id=id;
@@ -2502,7 +2544,14 @@ function play(id,opts={}) {
   paintReact(); paintShuffle(); markRows(); renderQueue();rememberPlaybackQueue(true);
   if (!$("#lyrics").classList.contains("hidden")) loadLyrics();
 }
-const step = (d) => { if (queue.length) play(queue[(Math.max(qi, 0) + d + queue.length) % queue.length]); };
+const step = (d) => {
+  if(!queue.length)return;
+  for(let n=1;n<=queue.length;n++){
+    const id=queue[(Math.max(qi,0)+d*n+queue.length*2)%queue.length];
+    if(byId[id]&&!byId[id].delisted){play(id);return;}
+  }
+  routingIntent=false;audio.pause();audio.removeAttribute('src');audio.load();
+};
 
 function shuffleIn(kind) {
   const t = cur();
@@ -2565,7 +2614,7 @@ function renderQueue() {
     else queueLabel.textContent=qLabel;
   }
   $("#uplist").innerHTML = up.length ? up.filter(Boolean).map((t) =>
-    `<button class="qrow" data-id="${esc(t.id)}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span></button>`).join("")
+    `<button class="qrow${t.delisted?' delisted-track':''}" data-id="${esc(t.id)}" aria-disabled="${!!t.delisted}">${art(albumArt(t), albumName(t) || t.title)}<span class="t">${esc(t.title)}<small>${esc(artistLine(t))}</small></span></button>`).join("")
     : empty(queue.length ? "That's the last song." : "Play a song to see what's next.");
 }
 
@@ -2783,7 +2832,7 @@ $("#list").addEventListener("click", (e) => {
     return;
   }
   const r = e.target.closest(".row, .tile[data-id]");
-  if (r) startQueue(view.ids, r.dataset.id, view.label, view.pl);
+  if (r){if(byId[r.dataset.id]?.delisted){popup("Delisted", "Playback is disabled on this server.");return;}startQueue(view.ids, r.dataset.id, view.label, view.pl);}
 });
 $("#list").addEventListener('keydown',e=>{if(e.target.matches('[data-artist-link]')&&(e.key==='Enter'||e.key===' ')){e.preventDefault();e.stopPropagation();location.hash='#artist/'+enc(e.target.dataset.artistLink);}});
 $("#list").addEventListener("change",e=>{if(e.target.matches('[data-artist-sort]')&&artistDiscographyView){artistDiscographyView.sort=e.target.value==='name'?'name':'date';artistDiscographyView.expanded=null;paintArtistDiscography();}});

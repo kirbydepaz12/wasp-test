@@ -648,3 +648,26 @@ test('Remote-only artist biography and picture use trusted peers without mobile 
     assert.ok(requests.every(x=>!x.url.includes(secret)&&!x.headers.has('cookie')&&!x.headers.has('authorization')));
   } finally {globalThis.fetch=previous;}
 });
+
+test('new instance-local delist rules block mobile searches and streams and can be restored without corrupting cached library',async()=>{
+  const {env,db}=fixture();
+  try{
+    const {secret}=await provision(env);
+    const req=(action,extra={})=>endpoint(action,{apiKey:secret,f:'json',...extra});
+    let u=req('search3',{query:'Song'});
+    let x=await data(await handleMobileRest(new Request(u),env,u));
+    assert.match(JSON.stringify(x),/Second Song/);
+    const {addDelist,removeDelist}=await import('../src/delists.js');
+    const restrictions=await addDelist(env.DB,{kind:'artist',artist:'Remote Artists'});
+    u=req('search3',{query:'Song'});
+    x=await data(await handleMobileRest(new Request(u),env,u));
+    assert.doesNotMatch(JSON.stringify(x),/Second Song/);
+    u=req('stream',{id:'p:p1:remote01'});
+    const denied=await handleMobileRest(new Request(u),env,u);
+    assert.notEqual(denied.status,200);assert.notEqual(denied.status,206);assert.notEqual(denied.status,307);
+    await removeDelist(env.DB,restrictions.rules[0].id);
+    u=req('search3',{query:'Song'});
+    x=await data(await handleMobileRest(new Request(u),env,u));
+    assert.match(JSON.stringify(x),/Second Song/,'a cached library is not permanently truncated by a temporary delist');
+  }finally{db.close();}
+});

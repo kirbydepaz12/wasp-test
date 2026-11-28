@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0c">
+<link rel="stylesheet" href="/style.css?v=18.3.0d">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -630,12 +630,35 @@
     <!-- Danger -->
     <section class="pane hidden" id="s-danger">
       <h1>Danger</h1>
+      <div class="tabs sub" role="tablist" aria-label="Danger settings">
+        <button type="button" class="tab active" id="dangerTabDelists" aria-selected="true">Delists</button>
+        <button type="button" class="tab" id="dangerTabClean" aria-selected="false">Clean database</button>
+      </div>
+      <section id="dangerDelistsPanel">
+        <div class="card">
+          <h2>Local music delists</h2>
+          <p class="muted">Block streaming of specific songs or all songs credited to an artist on <strong>this WASP instance</strong>. Titles, albums, and artist pages remain browseable unless search is hidden below. Other HIVE servers retain their own hosting policies. This does not erase music or listening telemetry.</p>
+          <label class="check"><input type="checkbox" id="delistsSearchable" checked> Keep delisted artists and songs discoverable in search</label>
+          <p class="muted" style="margin-top:4px">Turning off search visibility does not erase artist, album, song, or historical telemetry records.</p>
+          <p class="msg" id="delistsStatus" role="status" aria-live="polite"></p>
+          <form id="delistsAddForm" class="form" style="align-items:end;flex-wrap:wrap">
+            <label>Delist type<select id="delistsType"><option value="artist">Artist (all credited tracks)</option><option value="song">Song (specific recording title + artist)</option></select></label>
+            <label>Artist name<input type="text" id="delistsArtist" required maxlength="200" placeholder="e.g. Example Artist" autocomplete="off"></label>
+            <label id="delistsTitleWrap" class="hidden">Song title<input type="text" id="delistsTitle" maxlength="200" placeholder="Exact song title" autocomplete="off"></label>
+            <button type="submit" class="btn">Add delist</button>
+          </form>
+          <div class="form" style="justify-content:space-between;align-items:center;margin-top:20px"><h3 style="margin:0">Active delists</h3><button type="button" id="delistsRefresh" class="btn ghost">Refresh</button></div>
+          <div id="delistsEntries" class="delists-entries" aria-live="polite"><p class="muted">Loading delists…</p></div>
+        </div>
+      </section>
+      <section id="dangerCleanPanel" class="hidden">
       <div class="card" style="max-width:520px;border-color:var(--danger)">
         <h2>Clean database</h2>
         <p class="muted" style="margin-top:0">Deletes every song, playlist, request, artwork file, play count and reaction. Your admin login, site name, browser icon and ad are kept.</p>
         <button class="btn danger" id="cleanBtn" type="button">Clean database…</button>
         <p class="msg" id="cleanMsg" role="status"></p>
       </div>
+      </section>
     </section>
     <!-- Read-only registered user statistics -->
     <section class="pane hidden" id="s-users">
@@ -713,6 +736,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.3.0c"></script>
+<script type="module" src="/admin.js?v=18.3.0d"></script>
 </body>
 </html>
