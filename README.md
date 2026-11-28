@@ -18,6 +18,20 @@ WASP supports music uploaded through the web app, read-only indexing of an exist
 
 **Current source version: v18.3.0f — 10-Minute Announcement Expiration Hotfix.** See the [hotfix guide](docs/V18-3-0F-ANNOUNCEMENT-EXPIRATION.md) or the [feature documentation links below](#feature-documentation).
 
+## Support WASP
+
+<div align="center">
+  <a href="https://buymeacoffee.com/kndpz" title="Support WASP on Buy Me a Coffee">
+    <img src="assets/buymeacoffee/black-button.png" alt="Buy me a coffee" width="480">
+  </a>
+  <p>
+    <a href="https://buymeacoffee.com/kndpz" title="Scan the QR code to support WASP">
+      <img src="assets/buymeacoffee/bmc_qr.png" alt="Buy Me a Coffee QR code" width="200">
+    </a>
+  </p>
+  <p><a href="https://buymeacoffee.com/kndpz">buymeacoffee.com/kndpz</a></p>
+</div>
+
 ## Administrator login and security warning
 
 > [!CAUTION]
