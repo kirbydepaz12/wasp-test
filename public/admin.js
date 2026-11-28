@@ -137,7 +137,7 @@ $('#announcementForm').onsubmit=async e=>{
   btn.disabled=true;status.textContent='Sending…';
   try{const r=await post('/api/admin/announcements',{title,body,severity:$('#announcementSeverity').value,opacity:Number($('#announcementOpacity').value)});
     const d=await r.json();if(!r.ok)throw Error(d.error||'Could not send');
-    status.textContent='Announcement saved. Visitors on this server will receive it when their browser checks for updates.';
+    status.textContent='Announcement sent. It expires for everyone 10 minutes after sending.';
     await loadAnnouncementHistory();
   }catch(err){status.textContent='Unable to send: '+err.message;}finally{btn.disabled=false;}
 };

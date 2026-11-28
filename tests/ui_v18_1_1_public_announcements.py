@@ -67,6 +67,19 @@ with sync_playwright() as pw:
   p.evaluate('window.__annTest.poll(true)')
   p.wait_for_timeout(120)
   assert p.locator('.wasp-announcement').count()==0,'acknowledged notices should not reappear'
+  # Even an old Cloudflare edge response cannot resurrect a past announcement.
+  p.evaluate("window.__guestMessages=[{id:'stale',title:'Expired maintenance',body:'Old',severity:'maintenance',opacity:.87,created_at:Date.now()-600001}]")
+  p.evaluate('window.__annTest.poll(true)')
+  p.wait_for_timeout(100)
+  assert p.locator('.wasp-announcement').count()==0,'expired cache response shown to visitor'
+  # An already-open tab must hide a near-expiry popup at its actual deadline,
+  # not allow a fresh 30-second viewing interval to extend its lifetime.
+  p.evaluate("window.__guestMessages.unshift({id:'near-expiry',title:'Almost expired',body:'Temporary',severity:'info',opacity:.87,created_at:Date.now()-599650})")
+  p.evaluate('window.__annTest.poll(true)')
+  p.locator('.announcement-heading strong').wait_for(timeout=3000)
+  assert p.locator('.announcement-heading strong').inner_text()=='Almost expired'
+  p.wait_for_timeout(650)
+  assert p.locator('.wasp-announcement').count()==0,'open popup exceeded fixed 10-minute deadline'
   assert not [e for e in errors if "Failed to construct 'URL'" not in e],errors
-  p.close();print(f'PASS public announcements {width}px: guest delivery, 2s poll, browser refresh, ding, mute, dismissal',flush=True)
+  p.close();print(f'PASS announcements {width}px: public delivery, dismissal, 10-minute expiry and stale cache defense',flush=True)
  b.close()

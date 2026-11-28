@@ -1,4 +1,4 @@
-import {mountHomeRSS} from './rss-home.mjs?v=18.3.0e';
+import {mountHomeRSS} from './rss-home.mjs?v=18.3.0f';
 import { radioIds } from "/radio.js";
 import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";
@@ -3102,6 +3102,15 @@ const postJSON=(url,body,method="POST")=>fetch(url,{method,headers:{"content-typ
 const ANNOUNCEMENTS_SEEN='wasp-announcements-handled-v1811';
 const ANNOUNCEMENTS_STARTED='wasp-announcements-started-v1811';
 const ANNOUNCEMENTS_SOUND='wasp-announcements-sound-v1811';
+const ANNOUNCEMENT_TTL_MS=10*60*1000;
+function announcementExpiresAt(notice){
+  const created=Number(notice?.created_at);
+  return Number.isFinite(created)&&created>0 ? created+ANNOUNCEMENT_TTL_MS : 0;
+}
+function announcementIsActive(notice,now=Date.now()){
+  const expiry=announcementExpiresAt(notice);
+  return !!notice?.id&&expiry>now&&Number(notice.created_at)<=now+60000;
+}
 let announcementTimer=null,announcementPollTime=0,announcementPolling=false;
 let announcementQueue=[],announcementVisible=false,announcementCurrent=null;
 let announcementAudio=null;
@@ -3144,11 +3153,12 @@ function showNextServerAnnouncement(){
   const box=$('#serverAnnouncements');
   while(announcementQueue.length){
     const notice=announcementQueue.shift();
-    if(!notice?.id||announcementHandled().has(notice.id))continue;
+    if(!announcementIsActive(notice))continue;
+    if(announcementHandled().has(notice.id))continue;
     const starts=store.get(ANNOUNCEMENTS_STARTED,{});
     const began=Number(starts[notice.id])||Date.now();
     if(!starts[notice.id]){starts[notice.id]=began;store.set(ANNOUNCEMENTS_STARTED,starts);}
-    const remaining=30000-(Date.now()-began);
+    const remaining=Math.min(30000-(Date.now()-began),announcementExpiresAt(notice)-Date.now());
     if(remaining<=0){finishAnnouncement(notice.id);continue;}
     const card=document.createElement('div');card.className='wasp-announcement';card.dataset.severity=notice.severity||'info';
     const opacity=Number(notice.opacity);
@@ -3176,9 +3186,15 @@ async function pollServerAnnouncements(force=false){
   try{
     const r=await fetch('/api/announcements',{cache:'no-store'});
     if(!r.ok)return;
-    const data=await r.json(),handled=announcementHandled();
+    const data=await r.json(),handled=announcementHandled(),now=Date.now();
+    // A tab can remain open during expiry or receive a stale edge response.
+    // Neither a current nor queued message is allowed past its fixed deadline.
+    if(announcementCurrent&&!announcementIsActive(announcementCurrent,now)){
+      const expired=suspendAnnouncement();if(expired)finishAnnouncement(expired.id);
+    }
+    announcementQueue=announcementQueue.filter(a=>announcementIsActive(a,now));
     const queued=new Set(announcementQueue.map(x=>x.id));
-    const incoming=(Array.isArray(data.items)?data.items:[]).filter(a=>a?.id&&!handled.has(a.id)&&!queued.has(a.id)&&a.id!==announcementCurrent?.id);
+    const incoming=(Array.isArray(data.items)?data.items:[]).filter(a=>announcementIsActive(a,now)&&!handled.has(a.id)&&!queued.has(a.id)&&a.id!==announcementCurrent?.id);
     // New messages take precedence over an older displayed announcement.
     // A preempted message retains its original remaining display time.
     if(incoming.length&&announcementCurrent){

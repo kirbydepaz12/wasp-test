@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0e">
+<link rel="stylesheet" href="/style.css?v=18.3.0f">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -686,7 +686,7 @@
       <section id="usersAnnouncementsPanel" class="hidden" role="tabpanel" aria-labelledby="usersTabAnnouncements">
         <div class="card">
           <h2>Send an announcement to this server's users</h2>
-          <p class="muted">Announcements are available to all visitors, signed in or not, on this WASP server. They do not propagate through HIVE. Each browser displays new messages for 30 seconds or until dismissed.</p>
+          <p class="muted">Announcements are available to all visitors, signed in or not, on this WASP server. They do not propagate through HIVE. Every message expires 10 minutes after being sent, including for visitors who arrive later; the popup displays for up to 30 seconds or until dismissed.</p>
           <div class="announcement-template-list" id="announcementTemplates" aria-label="Announcement templates"></div>
           <form id="announcementForm" class="announcement-editor" autocomplete="off">
             <label for="announcementTitle">Title (required)</label><input id="announcementTitle" maxlength="100" required placeholder="Announcement title">
@@ -697,7 +697,7 @@
             <p class="msg" id="announcementMessage" role="status" aria-live="polite"></p>
           </form>
         </div>
-        <div class="card"><h2>Previously sent announcements</h2><div id="announcementHistory" class="muted">Open this tab to see announcements.</div></div>
+        <div class="card"><h2>Active announcements (last 10 minutes)</h2><div id="announcementHistory" class="muted">Open this tab to see announcements.</div></div>
       </section>
     </section>
   </div>
@@ -740,6 +740,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.3.0e"></script>
+<script type="module" src="/admin.js?v=18.3.0f"></script>
 </body>
 </html>

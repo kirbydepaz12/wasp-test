@@ -19,8 +19,8 @@ import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.3.0e";
-const BUILD_LABEL = "Local Artist & Song Delists";
+const BUILD_VERSION = "18.3.0f";
+const BUILD_LABEL = "Announcement Expiration Hotfix";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
 
@@ -2124,6 +2124,9 @@ async function telemetryScheduleTick(env,when=Date.now(),{skipTelemetry=false}={
     const drafts=await env.DB.prepare("SELECT 1 FROM spotify_user_imports WHERE state='draft' LIMIT 1").first().catch(()=>null);
     return {catalogues:queued||drafts?await refreshSpotifyPeerCatalogue(env,{max:1}).catch(e=>({error:String(e.message)})):{checked:0}};
   }
+  // Existing five-minute housekeeping is shared by Workers and Docker.
+  // Public expiry itself is immediate via the feed predicate below.
+  await pruneExpiredAnnouncements(env.DB,when).catch(()=>{});
   const config=await getCronConfig(env.DB),job=config.jobs.telemetry,minutes=Number(job.minutes)||5;
   const telemetry=!skipTelemetry&&job?.enabled&&minute%minutes===0?await syncTelemetryPeers(env).catch(e=>({error:String(e.message)})):{disabled:true};
   const requests=await syncHiveRequests(env).catch(e=>({error:String(e.message)}));
@@ -2142,6 +2145,16 @@ async function ensureAnnouncementTable(DB){
   announcementTablesReady.add(DB);
 }
 const announcementTypes=new Set(['info','update','maintenance','upload','warning','critical']);
+// Announcements have a single, immutable lifetime measured from creation,
+// NOT from first visit, first display, page load, or browser acknowledgement.
+const ANNOUNCEMENT_TTL_MS=10*60*1000;
+async function pruneExpiredAnnouncements(DB,now=Date.now()){
+  await ensureAnnouncementTable(DB);
+  // This write runs on scheduled maintenance and administrator actions,
+  // never for every two-second public poll (which would exhaust D1 writes).
+  await DB.prepare('DELETE FROM server_announcements WHERE created_at<=?')
+    .bind(now-ANNOUNCEMENT_TTL_MS).run();
+}
 async function api(req, env, url, ctx) {
   const path = url.pathname;
   const m = req.method;
@@ -2349,13 +2362,23 @@ async function api(req, env, url, ctx) {
   if(path==='/api/announcements' && m==='GET'){
     const cache=(typeof caches!=='undefined'&&caches.default)?caches.default:null;
     // The cache key is origin-local, independent of cookies and query parameters.
-    const cacheKey=new Request(new URL('/api/announcements',req.url));
+    // Version the edge key so old 30-day feed payloads cannot survive upgrade.
+    const cacheKey=new Request(new URL('/api/announcements?v=18.3.0f',req.url));
     if(cache){try{const hit=await cache.match(cacheKey);if(hit)return hit;}catch{}}
     await ensureAnnouncementTable(DB);
+    const now=Date.now();
     const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
-      WHERE created_at>=? ORDER BY created_at DESC LIMIT 20`).bind(Date.now()-30*86400000).all()).results;
-    const response=json({items},200,{'cache-control':'public, max-age=0, s-maxage=2','x-content-type-options':'nosniff'});
-    if(cache){const job=cache.put(cacheKey,response.clone()).catch(()=>{});if(ctx?.waitUntil)ctx.waitUntil(job);else await job;}
+      WHERE created_at>? AND created_at<=? ORDER BY created_at DESC LIMIT 20`)
+      .bind(now-ANNOUNCEMENT_TTL_MS,now).all()).results;
+    // The shared edge cache must never outlive the earliest announcement.
+    // Once less than one second remains, bypass caching altogether.
+    const cacheSeconds=items.reduce((seconds,item)=>Math.min(seconds,
+      Math.max(0,Math.floor((Number(item.created_at)+ANNOUNCEMENT_TTL_MS-now)/1000))),2);
+    const response=json({items},200,{
+      'cache-control':cacheSeconds?'public, max-age=0, s-maxage='+cacheSeconds:'no-store',
+      'x-content-type-options':'nosniff'
+    });
+    if(cache&&cacheSeconds){const job=cache.put(cacheKey,response.clone()).catch(()=>{});if(ctx?.waitUntil)ctx.waitUntil(job);else await job;}
     return response;
   }
   // ---------- public ----------
@@ -3163,8 +3186,8 @@ async function api(req, env, url, ctx) {
     await ensureAnnouncementTable(DB);
     const created=(await DB.prepare('SELECT created_at FROM user_accounts WHERE id=?').bind(auth.user_id).first())?.created_at||0;
     const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
-      WHERE created_at>=? AND created_at>=? ORDER BY created_at DESC LIMIT 20`)
-      .bind(Date.now()-30*86400000,created).all()).results;
+      WHERE created_at>? AND created_at>=? ORDER BY created_at DESC LIMIT 20`)
+      .bind(Date.now()-ANNOUNCEMENT_TTL_MS,created).all()).results;
     return json({items},200,{'cache-control':'private, no-store'});
   }
   if (path.startsWith("/api/user/")) {
@@ -3704,8 +3727,11 @@ async function api(req, env, url, ctx) {
   if(path==='/api/admin/announcements'){
     await ensureAnnouncementTable(DB);
     if(m==='GET'){
+      const now=Date.now();
+      await pruneExpiredAnnouncements(DB,now);
       const items=(await DB.prepare(`SELECT id,title,body,severity,opacity,created_at FROM server_announcements
-        ORDER BY created_at DESC LIMIT 30`).all()).results;
+        WHERE created_at>? AND created_at<=? ORDER BY created_at DESC LIMIT 30`)
+        .bind(now-ANNOUNCEMENT_TTL_MS,now).all()).results;
       return json({items});
     }
     if(m==='POST'){
@@ -3717,11 +3743,12 @@ async function api(req, env, url, ctx) {
       if(!announcementTypes.has(severity)||!Number.isFinite(opacity)||opacity<0.5||opacity>0.98)
         return json({error:'Invalid announcement type or opacity.'},400);
       const id=crypto.randomUUID(),now=Date.now();
+      await pruneExpiredAnnouncements(DB,now);
       await DB.prepare(`INSERT INTO server_announcements(id,title,body,severity,opacity,created_at)
         VALUES(?,?,?,?,?,?)`).bind(id,title,body,severity,Math.round(opacity*100)/100,now).run();
       // Invalidate this edge's public announcement cache immediately; other
       // Cloudflare POPs will refresh within the short (2s) cache lifetime.
-      try {if(typeof caches!=='undefined'&&caches.default)await caches.default.delete(new Request(new URL('/api/announcements',req.url)));}catch{}
+      try {if(typeof caches!=='undefined'&&caches.default)await caches.default.delete(new Request(new URL('/api/announcements?v=18.3.0f',req.url)));}catch{}
       return json({ok:true,id,title,created_at:now},201);
     }
     return json({error:'Method not allowed'},405);
