@@ -1,4 +1,4 @@
-import {mountHomeRSS} from './rss-home.mjs?v=18.3.0d';
+import {mountHomeRSS} from './rss-home.mjs?v=18.3.0e';
 import { radioIds } from "/radio.js";
 import { albumReactionKey } from "/album-reactions.mjs";
 import { buildArtistIndex } from "/artist-index.mjs";
@@ -110,7 +110,13 @@ function delistReason(t){
   }
   return '';
 }
-function markDelistedTrack(t){if(t){t.delist_reason=delistReason(t);t.delisted=!!t.delist_reason;}return t;}
+function delistHidden(t){
+ if(!t)return false;
+ const names=artistsOf(t).map(normDelist),title=normDelist(t.title);
+ return (localDelists.rules||[]).some(r=>Boolean(Number(r.hide_search))&&names.includes(r.key_artist)&&
+  (r.kind==='artist'||(r.kind==='song'&&title===r.key_title)));
+}
+function markDelistedTrack(t){if(t){t.delist_reason=delistReason(t);t.delisted=!!t.delist_reason;t.delist_hidden=delistHidden(t);}return t;}
 function applyDelists(){
   for(const t of tracks)markDelistedTrack(t);
   for(const t of peerTrackLookup.values())markDelistedTrack(t);
@@ -667,7 +673,7 @@ function renderSub(tab, sub) {
   bar.innerHTML = Object.entries(sm.items).map(([s, sv]) =>
     `<a href="#${tab}${s === sm.def ? "" : "/" + s}"${s === sub ? ' aria-current="page"' : ""}>${sv}</a>`).join("");
 }
-const match = (t) => !query || (localDelists.searchable===false && t.delisted?false:`${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query));
+const match = (t) => !query || (!t.delist_hidden && `${t.title} ${artistLine(t)} ${albumName(t)}`.toLowerCase().includes(query));
 const latest = (l) => Math.max(0, ...l.map((t) => t.created_at));
 // The number from the song's own track tag, even when only one song of the album is here. Without any tags, the position.
 const numLabel = (t, i, l) => t.track_no || (l.some((x) => x.track_no) ? "–" : i + 1);
@@ -1012,11 +1018,11 @@ function landing(el) {
     return;
   }
   const qOk = (s) => !query || String(s).toLowerCase().includes(query);
-  const artists = pickMix(artistPool().filter((a) => qOk(a.name)), (a) => a.created, (a) => a.plays);
+  const artists = pickMix(artistPool().filter((a) => qOk(a.name)&&(!query||tracks.some(t=>!t.delist_hidden&&artistsOf(t).some(n=>normDelist(n)===normDelist(a.name))))), (a) => a.created, (a) => a.plays);
   // Use the exact same release groups as #recent/albums and the album page.
   // A compilation stays one album even when its songs have different artists.
   // The home rails mix recently added, popular and other available entries.
-  const albums = pickMix(homeAlbumEntries(reactableAlbums(),query), (a) => a.created, (a) => a.plays);
+  const albums = pickMix(homeAlbumEntries(query?buildAlbums(tracks.filter(t=>!t.delist_hidden)):reactableAlbums(),query), (a) => a.created, (a) => a.plays);
   const songs = pickMix(tracks.filter(match).map((t) => ({ id: t.id, t, created: t.created_at || 0, plays: t.plays || 0 })), (s) => s.created, (s) => s.plays);
   const pls = pickMix(playlists.filter((p) => qOk(p.name)).map((p) => ({
     id: p.id, p, created: p.updated_at || p.created_at || 0,
@@ -1395,7 +1401,7 @@ function artistGrid(el, recent) {
     entries=subset.newest;
   } else entries=recent?index.newest:index.alphabetical;
   if (searchTokens.length) entries=entries.filter(e=>searchTokens.some(token=>normal(e.name).includes(token))&&
-    (localDelists.searchable!==false||tracks.some(t=>!t.delisted&&artistsOf(t).some(a=>normDelist(a)===normDelist(e.name)))));
+    tracks.some(t=>!t.delist_hidden&&artistsOf(t).some(a=>normDelist(a)===normDelist(e.name))));
   noView();
   if (!entries.length) { el.innerHTML=empty("Nothing matches your search.");return; }
   const card=(entry)=>`<a class="tile" href="#artist/${enc(entry.name)}">${art(artistArt(entry.name),entry.name)}<b>${sourceTitle(entry.name,artistSources(entry.name))}</b><span class="muted">${plural(entry.songs,"song")}</span></a>`;

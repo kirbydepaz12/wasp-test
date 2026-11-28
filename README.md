@@ -6,7 +6,7 @@
   <p>
     <a href="https://github.com/KNDPZ/WASP">GitHub repository</a> ·
     <a href="https://wasp.playy.online">WASP website</a> ·
-    <a href="docs/V18-3-0D-LOCAL-ARTIST-SONG-DELISTS.md">Latest feature guide (v18.3.0d)</a>
+    <a href="docs/V18-3-0E-DELIST-AUTOCOMPLETE.md">Latest feature guide (v18.3.0e)</a>
   </p>
 </div>
 
@@ -16,7 +16,7 @@ WASP is a **peer-to-peer music streaming web application** built around the idea
 
 WASP supports music uploaded through the web app, read-only indexing of an existing music folder on a Docker host, and Cloudflare Workers with D1 and R2 storage. Features include cross-peer playback, source failover, public and personal playlists, music requests, Spotify playlist reconstruction, hearts and five-star ratings, HIVE listening telemetry, artist/album metadata, and public **HIVE Radio**. The web player stays mounted while users browse other pages.
 
-**Current source version: v18.3.0d — Local Artist & Song Delists.** See the [feature guide](docs/V18-3-0D-LOCAL-ARTIST-SONG-DELISTS.md) or the [feature documentation links below](#feature-documentation).
+**Current source version: v18.3.0e — Delists Autocomplete & Per-Rule Search Visibility.** See the [feature guide](docs/V18-3-0D-LOCAL-ARTIST-SONG-DELISTS.md) or the [feature documentation links below](#feature-documentation).
 
 ## Administrator login and security warning
 
@@ -135,6 +135,7 @@ These are **direct links to the documentation bundled with the repository**. The
 
 | Area | Guide |
 |---|---|
+| v18.3.0e — Delists Autocomplete & Per-Rule Search Visibility | [Autocomplete and rule-specific search hiding](docs/V18-3-0E-DELIST-AUTOCOMPLETE.md) |
 | v18.3.0d — Local Artist & Song Delists | [Danger → Delists; local, peer, Docker-folder and mobile stream controls](docs/V18-3-0D-LOCAL-ARTIST-SONG-DELISTS.md) |
 | v18.3.0c — Multiple Docker Music Folders & RSS Pinned Tabs | [Read-only additional mounts, reorderable icon-only RSS tabs, player button refresh](docs/V18-3-0C-MUSIC-FOLDERS-RSS-PINNED-TABS.md) |
 | v18.3.0b — Seamless RSS Hover Cards | [No outer RSS container surface; hover/focus-only news-card backgrounds and borders](docs/V18-3-0B-RSS-HOVER-CARDS.md) |

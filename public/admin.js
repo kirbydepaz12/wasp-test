@@ -1762,36 +1762,97 @@ function showDangerTab(name='delists'){
 $('#dangerTabDelists').onclick=()=>{location.hash='danger/delists';showDangerTab('delists');};
 $('#dangerTabClean').onclick=()=>{location.hash='danger/clean';showDangerTab('clean');};
 const delistsType=$('#delistsType');
-function paintDelistsType(){const song=delistsType.value==='song';$('#delistsTitleWrap').classList.toggle('hidden',!song);$('#delistsTitle').required=song;}
-delistsType.addEventListener('change',paintDelistsType);paintDelistsType();
+function paintDelistsType(){
+ const song=delistsType.value==='song';$('#delistsTitleWrap').classList.toggle('hidden',!song);
+ $('#delistsTitle').required=song;closeDelistSuggest('artist');closeDelistSuggest('song');
+}
+delistsType.addEventListener('change',paintDelistsType);
+const delistSuggestConfig={artist:{input:$('#delistsArtist'),menu:$('#delistsArtistSuggestions')},song:{input:$('#delistsTitle'),menu:$('#delistsTitleSuggestions')}};
+let delistSuggestTicket={artist:0,song:0};
+let delistSuggestTimer={artist:0,song:0};
+const suppressDelistFocus={artist:false,song:false};
+function closeDelistSuggest(which){const c=delistSuggestConfig[which];c.menu.classList.add('hidden');c.menu.replaceChildren();c.input.setAttribute('aria-expanded','false');}
+function showDelistSuggestions(which,items){
+ const c=delistSuggestConfig[which];c.menu.replaceChildren();
+ for(const item of items){
+  const b=document.createElement('button');b.type='button';b.className='delist-suggestion';b.setAttribute('role','option');
+  b.dataset.artist=item.artist||'';b.dataset.title=item.title||'';
+  const main=document.createElement('strong');main.textContent=which==='artist'?item.artist:item.title;
+  const meta=document.createElement('small');meta.textContent=which==='artist'?item.source||'Local / HIVE':`${item.artist||''}${item.album?' · '+item.album:''} · ${item.source||'HIVE'}`;
+  b.append(main,meta);c.menu.appendChild(b);
+ }
+ c.menu.classList.toggle('hidden',items.length===0);c.input.setAttribute('aria-expanded',String(items.length>0));
+}
+async function updateDelistSuggestions(which){
+ const ticket=++delistSuggestTicket[which],c=delistSuggestConfig[which],q=c.input.value.trim();
+ if(q.length<2){closeDelistSuggest(which);return;}
+ try{
+  const u=new URL('/api/admin/delists/suggest',document.baseURI);u.searchParams.set('kind',which);u.searchParams.set('q',q);
+  if(which==='song')u.searchParams.set('artist',$('#delistsArtist').value.trim());
+  const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error('Search unavailable');const d=await r.json();
+  if(ticket!==delistSuggestTicket[which]||c.input.value.trim()!==q)return;
+  showDelistSuggestions(which,Array.isArray(d.candidates)?d.candidates:[]);
+ }catch{if(ticket===delistSuggestTicket[which])closeDelistSuggest(which);}
+}
+for(const which of ['artist','song']){
+ const c=delistSuggestConfig[which];
+ c.input.addEventListener('input',()=>{clearTimeout(delistSuggestTimer[which]);delistSuggestTimer[which]=setTimeout(()=>void updateDelistSuggestions(which),320);});
+ c.input.addEventListener('focus',()=>{if(!suppressDelistFocus[which]&&c.input.value.trim().length>=2)void updateDelistSuggestions(which);});
+ c.input.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){closeDelistSuggest(which);return;}
+  if(e.key==='ArrowDown'&&!c.menu.classList.contains('hidden')){e.preventDefault();c.menu.querySelector('button')?.focus();}
+ });
+ c.menu.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){closeDelistSuggest(which);c.input.focus();}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+   e.preventDefault();const buttons=[...c.menu.querySelectorAll('button')];const i=buttons.indexOf(document.activeElement);
+   buttons[(i+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();
+  }
+ });
+ c.menu.addEventListener('click',e=>{
+  const b=e.target.closest('.delist-suggestion');if(!b)return;
+  $('#delistsArtist').value=b.dataset.artist||'';
+  if(which==='song')$('#delistsTitle').value=b.dataset.title||'';
+  delistSuggestTicket[which]++;suppressDelistFocus[which]=true;closeDelistSuggest(which);c.input.focus();suppressDelistFocus[which]=false;
+ });
+}
+document.addEventListener('pointerdown',e=>{for(const which of ['artist','song'])if(!e.target.closest('.delist-combobox')||!delistSuggestConfig[which].menu.parentElement.contains(e.target))closeDelistSuggest(which);});
+paintDelistsType();
 async function loadDelists(){
-  if(delistsBusy)return;
-  try{
-    const r=await fetch('/api/admin/delists',{cache:'no-store'}),d=await r.json();
-    if(!r.ok)throw Error(d.error||'Could not retrieve delists');
-    $('#delistsSearchable').checked=d.searchable!==false;
-    $('#delistsEntries').innerHTML=d.rules.length?d.rules.map(rule=>`<div class="delist-entry">
-      <div><strong>${esc(rule.kind==='artist'?rule.artist:rule.title)}</strong><span class="muted">${rule.kind==='artist'?'All credited songs':'Song · '+esc(rule.artist)}</span></div>
-      <button type="button" class="btn ghost" data-delist-remove="${esc(rule.id)}">Restore playback</button>
-      </div>`).join(''):'<p class="muted">No active delists. All otherwise available music can play.</p>';
-  }catch(e){$('#delistsStatus').textContent=e.message;}
+ if(delistsBusy)return;
+ try{
+  const r=await fetch('/api/admin/delists',{cache:'no-store'}),d=await r.json();
+  if(!r.ok)throw Error(d.error||'Could not retrieve delists');
+  $('#delistsEntries').innerHTML=d.rules.length?d.rules.map(rule=>`<div class="delist-entry">
+    <div class="delist-entry-name"><strong>${esc(rule.kind==='song'?rule.title+' · '+rule.artist:rule.artist)}</strong><span class="muted">${rule.kind==='artist'?'All credited songs':'Specific song and credited artist'}</span></div>
+    <div class="delist-entry-actions"><label class="check"><input type="checkbox" data-delist-hidden="${esc(rule.id)}" ${Number(rule.hide_search)?'checked':''}> Hide from search</label>
+      <button type="button" class="btn ghost" data-delist-remove="${esc(rule.id)}">Restore playback</button></div>
+  </div>`).join(''):'<p class="muted">No active delists. All otherwise available music can play.</p>';
+ }catch(e){$('#delistsStatus').textContent=e.message;}
 }
 $('#delistsRefresh').onclick=()=>void loadDelists();
-$('#delistsSearchable').onchange=async e=>{
-  const check=e.currentTarget;check.disabled=true;
-  try{const r=await fetch('/api/admin/delists/searchable',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({searchable:check.checked})}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to save');$('#delistsStatus').textContent=d.searchable?'Delisted titles remain searchable.':'Delisted titles are excluded from search; browsing and telemetry remain.';}
-  catch(err){$('#delistsStatus').textContent=err.message;check.checked=!check.checked;}
-  finally{check.disabled=false;}
-};
 $('#delistsAddForm').onsubmit=async e=>{
-  e.preventDefault();if(delistsBusy)return;
-  delistsBusy=true;const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;
-  try{const r=await post('/api/admin/delists',{kind:delistsType.value,artist:$('#delistsArtist').value,title:$('#delistsTitle').value});const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to delist');
-    $('#delistsStatus').textContent='Delist saved. Streaming is blocked on this instance. No files were deleted.';
-    $('#delistsTitle').value='';$('#delistsArtist').value='';}
-  catch(err){$('#delistsStatus').textContent=err.message;}
-  finally{delistsBusy=false;submit.disabled=false;await loadDelists();}
+ e.preventDefault();if(delistsBusy)return;
+ delistsBusy=true;const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;
+ try{
+  const r=await post('/api/admin/delists',{kind:delistsType.value,artist:$('#delistsArtist').value,title:$('#delistsTitle').value,hide_search:$('#delistsHideSearch').checked});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to delist');
+  $('#delistsStatus').textContent='Delist saved. Playback blocked on this instance; search visibility saved. No files deleted.';
+  $('#delistsTitle').value='';$('#delistsArtist').value='';$('#delistsHideSearch').checked=false;
+  closeDelistSuggest('artist');closeDelistSuggest('song');
+ }catch(err){$('#delistsStatus').textContent=err.message;}
+ finally{delistsBusy=false;submit.disabled=false;await loadDelists();}
 };
+$('#delistsEntries').addEventListener('change',async e=>{
+ const check=e.target.closest('[data-delist-hidden]');if(!check)return;
+ check.disabled=true;
+ try{
+  const r=await post('/api/admin/delists/'+encodeURIComponent(check.dataset.delistHidden)+'/visibility',{hide_search:check.checked},'PUT');
+  const d=await r.json();if(!r.ok)throw Error(d.error||'Unable to save visibility');
+  $('#delistsStatus').textContent=check.checked?'This delist is hidden from search; playback remains blocked.':'This delist is searchable but playback remains blocked.';
+ }catch(err){check.checked=!check.checked;$('#delistsStatus').textContent=err.message;}
+ finally{check.disabled=false;}
+});
 $('#delistsEntries').onclick=async e=>{
   const b=e.target.closest('[data-delist-remove]');if(!b)return;
   if(!confirm('Remove this local restriction and allow this music to play again?'))return;

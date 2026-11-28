@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>Admin · WASP</title>
 <link rel="icon" id="favicon" href="/wasp-icon.png">
-<link rel="stylesheet" href="/style.css?v=18.3.0d">
+<link rel="stylesheet" href="/style.css?v=18.3.0e">
 </head>
 <body style="--ph:0px;padding-bottom:0">
 
@@ -638,14 +638,18 @@
         <div class="card">
           <h2>Local music delists</h2>
           <p class="muted">Block streaming of specific songs or all songs credited to an artist on <strong>this WASP instance</strong>. Titles, albums, and artist pages remain browseable unless search is hidden below. Other HIVE servers retain their own hosting policies. This does not erase music or listening telemetry.</p>
-          <label class="check"><input type="checkbox" id="delistsSearchable" checked> Keep delisted artists and songs discoverable in search</label>
-          <p class="muted" style="margin-top:4px">Turning off search visibility does not erase artist, album, song, or historical telemetry records.</p>
+          <p class="muted">Each delist blocks playback. Choose <strong>Hide from search</strong> for a specific artist or song to return no results in this server's search while preserving other browsing and telemetry data.</p>
           <p class="msg" id="delistsStatus" role="status" aria-live="polite"></p>
-          <form id="delistsAddForm" class="form" style="align-items:end;flex-wrap:wrap">
-            <label>Delist type<select id="delistsType"><option value="artist">Artist (all credited tracks)</option><option value="song">Song (specific recording title + artist)</option></select></label>
-            <label>Artist name<input type="text" id="delistsArtist" required maxlength="200" placeholder="e.g. Example Artist" autocomplete="off"></label>
-            <label id="delistsTitleWrap" class="hidden">Song title<input type="text" id="delistsTitle" maxlength="200" placeholder="Exact song title" autocomplete="off"></label>
-            <button type="submit" class="btn">Add delist</button>
+          <form id="delistsAddForm" class="delists-add-form" autocomplete="off">
+            <label class="delist-field">Delist type<select id="delistsType"><option value="artist">Artist (all credited tracks)</option><option value="song">Song (specific recording title + artist)</option></select></label>
+            <label class="delist-field">Artist name
+              <span class="delist-combobox"><input type="text" id="delistsArtist" required maxlength="200" placeholder="Search artists…" autocomplete="off" aria-autocomplete="list" aria-controls="delistsArtistSuggestions" aria-expanded="false"><span id="delistsArtistSuggestions" class="delist-suggestions hidden" role="listbox"></span></span>
+            </label>
+            <label id="delistsTitleWrap" class="delist-field hidden">Song title
+              <span class="delist-combobox"><input type="text" id="delistsTitle" maxlength="200" placeholder="Search songs…" autocomplete="off" aria-autocomplete="list" aria-controls="delistsTitleSuggestions" aria-expanded="false"><span id="delistsTitleSuggestions" class="delist-suggestions hidden" role="listbox"></span></span>
+            </label>
+            <button type="submit" class="btn delist-submit">Add delist</button>
+            <label class="check delist-hide-check"><input type="checkbox" id="delistsHideSearch"> Hide from search (show no results on this WASP)</label>
           </form>
           <div class="form" style="justify-content:space-between;align-items:center;margin-top:20px"><h3 style="margin:0">Active delists</h3><button type="button" id="delistsRefresh" class="btn ghost">Refresh</button></div>
           <div id="delistsEntries" class="delists-entries" aria-live="polite"><p class="muted">Loading delists…</p></div>
@@ -736,6 +740,6 @@
     <div class="form" style="justify-content:flex-end"><button class="btn ghost" type="button" id="cCancel">Cancel</button><button class="btn danger solid" id="cGo" type="submit" disabled>Delete everything</button></div>
   </form>
 </dialog>
-<script type="module" src="/admin.js?v=18.3.0d"></script>
+<script type="module" src="/admin.js?v=18.3.0e"></script>
 </body>
 </html>

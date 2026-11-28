@@ -13,13 +13,13 @@ import {RELEASE_SOURCES,fetchUpstream,releaseDecision} from "./release-updates.j
 import {BUILD_COMMIT} from "./build-commit.js";
 import {safeFeedUrl,feedTab,fetchFeed} from './rss-feeds.js';
 import {autoRecreateMatch,recreateCandidates} from './collection-recreate.js';
-import {readDelists,markDelisted,evaluateDelist,addDelist,removeDelist} from "./delists.js";
+import {readDelists,markDelisted,evaluateDelist,addDelist,removeDelist,setDelistVisibility,suggestDelists} from "./delists.js";
 import {parseAlbumReactionKey} from "../public/album-reactions.mjs";
 // Music app Worker: public listening + admin management.
 // Storage: R2 (mp3 files + artwork, binding MUSIC) and D1 (library, playlists, reactions, admin hash, sessions, binding DB).
 
 // Salted PBKDF2 hash of the first-time admin password. Change it from the admin page after first login.
-const BUILD_VERSION = "18.3.0d";
+const BUILD_VERSION = "18.3.0e";
 const BUILD_LABEL = "Local Artist & Song Delists";
 const DEFAULT_SALT = "9756e918a7545f9eec461ee48491018a";
 const DEFAULT_HASH = "539db4ea2054366abc97375b551b16c115622e1a89b8f9cf75cea28345c6ba26";
@@ -977,6 +977,45 @@ async function spotifyImportCatalogue(DB){
     try{const entries=JSON.parse(shard.body);if(!Array.isArray(entries))continue;
       for(const row of entries.slice(0,6000))if(row?.id&&row.title){
         remote.push({...row,origin:shard.origin,remote_id:String(row.id).slice(0,100)});
+      }
+    }catch{}
+  }
+  return {local,remote};
+}
+// Search only matching database rows and saved HIVE catalogue shards for
+// administrator Delists autocomplete. No live peer calls and no full HIVE
+// catalogue materialization on each keystroke (important for Worker CPU).
+async function delistSuggestionCatalogue(DB,search){
+  const term=String(search||'').toLowerCase().trim().slice(0,100).replace(/[\%_]/g, s=>'\\'+s);
+  const pattern='%'+term+'%';
+  const local=(await DB.prepare(`SELECT id,title,artist,artists,album FROM tracks
+    WHERE lower(title) LIKE ? ESCAPE '\\' OR lower(artist) LIKE ? ESCAPE '\\'
+       OR lower(COALESCE(artists,'')) LIKE ? ESCAPE '\\' LIMIT 300`)
+    .bind(pattern,pattern,pattern).all()).results||[];
+  const refs=(await DB.prepare(`SELECT title,artist,album FROM peer_track_refs
+    WHERE lower(title) LIKE ? ESCAPE '\\' OR lower(artist) LIKE ? ESCAPE '\\' LIMIT 180`)
+    .bind(pattern,pattern).all()).results||[];
+  let shards=[];
+  try{
+    shards=(await DB.prepare(`SELECT p.url AS origin,c.body FROM peer_catalogue_chunks c
+      JOIN peers p ON p.id=c.peer_id WHERE c.kind='tracks' AND p.last_error IS NULL AND lower(c.body) LIKE ? ESCAPE '\\'
+      UNION ALL SELECT u.url AS origin,c.body FROM peer_catalogue_chunks c
+      JOIN user_published_peers u ON u.id=c.peer_id
+      LEFT JOIN user_peer_permissions a ON a.user_id=u.user_id
+      WHERE c.kind='tracks' AND COALESCE(a.enabled,
+        (SELECT CAST(value AS INTEGER) FROM settings WHERE key='user_publish_default'),0)=1
+        AND u.last_ok IS NOT NULL AND u.last_error IS NULL AND lower(c.body) LIKE ? ESCAPE '\\' LIMIT 30`)
+      .bind(pattern,pattern).all()).results||[];
+  }catch{/* peer cache is optional on a new installation */}
+  const remote=refs.map(t=>({...t,origin:'saved-peer'}));
+  for(const shard of shards){
+    try{
+      const entries=JSON.parse(shard.body);
+      if(!Array.isArray(entries))continue;
+      for(const t of entries){
+        if(!t?.title||!(String(t.title).toLowerCase().includes(term)||String(t.artist||'').toLowerCase().includes(term)))continue;
+        remote.push({...t,origin:shard.origin});
+        if(remote.length>=700)return {local,remote};
       }
     }catch{}
   }
@@ -2114,14 +2153,29 @@ async function api(req, env, url, ctx) {
     const admin=await sessionInfo(req,env);
     if(admin?.role!=='admin')return json({error:'Administrator required'},403);
     if(path==='/api/admin/delists'&&m==='GET')return json(await readDelists(DB));
+    if(path==='/api/admin/delists/suggest'&&m==='GET'){
+      const query=clean(url.searchParams.get('q'),120),kind=url.searchParams.get('kind')==='song'?'song':'artist';
+      if(query.trim().length<2)return json({candidates:[]});
+      const catalogue=await delistSuggestionCatalogue(DB,query);
+      return json({candidates:suggestDelists(catalogue,{kind,query,artist:clean(url.searchParams.get('artist'),200),limit:16})});
+    }
     if(path==='/api/admin/delists'&&m==='POST'){
       try{return json(await addDelist(DB,await req.json().catch(()=>({}))),201);}catch(e){return json({error:e.message},400);}
     }
     if(path==='/api/admin/delists/searchable'&&m==='PUT'){
       const body=await req.json().catch(()=>({}));
       if(typeof body.searchable!=='boolean')return json({error:'Invalid visibility setting'},400);
+      // Compatibility with previous admin clients: convert bulk preference
+      // into per-rule flags; new UI never uses this bulk endpoint.
+      await readDelists(DB);
+      await DB.prepare('UPDATE delist_rules SET hide_search=?').bind(body.searchable?0:1).run();
       await DB.prepare("INSERT INTO settings(key,value) VALUES('delists_searchable',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(body.searchable?'1':'0').run();
       return json(await readDelists(DB));
+    }
+    const visibility=path.match(/^\/api\/admin\/delists\/([a-f0-9-]{36})\/visibility$/i);
+    if(visibility&&m==='PUT'){
+      try{const body=await req.json().catch(()=>({}));return json(await setDelistVisibility(DB,visibility[1],body.hide_search));}
+      catch(e){return json({error:e.message},400);}
     }
     const match=path.match(/^\/api\/admin\/delists\/([a-f0-9-]{36})$/i);
     if(match&&m==='DELETE')return json(await removeDelist(DB,match[1]));

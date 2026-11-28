@@ -1322,3 +1322,24 @@ body.sidebar-collapsed .nav-notice-dot.notice-compact{display:block;position:abs
 .delist-entry strong,.delist-entry span{display:block}
 .delist-entry .muted{font-size:12px;margin-top:4px}
 @media(max-width:650px){.delist-entry{align-items:flex-start;flex-direction:column}}
+
+/* v18.3.0e: dark, aligned delist autocomplete and individual search visibility. */
+.delists-add-form{display:grid;grid-template-columns:minmax(200px,245px) minmax(220px,1fr) minmax(220px,1fr) auto;align-items:end;gap:12px 14px;margin-top:14px;position:relative}
+.delists-add-form .delist-field{min-width:0;display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--muted)}
+.delists-add-form .delist-field.hidden{display:none}
+.delists-add-form:has(#delistsTitleWrap.hidden){grid-template-columns:minmax(200px,300px) minmax(220px,390px) auto 1fr}
+.delists-add-form select,.delists-add-form input[type=text]{box-sizing:border-box;width:100%;height:44px;border:1px solid var(--line2);border-radius:12px;background:var(--panel);color:var(--text);padding:0 13px;font:inherit;outline:none}
+.delists-add-form select:focus,.delists-add-form input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 15%,transparent)}
+.delists-add-form option{background:#1c1c1c;color:#fff}
+.delists-add-form .delist-submit{height:44px;white-space:nowrap;align-self:end}
+.delist-combobox{display:block;position:relative;min-width:0}
+.delist-suggestions{position:absolute;z-index:60;top:calc(100% + 5px);left:0;width:max(100%,270px);max-width:min(450px,calc(100vw - 50px));max-height:310px;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:5px;box-shadow:0 12px 30px #000b}
+.delist-suggestions.hidden{display:none}
+.delist-suggestion{display:flex;flex-direction:column;text-align:left;align-items:flex-start;gap:4px;background:none;color:var(--text);font:inherit;border:0;border-radius:8px;padding:10px 12px;width:100%;cursor:pointer}
+.delist-suggestion:hover,.delist-suggestion:focus-visible{background:color-mix(in srgb,var(--accent) 14%,var(--panel));outline:1px solid var(--accent)}
+.delist-suggestion strong{font-size:13px}.delist-suggestion small{font-size:11px;color:var(--muted)}
+.delist-hide-check{grid-column:1/-1;justify-self:start;margin:2px 0 0;line-height:1.4}
+.delist-entry-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.delist-entry-actions .check{white-space:nowrap}
+.delist-entry-name{min-width:0;overflow-wrap:anywhere}
+@media(max-width:900px){.delists-add-form,.delists-add-form:has(#delistsTitleWrap.hidden){grid-template-columns:repeat(2,minmax(0,1fr))}.delist-hide-check{grid-column:1/-1}}
+@media(max-width:600px){.delists-add-form,.delists-add-form:has(#delistsTitleWrap.hidden){grid-template-columns:minmax(0,1fr)}.delists-add-form .delist-submit{width:100%}.delist-hide-check{grid-column:1}.delist-suggestions{width:100%;max-width:100%}}
